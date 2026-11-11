@@ -1,0 +1,66 @@
+## Interface: 120105
+## Title: PawAtlas
+## Title-ruRU: PawAtlas
+## Author: Zik
+## X-License: GPL-2.0-only
+## X-Curse-Project-ID: 1798193
+## Notes: Mount collection catalog: sources, drop chances, attempt tracking, and a warband planner.
+## Notes-ruRU: Каталог маунтов: источники получения, шансы добычи, счётчик попыток и планнер походов.
+## Category: Collections
+## Category-ruRU: Коллекции отряда
+## IconTexture: Interface\AddOns\PawAtlas\Media\Brand\MountAtlasHeader.tga
+## Version: 0.2.0
+## SavedVariablesPerCharacter: MountAtlasDB
+## SavedVariables: MountAtlasAccountDB
+Libs/LibStub/LibStub.lua
+Libs/CallbackHandler-1.0/CallbackHandler-1.0.lua
+# Ace3 source: https://github.com/WoWUIDev/Ace3/tree/ac3d1225037e0dc74e025a72342c0f7824aae147
+Libs/AceAddon-3.0/AceAddon-3.0.lua
+Libs/AceEvent-3.0/AceEvent-3.0.lua
+Libs/AceConsole-3.0/AceConsole-3.0.lua
+Libs/AceLocale-3.0/AceLocale-3.0.lua
+Libs/AceSerializer-3.0/AceSerializer-3.0.lua
+Libs/LibSharedMedia-3.0/LibSharedMedia-3.0.lua
+Libs/LibDataBroker-1.1/LibDataBroker-1.1.lua
+Core/Addon.lua
+Core/Locale.lua
+Locales/enUS_Sources.lua
+Locales/enUS_UI.lua
+Locales/enUS_Settings.lua
+Data/Rares.lua
+Data/JournalData.lua
+Data/Expansions.lua
+Data/QuestSources.lua
+Data/LootSources.lua
+Data/Mounts.lua
+Core/JournalIndex.lua
+Core/Lockouts.lua
+Core/Tracking.lua
+Core/AttemptStages.lua
+Core/RarityImport.lua
+Core/WarbandPlan.lua
+Core/PlanSharing.lua
+Core/Sources.lua
+Core/SourceDetails.lua
+Core/VendorSources.lua
+Core/Links.lua
+Core/CollectionSharing.lua
+UI/Theme.lua
+UI/Fonts.lua
+UI/Notifications.lua
+UI/ExpeditionTracker.lua
+UI/Settings.lua
+UI/ScrollingList.lua
+UI/CollectionSharing.lua
+UI/PlanSharing.lua
+UI/ModelPreview.lua
+UI/DifficultyBadge.lua
+UI/PlannerSources.lua
+UI/Planner.lua
+UI/CardDetails.lua
+UI/EmptyState.lua
+UI/CollectedState.lua
+UI/Journal.lua
+UI/GameTooltips.lua
+UI/Minimap.lua
+UI/Broker.lua

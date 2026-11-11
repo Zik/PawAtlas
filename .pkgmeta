@@ -1,0 +1,13 @@
+package-as: PawAtlas
+enable-nolib-creation: no
+
+ignore:
+  - .github
+  - .gitattributes
+  - .gitignore
+  - .pkgmeta
+  - docs
+  - tools
+  - README.md
+  - README.en.md
+  - .release

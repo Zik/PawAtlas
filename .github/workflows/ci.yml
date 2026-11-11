@@ -1,0 +1,178 @@
+name: Check and package PawAtlas
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+      prerelease: ${{ steps.validate.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Lua 5.1
+        run: sudo apt-get update && sudo apt-get install -y lua5.1
+      - name: Check Lua, TOC and release version
+        id: validate
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            lua5.1 tools/check.lua . "$GITHUB_REF_NAME"
+          else
+            lua5.1 tools/check.lua
+          fi
+      - name: Check stable and prerelease tags
+        env:
+          VERSION: ${{ steps.validate.outputs.version }}
+        shell: bash
+        run: |
+          output="$RUNNER_TEMP/tag-check.txt"
+          for suffix in '' '.beta' '-beta.1' '.alpha' '-rc.1'; do
+            : > "$output"
+            GITHUB_OUTPUT="$output" lua5.1 tools/check.lua . "v${VERSION}${suffix}"
+            expected=true
+            [[ -n "$suffix" ]] || expected=false
+            grep -qx "prerelease=$expected" "$output"
+          done
+          for tag in "v${VERSION}.beta.0" "v${VERSION}.preview" 'v999.0.0.beta'; do
+            if GITHUB_OUTPUT="$output" lua5.1 tools/check.lua . "$tag" > /dev/null 2>&1; then
+              echo "::error::Invalid release tag accepted: $tag"
+              exit 1
+            fi
+          done
+      - name: Test lifecycle, imports, collection sharing and Trading Post
+        run: |
+          lua5.1 tools/test_lifecycle.lua
+          lua5.1 tools/test_rarity_import.lua
+          lua5.1 tools/test_plan_sharing.lua
+          lua5.1 tools/test_collection_sharing.lua
+          lua5.1 tools/test_trading_post.lua
+      - name: Build ZIP with BigWigs Packager
+        uses: BigWigsMods/packager@01e8631a69c69d7654c788d152630d5fed9e3812 # v2
+        with:
+          args: -d -e -l -n "PawAtlas-${{ steps.validate.outputs.version }}"
+          pandoc: 'false'
+      - name: Validate packaged addon
+        env:
+          VERSION: ${{ steps.validate.outputs.version }}
+        shell: bash
+        run: |
+          archive=".release/PawAtlas-${VERSION}.zip"
+          unzip -t "$archive"
+          unpacked="$(mktemp -d)"
+          unzip -Z -1 "$archive" > "$unpacked/files.txt"
+          if grep -Ev '^PawAtlas/([^/]+|((Core|Data|Libs|Locales|Media|UI)/.*))?$' "$unpacked/files.txt"; then
+            echo "Unexpected path in release archive" >&2
+            exit 1
+          fi
+          if grep -E '(^|/)\.\.?(/|$)|^PawAtlas/(README|\.git|\.pkgmeta)' "$unpacked/files.txt"; then
+            echo "Development files or invalid paths in release archive" >&2
+            exit 1
+          fi
+          unzip -q "$archive" -d "$unpacked"
+          lua5.1 tools/check.lua "$unpacked/PawAtlas" "v$VERSION"
+      - name: Prepare release description
+        shell: bash
+        run: |
+          cat > .release/release-notes.md <<'NOTES'
+          🐾 **PawAtlas — справочник и планнер охоты за маунтами в WoW Retail (12.1.5).**
+
+          - 🔎 Каталог маунтов с поиском и источниками получения.
+          - 🎲 Учёт попыток, прогресса и импорт истории из Rarity.
+          - 📋 Личные планы фарма и компактное окно похода.
+          - 🤝 Обмен планами и коллекцией с друзьями.
+          - 🔔 Настраиваемые уведомления, подсказки и счётчик на инфопанели.
+
+          🌍 Русский и английский интерфейс.
+
+          📦 Распакуй папку `PawAtlas` из архива в `World of Warcraft/_retail_/Interface/AddOns`.
+          Открыть: `/paw`, `/pawatlas` или лапка у миникарты.
+          NOTES
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PawAtlas-package
+          path: |
+            .release/PawAtlas-${{ steps.validate.outputs.version }}.zip
+            .release/release-notes.md
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
+
+      - name: Upload checked ZIP to CurseForge
+        if: github.event_name == 'push' && github.ref_type == 'tag' && steps.validate.outputs.prerelease == 'false'
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          VERSION: ${{ steps.validate.outputs.version }}
+        shell: bash
+        run: |
+          if [[ -z "$CF_API_TOKEN" ]]; then
+            echo "::error::Repository secret CF_API_TOKEN is required for CurseForge releases."
+            exit 1
+          fi
+          project_id=$(sed -n 's/^## X-Curse-Project-ID: *//p' PawAtlas.toc | tr -d '\r')
+          interface=$(sed -n 's/^## Interface: *//p' PawAtlas.toc | tr -d '\r')
+          [[ "$project_id" =~ ^[0-9]+$ && "$interface" =~ ^[1-9][0-9]{5}$ ]] || {
+            echo "::error::Expected a numeric CurseForge project ID and a single Retail Interface version."
+            exit 1
+          }
+          patch="$((interface / 10000)).$((interface / 100 % 100)).$((interface % 100))"
+          api="https://wow.curseforge.com/api"
+          versions=$(curl --fail --silent --show-error --connect-timeout 15 --max-time 60 \
+            -H "X-Api-Token: $CF_API_TOKEN" "$api/game/wow/versions")
+          game_versions=$(jq -ce --arg patch "$patch" \
+            '[.[] | select(.gameVersionTypeID == 517 and .name == $patch) | .id] | select(length == 1)' \
+            <<< "$versions") || {
+            echo "::error::CurseForge has no unique Retail version matching TOC patch $patch."
+            exit 1
+          }
+          metadata=$(jq -n --arg name "PawAtlas $VERSION" --argjson versions "$game_versions" \
+            --rawfile changelog .release/release-notes.md \
+            '{displayName: $name, gameVersions: $versions, releaseType: "release", changelog: $changelog, changelogType: "markdown"}')
+          response=$(curl --fail-with-body --silent --show-error --connect-timeout 15 --max-time 180 \
+            -H "X-Api-Token: $CF_API_TOKEN" \
+            --form-string "metadata=$metadata" \
+            -F "file=@.release/PawAtlas-${VERSION}.zip" \
+            "$api/projects/$project_id/upload-file")
+          file_id=$(jq -er '.id | select(type == "number" and . > 0)' <<< "$response")
+          echo "CurseForge file $file_id uploaded for Retail $patch."
+
+  release:
+    needs: check
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: PawAtlas-package
+          path: .release
+      - name: Publish checked GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+          PRERELEASE: ${{ needs.check.outputs.prerelease }}
+        run: |
+          notes=".release/release-notes.md"
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" ".release/PawAtlas-${VERSION}.zip" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --title "PawAtlas $GITHUB_REF_NAME" --notes-file "$notes" --prerelease="$PRERELEASE"
+          else
+            gh release create "$GITHUB_REF_NAME" ".release/PawAtlas-${VERSION}.zip" \
+              --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --title "PawAtlas $GITHUB_REF_NAME" --notes-file "$notes" --prerelease="$PRERELEASE"
+          fi
