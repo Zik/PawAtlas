@@ -146,7 +146,7 @@ jobs:
             echo "::error::CurseForge has no unique Retail version matching TOC patch $patch."
             exit 1
           }
-          metadata=$(jq -n --arg name "PawAtlas $VERSION" --argjson versions "$game_versions" \
+          metadata=$(jq -n --arg name "🐾 PawAtlas $VERSION" --argjson versions "$game_versions" \
             --rawfile changelog .release/release-notes.md \
             '{displayName: $name, gameVersions: $versions, releaseType: "release", changelog: $changelog, changelogType: "markdown"}')
           response=$(curl --fail-with-body --silent --show-error --connect-timeout 15 --max-time 180 \
@@ -180,9 +180,9 @@ jobs:
             gh release upload "$GITHUB_REF_NAME" ".release/PawAtlas-${VERSION}.zip" \
               --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-              --title "PawAtlas $GITHUB_REF_NAME" --notes-file "$notes" --prerelease="$PRERELEASE"
+              --title "🐾 PawAtlas $VERSION" --notes-file "$notes" --prerelease="$PRERELEASE"
           else
             gh release create "$GITHUB_REF_NAME" ".release/PawAtlas-${VERSION}.zip" \
               --repo "$GITHUB_REPOSITORY" --verify-tag \
-              --title "PawAtlas $GITHUB_REF_NAME" --notes-file "$notes" --prerelease="$PRERELEASE"
+              --title "🐾 PawAtlas $VERSION" --notes-file "$notes" --prerelease="$PRERELEASE"
           fi
