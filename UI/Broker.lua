@@ -227,7 +227,7 @@ end
 local function showRowTooltip(row)
     if not row.item then return end
     GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
-    ui.tooltipTitle(row.name:GetText(), 1, .82, .44, true)
+    ui.tooltipTitle(row.name:GetText(), 1, .82, .44, 1, true)
     for _, line in ipairs(row.details) do ui.tooltipLine(line, 1, 1, 1, true) end
     GameTooltip:Show()
 end
