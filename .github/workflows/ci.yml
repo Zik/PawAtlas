@@ -109,8 +109,6 @@ jobs:
             exit 1
           fi
           cp "$source" .release/release-notes.md
-          printf '\n![Каталог PawAtlas](https://raw.githubusercontent.com/%s/%s/docs/assets/catalog-ru-window.jpg)\n' \
-            "$GITHUB_REPOSITORY" "$GITHUB_SHA" >> .release/release-notes.md
       - uses: actions/upload-artifact@v4
         with:
           name: PawAtlas-package
