@@ -94,22 +94,23 @@ jobs:
           unzip -q "$archive" -d "$unpacked"
           lua5.1 tools/check.lua "$unpacked/PawAtlas" "v$VERSION"
       - name: Prepare release description
+        env:
+          VERSION: ${{ steps.validate.outputs.version }}
         shell: bash
         run: |
-          cat > .release/release-notes.md <<'NOTES'
-          🐾 **PawAtlas — справочник и планнер охоты за маунтами в WoW Retail (12.1.5).**
-
-          - 🔎 Каталог маунтов с поиском и источниками получения.
-          - 🎲 Учёт попыток, прогресса и импорт истории из Rarity.
-          - 📋 Личные планы фарма и компактное окно похода.
-          - 🤝 Обмен планами и коллекцией с друзьями.
-          - 🔔 Настраиваемые уведомления, подсказки и счётчик на инфопанели.
-
-          🌍 Русский и английский интерфейс.
-
-          📦 Распакуй папку `PawAtlas` из архива в `World of Warcraft/_retail_/Interface/AddOns`.
-          Открыть: `/paw`, `/pawatlas` или лапка у миникарты.
-          NOTES
+          set -euo pipefail
+          source="docs/release-notes.md"
+          if [[ ! -f "$source" ]] || [[ "$(head -n 1 "$source" | tr -d '\r')" != "# PawAtlas $VERSION" ]]; then
+            echo "::error::docs/release-notes.md must start with '# PawAtlas $VERSION'."
+            exit 1
+          fi
+          if ! tail -n +2 "$source" | grep -q '[^[:space:]]'; then
+            echo "::error::Release notes must describe the changes in this version."
+            exit 1
+          fi
+          cp "$source" .release/release-notes.md
+          printf '\n![Каталог PawAtlas](https://raw.githubusercontent.com/%s/%s/docs/assets/catalog-ru-window.jpg)\n' \
+            "$GITHUB_REPOSITORY" "$GITHUB_SHA" >> .release/release-notes.md
       - uses: actions/upload-artifact@v4
         with:
           name: PawAtlas-package
