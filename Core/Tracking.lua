@@ -115,6 +115,8 @@ local function characterCounts()
     if readable(realm) and type(realm) == "string" and realm ~= "" then record.realm = realm end
     local level = UnitLevel and UnitLevel("player")
     if validNumber(level) and level > 0 then record.level = math.floor(level) end
+    local faction = UnitFactionGroup and UnitFactionGroup("player")
+    if readable(faction) and (faction == "Horde" or faction == "Alliance") then record.faction = faction end
     if not record.migrated and type(MountAtlasDB) == "table" and type(MountAtlasDB.kills) == "table" then
         for key, count in pairs(MountAtlasDB.kills) do
             if validNumber(count) then record.kills[key] = math.floor(count) end
@@ -128,6 +130,27 @@ end
 -- never inherit a kill count as fishing casts or opened containers.
 function atlas.currentAttemptCharacter()
     return characterCounts()
+end
+
+function atlas.characterFaction(guid)
+    local current = UnitGUID and UnitGUID("player")
+    if not readable(current) then current = nil end
+    local faction
+    if not guid or guid == current then
+        faction = UnitFactionGroup and UnitFactionGroup("player")
+    else
+        local characters = type(MountAtlasAccountDB) == "table" and MountAtlasAccountDB.characters
+        local record = type(characters) == "table" and characters[guid]
+        faction = type(record) == "table" and record.faction
+    end
+    if readable(faction) and (faction == "Horde" or faction == "Alliance") then return faction end
+end
+
+function atlas.sourceAvailableToCharacter(npc, guid)
+    local required = atlas.npcSourceFactions and atlas.npcSourceFactions[npc]
+    if not required then return true end
+    local faction = atlas.characterFaction(guid)
+    if faction then return required == faction end
 end
 
 function atlas.isCharacterSuppressed(guid)

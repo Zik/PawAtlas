@@ -1,6 +1,35 @@
 local addonName, atlas = ...
 local ui = atlas.ui
 local L = atlas.L
+local projectURL = "https://github.com/Zik/PawAtlas"
+local projectPopup = "PAWATLAS_PROJECT_URL"
+StaticPopupDialogs[projectPopup] = {
+    text = "",
+    button1 = CLOSE,
+    hasEditBox = true,
+    editBoxWidth = 280,
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+    OnShow = function(self)
+        local edit = self:GetEditBox()
+        edit:SetText(projectURL)
+        edit:SetFocus()
+        edit:HighlightText()
+    end,
+    OnHide = function(self)
+        local edit = self:GetEditBox()
+        edit:ClearFocus()
+        edit:SetText("")
+    end,
+    EditBoxOnTextChanged = function(self)
+        local dialog = self:GetParent()
+        if dialog.which ~= projectPopup or not dialog:IsShown() or self:GetText() == projectURL then return end
+        self:SetText(projectURL)
+        self:HighlightText()
+    end,
+    EditBoxOnEscapePressed = function(self) self:GetParent():Hide() end,
+}
 function atlas.makeSettings(parent)
     local panel = CreateFrame("Frame", "MountAtlasSettings", parent)
     ui.place(panel, parent, 12, 96, 1016, 478)
@@ -33,6 +62,13 @@ function atlas.makeSettings(parent)
     ui.text(information, 84, 96, 600, 36, 25, "PawAtlas", ui.gold)
     local version = C_AddOns.GetAddOnMetadata(addonName, "Version") or ""
     local author = ui.text(information, 84, 133, 600, 24, 14, "", ui.muted)
+    information:EnableMouse(true)
+    information:SetHyperlinksEnabled(true)
+    information:SetScript("OnHyperlinkClick", function(_, link)
+        if link ~= "pawatlas:project" then return end
+        StaticPopupDialogs[projectPopup].text = L("Проект PawAtlas")
+        StaticPopup_Show(projectPopup)
+    end)
     ui.fill(information, 0, 189, 706, 1, ui.rule)
     ui.text(information, 0, 204, 194, 28, 16, "Языки интерфейса", ui.muted)
     for index, language in ipairs({ { "ruRU", "Русский" }, { "enUS", "English" } }) do
@@ -365,7 +401,10 @@ function atlas.makeSettings(parent)
         opacityValue:SetText(("%d%%"):format(math.floor(value + .5)))
     end)
     local function update()
-        author:SetText(L("Разработчик: Zik") .. (version ~= "" and ("  ·  " .. version) or ""))
+        local link = ("|Hpawatlas:project|h|cff%02x%02x%02xZik|r|h"):format(
+            math.floor(ui.gold[1] * 255), math.floor(ui.gold[2] * 255), math.floor(ui.gold[3] * 255))
+        local developer = L("Разработчик: Zik"):gsub("Zik", function() return link end)
+        author:SetText(developer .. (version ~= "" and ("  ·  " .. version) or ""))
         gameTooltips:SetChecked(atlas.gameTooltipsEnabled())
         local enabled, pinned, percent = atlas.expeditionSettings()
         expedition:SetChecked(enabled)

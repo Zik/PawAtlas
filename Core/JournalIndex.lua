@@ -5,6 +5,9 @@ local kinds = {
     [9] = "Магазин", [10] = "Исследование", [11] = "Торговая лавка",
 }
 local known, baseKeys = {}, {}
+function atlas.mountByID(id)
+    return known[id]
+end
 -- Acquisition item names differ from journal names. Index static localized
 -- aliases once, including prerequisites and opened containers; searching must
 -- not depend on visiting an item first or issue item requests per keystroke.

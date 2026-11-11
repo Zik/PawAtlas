@@ -203,6 +203,7 @@ local function checkLocale(clientLocale)
     equal(localizedAtlas.getLocale(), russian and "ruRU" or "enUS", clientLocale .. " selected locale")
     equal(L("Условие"), russian and "Условие" or "Requirements", clientLocale .. " requirements label")
     equal(L("Попыток: %s", 3), russian and "Попыток: 3" or "Attempts: 3", clientLocale .. " late format string")
+    equal(L("(%d/%s попыток)", 24, "100"), russian and "(24/100 попыток)" or "(24/100 attempts)", clientLocale .. " tooltip attempts")
 
     local dynamic = "|Hitem:999999|h[Already localized]|h"
     equal(L(dynamic), dynamic, clientLocale .. " dynamic text remains unchanged")
@@ -213,3 +214,122 @@ end
 
 for _, locale in ipairs({ "ruRU", "enUS", "deDE" }) do checkLocale(locale) end
 print("PawAtlas locales passed: ruRU, enUS and English fallback")
+
+-- Exercise the real tooltip callbacks across native clear/reuse cycles.
+do
+    local callbacks, lines, hooks = {}, {}, {}
+    local tooltip = {}
+    local data, owner, collected, link = nil, nil, false, "|cffa335ee|Hitem:184062|h[Warhound reins]|h|r"
+    local chance, attempts = .01, 24
+    function tooltip:AddLine(text, r, g, b) lines[#lines + 1] = { text, r, g, b } end
+    function tooltip:GetPrimaryTooltipData() return data end
+    function tooltip:GetOwner() return owner end
+    function tooltip:HookScript(event, callback) hooks[event] = callback end
+    local mount = { id = 1437 }
+    local tooltipAtlas = {
+        L = function(text, ...) return text:format(...) end,
+        mounts = { mount }, lootByNPC = { [162875] = { mount } },
+        mountByID = function(id) return id == mount.id and mount end,
+        lootItems = { [1437] = { item = 184062 } },
+        displayName = function(name) return name end,
+        isExcludedJournalMount = function() return false end,
+        activePlanID = function() return 1 end,
+        isPlanned = function() return true end,
+        dropProbability = function(value)
+            equal(value, mount, "tooltip uses catalog entry for statistics")
+            return chance, nil, attempts
+        end,
+    }
+    local environment = setmetatable({
+        GameTooltip = tooltip, MountAtlasWindow = {},
+        MountAtlasAccountDB = { settings = { gameTooltips = true } },
+        Enum = { TooltipDataType = { Item = 0, Unit = 1 } },
+        TooltipDataProcessor = { AddTooltipPostCall = function(kind, callback) callbacks[kind] = callback end },
+        C_Item = { GetItemInfo = function() return nil, link end },
+        C_MountJournal = { GetMountInfoByID = function()
+            return "Mount · name", 344228, nil, nil, nil, nil, nil, nil, nil, nil, collected
+        end },
+    }, { __index = _G })
+    environment._G = environment
+    for _, path in ipairs({ "UI/Theme.lua", "UI/GameTooltips.lua" }) do
+        setfenv(assert(loadfile(path)), environment)("PawAtlas", tooltipAtlas)
+    end
+    local function hover(kind)
+        hooks.OnTooltipCleared(tooltip)
+        lines = {}
+        data = kind == 1 and { guid = "Creature-0-1-2-3-162875-000000001" } or { id = 184062 }
+        callbacks[kind](tooltip, data)
+    end
+    hover(1)
+    assert(lines[1][1]:find(link, 1, true), "native item hyperlink must remain intact")
+    assert(lines[1][1]:find("(24/100 попыток)", 1, true), "tooltip shows attempt count and inverse chance")
+    equal(lines[2][1], "В плане", "plan status is a separate line")
+    callbacks[1](tooltip, data)
+    equal(#lines, 2, "repeated callback does not duplicate lines")
+    collected = true
+    hover(0)
+    equal(lines[2][1], "В коллекции", "collection status wins over plan")
+    equal(lines[2][2], 1, "collected status red component")
+    equal(lines[2][3], .2, "collected status green component")
+    assert(not lines[1][1]:find("попыток", 1, true), "collected mount hides attempts")
+    collected, link, attempts = false, nil, nil
+    hover(1)
+    assert(lines[1][1]:find("Mount / name", 1, true), "uncached item falls back to font-safe mount name")
+    assert(not lines[1][1]:find("попыток", 1, true), "unknown count is not presented as zero")
+    link, chance, attempts = "|Hitem:184062|h[Loaded]|h", 1 / 33, 0
+    hover(1)
+    assert(lines[1][1]:find("[Loaded]", 1, true), "next hover picks up loaded item data")
+    assert(lines[1][1]:find("(0/33 попыток)", 1, true), "known zero attempts remains visible")
+    owner = environment.MountAtlasWindow
+    hover(0)
+    equal(#lines, 0, "addon's own tooltips are not extended")
+    owner = nil
+    environment.MountAtlasAccountDB.settings.gameTooltips = false
+    hover(1)
+    equal(#lines, 0, "disabled tooltip integration adds nothing")
+    print("PawAtlas game tooltips passed: links, counts, statuses, fallback and reuse")
+end
+
+do
+    local environment = setmetatable({ StaticPopupDialogs = {}, CLOSE = "Close" }, { __index = _G })
+    local settingsAtlas = { ui = {}, L = function(text) return text end }
+    setfenv(assert(loadfile("UI/Settings.lua")), environment)("PawAtlas", settingsAtlas)
+    local spec = assert(environment.StaticPopupDialogs.PAWATLAS_PROJECT_URL)
+    local popup = { which = "PAWATLAS_PROJECT_URL", shown = true }
+    local edit = { text = "" }
+    function popup:IsShown() return self.shown end
+    function popup:GetEditBox() return edit end
+    function popup:Hide() self.shown = false; spec.OnHide(self) end
+    function edit:GetParent() return popup end
+    function edit:GetText() return self.text end
+    function edit:SetText(value)
+        self.text = value
+        self.writes = (self.writes or 0) + 1
+        assert(self.writes < 20, "copy-only field must not recurse indefinitely")
+        spec.EditBoxOnTextChanged(self)
+    end
+    function edit:SetFocus() self.focused = true end
+    function edit:ClearFocus() self.focused = false end
+    function edit:HighlightText() self.highlighted = self.text end
+    local url = "https://github.com/Zik/PawAtlas"
+    spec.OnShow(popup)
+    equal(edit.text, url, "project URL on open")
+    equal(edit.highlighted, url, "project URL selected for native copy")
+    assert(edit.focused, "copy field keeps keyboard focus")
+    for _, value in ipairs({ "x", "", "https://example.invalid/pasted", url .. "x" }) do
+        edit.writes = 0
+        edit:SetText(value)
+        equal(edit.text, url, "input cannot change project URL")
+        equal(edit.highlighted, url, "restored URL stays selected")
+        assert(edit.focused, "editing guard must not disable keyboard focus")
+    end
+    spec.EditBoxOnEscapePressed(edit)
+    assert(not popup.shown and not edit.focused and edit.text == "", "Escape closes and clears copy field")
+    popup.shown = true
+    spec.OnShow(popup)
+    equal(edit.text, url, "reopening restores project URL")
+    popup.which = "OTHER_DIALOG"
+    edit:SetText("other dialog value")
+    equal(edit.text, "other dialog value", "reused native editbox is not forced to project URL")
+    print("PawAtlas project popup passed: selection, copy-only editing, Escape and reuse")
+end

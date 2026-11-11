@@ -380,3 +380,108 @@ assert(atlas.activePlanID() == "personal" and select(2, atlas.importPlan(payload
 assert(db.planProfiles == store and store.version == 99)
 assert(select(2, atlas.createPlan("Версия")) == "profiles_version" and db.planProfiles == store)
 print("PawAtlas plan sharing passed: isolated profiles, dialog validation, ordered transfer, revalidation, limits and acquisition")
+
+-- Faction alternatives use the selected character's identity, including old
+-- per-NPC snapshots. Their existing attempt keys must remain independent.
+do
+    local faction, now, completed = "Horde", 1000, {}
+    local testAtlas = { L = function(text, ...) return text:format(...) end, addTranslations = function() end }
+    local environment = setmetatable({
+        UnitGUID = function() return "Player-faction" end,
+        UnitFactionGroup = function() return faction end,
+        GetServerTime = function() return now end,
+        IsLoggedIn = function() return true end,
+        C_DateAndTime = { GetSecondsUntilDailyReset = function() return 500 end },
+        C_QuestLog = { IsQuestFlaggedCompleted = function(id) return completed[id] == true end },
+        MountAtlasDB = { planMigrated = true, lastAttempts = {}, kills = {} },
+        MountAtlasAccountDB = { characters = {} },
+    }, { __index = _G })
+    environment._G = environment
+    for _, path in ipairs({ "Data/Rares.lua", "Data/JournalData.lua", "Data/LootSources.lua",
+        "Core/Tracking.lua", "Core/WarbandPlan.lua", "Core/Sources.lua" }) do
+        setfenv(assert(loadfile(path)), environment)("PawAtlas", testAtlas)
+    end
+    local characters = environment.MountAtlasAccountDB.characters
+    testAtlas.currentAttemptCharacter()
+    assert(characters["Player-faction"].faction == "Horde", "current faction is saved for offline views")
+    faction = "Alliance"
+    testAtlas.currentAttemptCharacter()
+    assert(characters["Player-faction"].faction == "Alliance", "faction change updates existing character")
+    faction = nil
+    assert(testAtlas.characterFaction() == nil, "unavailable live faction must not reuse a possibly stale identity")
+    testAtlas.currentAttemptCharacter()
+    assert(characters["Player-faction"].faction == "Alliance", "unavailable API does not erase saved faction")
+    faction = "Horde"
+    for _, mount in ipairs(testAtlas.rares) do
+        if mount.id == 2751 or mount.id == 2827 then
+            local function key(npc) return testAtlas.lootOpportunityKey(mount, npc, "daily") end
+            assert(key(257199) ~= key(257231), "faction alternatives must not merge loot keys")
+            for _, side in ipairs({ "Horde", "Alliance" }) do
+                faction, completed = side, {}
+                local wanted = side == "Horde" and 257199 or 257231
+                local other = side == "Horde" and 257231 or 257199
+                local progress = testAtlas.planOpportunityProgress(mount)
+                assert(progress.totalAttempts == 20 and progress.availableAttempts == 20, "one accessible faction source")
+                local seen = {}
+                for _, entry in ipairs(progress.entries) do
+                    assert(#entry.npcs == 1, "unrelated rares stay independent")
+                    seen[entry.npc] = true
+                end
+                assert(seen[wanted] and not seen[other], "progress follows active faction")
+                seen = {}
+                for _, point in ipairs(testAtlas.mountLocations(mount, "Player-faction")) do
+                    assert(point.npc ~= other, "navigation must omit the opposite faction source")
+                    if point.npc then seen[point.npc] = true end
+                end
+                assert(seen[wanted], "navigation retains own faction source")
+                completed[94461] = true
+                progress = testAtlas.planOpportunityProgress(mount)
+                assert(progress.completedAttempts == 1 and progress.availableAttempts == 19, "shared quest counts the accessible NPC once")
+                completed = {}
+                local attempts = { [key(wanted)] = 1500, [key(other)] = 1500 }
+                environment.MountAtlasDB.lastAttempts = attempts
+                assert(testAtlas.planOpportunityProgress(mount).completedAttempts == 1, "old local NPC marks are not duplicated")
+                assert(attempts[key(other)] == 1500, "opposite NPC history is preserved")
+                environment.MountAtlasDB.lastAttempts = {}
+
+                local status = { frequency = "daily", updated = 950, expires = 1500, state = "partial", opportunities = {} }
+                for _, npc in ipairs(mount.npcs) do
+                    status.opportunities[key(npc)] = { state = "available", expires = 1500 }
+                end
+                status.opportunities[key(wanted)].state = "attempt"
+                status.opportunities[key(other)].state = "attempt"
+                characters.Alt = { faction = side, planStatus = { [tostring(mount.id)] = status } }
+                faction = side == "Horde" and "Alliance" or "Horde"
+                progress = testAtlas.planOpportunityProgress(mount, "Alt")
+                assert(progress.totalAttempts == 20 and progress.completedAttempts == 1, "offline alt uses own faction and old keys")
+                for _, point in ipairs(testAtlas.mountLocations(mount, "Alt")) do
+                    assert(point.npc ~= other, "offline navigation does not inherit the active faction")
+                end
+                characters.Alt.faction = nil
+                local unknown, missingFaction = testAtlas.planOpportunityProgress(mount, "Alt")
+                assert(not unknown and missingFaction, "legacy alt without faction stays unknown")
+                assert(testAtlas.planCharacterStatus(mount, "Alt") == "unknown", "old total cannot override missing faction")
+                for _, point in ipairs(testAtlas.mountLocations(mount, "Alt")) do
+                    assert(not testAtlas.npcSourceFactions[point.npc], "unknown faction cannot select either faction target")
+                end
+                assert(status.opportunities[key(wanted)].state == "attempt", "reading legacy alt preserves its marks")
+                characters.Alt.faction = side
+                now = 1600
+                progress = testAtlas.planOpportunityProgress(mount, "Alt")
+                assert(progress.completedAttempts == 0 and progress.stale, "expired offline marks do not count")
+                now = 1000
+            end
+        end
+    end
+    local checked = 0
+    faction, completed = "Horde", {}
+    for _, mount in ipairs(testAtlas.rares) do
+        if mount.expansion == "Midnight" and #mount.npcs > 1 then
+            local expected = (mount.id == 2751 or mount.id == 2827) and #mount.npcs - 1 or #mount.npcs
+            assert(testAtlas.planOpportunityProgress(mount).totalAttempts == expected, "Midnight source counts")
+            checked = checked + 1
+        end
+    end
+    assert(checked == 10, "all multi-source Midnight fixtures checked")
+    print("PawAtlas faction sources passed: both factions, offline legacy snapshots, expiry, navigation and 10 Midnight mounts")
+end

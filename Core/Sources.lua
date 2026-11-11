@@ -102,7 +102,7 @@ end
 
 -- Navigation enriches known sources without changing drop/quest classification
 -- or supplying NPCs to the attempt tracker.
-function atlas.mountLocations(mount)
+function atlas.mountLocations(mount, guid)
     if mount.unavailable or mount.availability then return {} end
     local points = {}
     local extra = atlas.navigationPoints and atlas.navigationPoints[mount.id] or {}
@@ -161,6 +161,7 @@ function atlas.mountLocations(mount)
     local function add(point, reconcile)
         point = resolve(point)
         if not point then return end
+        if guid and atlas.sourceAvailableToCharacter(point.npc, guid) ~= true then return end
         local rounded, ambiguous
         for index, known in ipairs(points) do
             if sameSource(point, known) then

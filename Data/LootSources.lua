@@ -362,6 +362,11 @@ atlas.lootFrequencies = {
 -- The Ascended Council awards one cache (quest60933), not five mount rolls.
 atlas.sharedLootLockouts = { [1437] = "theaterOfPain", [1229] = "arachnoidHarvester", [1426] = "ascendedCouncil" }
 
+-- The faction allowed to attack each rare, not the NPC's own allegiance.
+-- https://www.wowhead.com/npc=257199/hardin-steellock
+-- https://www.wowhead.com/npc=257231/garchak-skullcleave
+atlas.npcSourceFactions = { [257199] = "Horde", [257231] = "Alliance" }
+
 -- Ancient Salamanther (1619): Rarity provides no reset/loot quest, and reports
 -- of additional same-day mount drops conflict with a strict daily limit.
 -- Leave its reset unknown instead of claiming all sixteen rares are exhausted.

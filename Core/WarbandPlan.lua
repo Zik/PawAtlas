@@ -464,7 +464,7 @@ end
 
 -- Tracking writes one mark per eligible NPC, except sources whose daily loot
 -- is explicitly shared. Coordinates and duplicate spawn points are not attempts.
-local function opportunityGroups(mount)
+local function opportunityGroups(mount, guid)
     -- A raid location alone does not impose a weekly lock on trash drops or
     -- prerequisites. NPC opportunities require reviewed reset metadata.
     if accountLootSources[mount.id] then return end
@@ -478,7 +478,14 @@ local function opportunityGroups(mount)
     if type(npcs) ~= "table" then return end
     local groups, byKey, seenNPC = {}, {}, {}
     for _, npc in ipairs(npcs) do
-        if number(npc) and npc > 0 and not seenNPC[npc] then
+        local allowed = true
+        if atlas.npcSourceFactions and atlas.npcSourceFactions[npc] then
+            allowed = atlas.sourceAvailableToCharacter(npc, guid)
+            -- Old offline snapshots do not identify the character's faction.
+            -- Do not count both alternatives or infer it from a loot flag.
+            if allowed == nil then return nil, frequency, true end
+        end
+        if allowed and number(npc) and npc > 0 and not seenNPC[npc] then
             seenNPC[npc] = true
             local key = atlas.lootOpportunityKey(mount, npc, frequency)
             local group = byKey[key]
@@ -615,8 +622,8 @@ function atlas.capturePlanSnapshot(ready)
 end
 
 function atlas.planOpportunityProgress(mount, guid)
-    local groups, frequency = opportunityGroups(mount)
-    if not groups then return nil end
+    local groups, frequency, unknownFaction = opportunityGroups(mount, guid)
+    if not groups then return nil, unknownFaction end
     local db, current, now = database(), playerGUID(), GetServerTime()
     guid = guid or current
     local record = guid and type(db.characters) == "table" and db.characters[guid]
@@ -665,7 +672,8 @@ function atlas.planCharacterStatus(mount, guid)
     local db = database()
     local record = type(db.characters) == "table" and db.characters[guid]
     if type(record) == "table" and atlas.lootFrequency(mount) == "repeatable" then return "available" end
-    local progress = atlas.planOpportunityProgress(mount, guid)
+    local progress, unknownFaction = atlas.planOpportunityProgress(mount, guid)
+    if unknownFaction then return "unknown" end
     if progress then
         local state = progress.completedAttempts == progress.totalAttempts and "attempt"
             or progress.completedAttempts > 0 and "partial"

@@ -202,7 +202,7 @@ local lore = ui.text(card, 8, 111, 652, 62, 15, "", ui.muted)
 lore.atlasGameText = true
 lore:SetMaxLines(3)
 local function locations()
-    return selected and atlas.mountLocations(selected) or {}
+    return selected and atlas.mountLocations(selected, UnitGUID("player")) or {}
 end
 local sourceChoices, vendorIndex, vendorMount = {}, 1, nil
 local function currentChoice() return sourceChoices[vendorIndex] end
@@ -278,11 +278,14 @@ source.atlasGameText = true
 source:SetMaxLines(2)
 local bossCheck = ui.place(CreateFrame("Frame", nil, sourceButton), sourceButton, 244, 3, 28, 28)
 bossCheck:EnableMouse(true)
-ui.icon(bossCheck, 2, 2, 24, "ObjectiveComplete")
+local bossCheckIcon = ui.icon(bossCheck, 2, 2, 24, "ObjectiveComplete")
 bossCheck:Hide()
 bossCheck:SetScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_TOP")
     ui.tooltipTitle(L(self.statusLabel or "Босс убит"), unpack(ui.mint))
+    if self.sharedAttempt then
+        ui.tooltipLine(L("Общая попытка для этих противников — отдельно для каждого персонажа"), 1, 1, 1, true)
+    end
     GameTooltip:Show()
 end)
 local function hideBossTooltip(self)
@@ -295,19 +298,25 @@ local function refreshBossCheck(view, visible, link, point, progress)
     local killed = visible and not point and atlas.bossLockout
         and (view.sourceKind == "Босс" or (route == selected and selected.encounter))
         and atlas.bossLockout(selected, route) == "boss" or false
-    local statusLabel = "Босс убит"
+    local statusLabel, sharedAttempt = "Босс убит", false
     if visible and point and point.npc and progress and view.trackingCompatible ~= false then
         for _, entry in ipairs(progress.entries or {}) do
             for _, npc in ipairs(entry.npcs or {}) do
                 if npc == point.npc and entry.state == "attempt" then
                     killed, statusLabel = true, "Попытка использована"
+                    sharedAttempt = #entry.npcs > 1
                 end
             end
         end
     end
     bossCheck.statusLabel = statusLabel
+    bossCheck.sharedAttempt = sharedAttempt
+    ui.setIcon(bossCheckIcon, sharedAttempt and "Lock" or "ObjectiveComplete")
     if killed and GameTooltip:IsOwned(bossCheck) then
         ui.tooltipTitle(L(statusLabel), unpack(ui.mint))
+        if sharedAttempt then
+            ui.tooltipLine(L("Общая попытка для этих противников — отдельно для каждого персонажа"), 1, 1, 1, true)
+        end
         GameTooltip:Show()
     end
     local inset = sourceButton.pagerInset or 0
@@ -990,7 +999,7 @@ local function selectMount(mount, queryChanged)
         GameTooltip:Hide()
         locationIndex = 1
         if searchQuery.key ~= "" and mount and mount.locations then
-            for i, loc in ipairs(atlas.mountLocations(mount)) do
+            for i, loc in ipairs(atlas.mountLocations(mount, UnitGUID("player"))) do
                 if atlas.matchesSearch(atlas.searchKey(loc.boss .. " " .. loc.place), searchQuery) then
                     locationIndex = i
                     break

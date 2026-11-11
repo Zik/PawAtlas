@@ -1,5 +1,5 @@
 local addonName, atlas = ...
-local L = atlas.L
+local L, ui = atlas.L, atlas.ui
 
 function atlas.gameTooltipsEnabled()
     local db = MountAtlasAccountDB
@@ -72,6 +72,29 @@ end
 
 -- Source links are static. The live journal supplies names and collection state.
 local byItem, byNPC = buildIndexes()
+local function rewardLabel(id, fallback)
+    local item = atlas.lootItems and atlas.lootItems[id]
+    local stages = atlas.attemptStages and atlas.attemptStages[id]
+    local reward = stages and stages.reward
+    local itemID = reward and reward.item or item and item.item
+    if itemID and C_Item and C_Item.GetItemInfo then
+        local name, link = C_Item.GetItemInfo(itemID)
+        if readable(link) and type(link) == "string" and link ~= "" then return link end
+        if readable(name) and type(name) == "string" and name ~= "" then return ui.safeText(name) end
+    end
+    return ui.safeText(atlas.displayName(fallback))
+end
+
+local function attemptText(id)
+    local mount = atlas.mountByID(id)
+    if not mount or not atlas.dropProbability then return "" end
+    local chance, _, attempts = atlas.dropProbability(mount)
+    if not readable(chance) or type(chance) ~= "number" or chance <= 0 or chance > 1
+        or not readable(attempts) or type(attempts) ~= "number" or attempts < 0 or attempts >= math.huge then return "" end
+    local rate = 1 / chance
+    if rate >= math.huge then return "" end
+    return " " .. ui.safeText(L("(%d/%s попыток)", math.floor(attempts), ("%.10g"):format(rate)))
+end
 
 local function canAppend(tooltip, data)
     if not atlas.gameTooltipsEnabled() or appended[tooltip] then return false end
@@ -104,16 +127,16 @@ local function appendMounts(tooltip, ids, directID)
         if atlas.isExcludedJournalMount(id, name, spell, collected) then return end
         count = count + 1
         if count > maxMounts then return end
-        if count == 1 then
-            appended[tooltip] = true
-            tooltip:AddLine(addonName, 0.88, 0.72, 0.42)
-        end
+        appended[tooltip] = true
         local status
         if collected == true then status = L("В коллекции")
         elseif atlas.isPlanned({ id = id }, atlas.activePlanID()) then status = L("В плане") end
-        local label = atlas.displayName(name)
-        if status then label = label .. " · " .. status end
-        tooltip:AddLine(label, 1, 1, 1, true)
+        local label = rewardLabel(id, name)
+        local prefix = count == 1 and ("|cffe0b86b" .. addonName .. ":|r ") or ""
+        tooltip:AddLine(prefix .. label .. (collected == true and "" or attemptText(id)), 1, 1, 1, true)
+        if status then
+            tooltip:AddLine(ui.safeText(status), 1, collected == true and .2 or .82, collected == true and .2 or .44, true)
+        end
     end
     if directID then appendMount(directID) end
     if ids then

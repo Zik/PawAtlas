@@ -8,21 +8,21 @@ local function complete(state) return state == "attempt" or state == "boss" end
 local located = atlas.hasSourceCoordinates
 
 local function indexProgress(mount, guid)
-    local progress, byKey = atlas.planOpportunityProgress(mount, guid), {}
+    local progress, unknown = atlas.planOpportunityProgress(mount, guid)
+    local byKey = {}
     for _, entry in ipairs(progress and progress.entries or {}) do byKey[entry.key] = entry.state end
-    if not progress and atlas.lootFrequency(mount) == "repeatable" then byKey.fallback = "available" end
-    return byKey, progress
+    if not progress and not unknown and atlas.lootFrequency(mount) == "repeatable" then byKey.fallback = "available" end
+    return byKey, progress, unknown
 end
 
 -- A row is a named source, not a coordinate or an extra loot opportunity.
 -- Shared locks keep one key even when several NPCs can supply the same reward.
-local function sources(mount, progress)
+local function sources(mount, groups, points)
     local rows, bySource, byNPC, covered = {}, {}, {}, {}
-    local groups = progress and progress.entries or {}
     for _, entry in ipairs(groups) do
         for _, npc in ipairs(entry.npcs) do byNPC[npc] = entry.key end
     end
-    for _, point in ipairs(atlas.mountLocations(mount)) do
+    for _, point in ipairs(points) do
         local key = byNPC[point.npc] or (not point.npc and #groups == 1 and groups[1].key or nil)
         -- Verified aliases can share a lock and a source name. Keep faction
         -- alternatives with different names separate, not duplicate aliases.
@@ -93,14 +93,24 @@ function atlas.makePlannerSources(parent)
     local function currentState(item)
         return (item.key and currentStates[item.key]) or currentStates.fallback or "unknown"
     end
+    local function compatible(item, guid)
+        return not item.point or atlas.sourceAvailableToCharacter(item.point.npc, guid) == true
+    end
+    local function navigable(point)
+        local faction = UnitFactionGroup and UnitFactionGroup("player")
+        local requiredFaction = pointFactions[point.condition]
+        return located(point) and atlas.sourceAvailableToCharacter(point.npc, current) == true
+            and (not requiredFaction or requiredFaction == faction)
+    end
+    local function waypointPoint(item)
+        for _, point in ipairs(item.points or {}) do if navigable(point) then return point end end
+    end
     local function waypointPoints()
         local points = {}
-        local faction = UnitFactionGroup and UnitFactionGroup("player")
         for _, item in ipairs(list.items) do
             if item.points and not complete(currentState(item)) then
                 for _, point in ipairs(item.points) do
-                    local requiredFaction = pointFactions[point.condition]
-                    if located(point) and (not requiredFaction or requiredFaction == faction) then
+                    if navigable(point) then
                         points[#points + 1] = point
                     end
                 end
@@ -135,14 +145,22 @@ function atlas.makePlannerSources(parent)
         local state = currentState(item)
         if complete(state) then
             return (UnitName("player") or "") .. " · " .. L(labels[state])
-        elseif not located(item.point) then return L("Точная точка неизвестна.")
-        else return L("Поставить метку · %.1f, %.1f", item.point.x * 100, item.point.y * 100) end
+        elseif not compatible(item, current) or atlas.sourceAvailableToCharacter(item.point and item.point.npc, current) == nil then
+            return L("Нет данных")
+        else
+            local point = waypointPoint(item)
+            return point and L("Поставить метку · %.1f, %.1f", point.x * 100, point.y * 100)
+                or L("Точная точка неизвестна.")
+        end
     end
     local function focus(item)
         focused = item
         rosterTitle:SetText(atlas.displayName(item.name or mount.boss))
         for _, row in ipairs(list.rows) do row.selected:SetShown(row.item == item) end
-        roster.items = characters
+        roster.items = {}
+        for _, character in ipairs(characters) do
+            if compatible(item, character.guid) then roster.items[#roster.items + 1] = character end
+        end
         roster:redraw()
         footer:SetText(feedback(item))
     end
@@ -177,8 +195,13 @@ function atlas.makePlannerSources(parent)
     end
     function list:render(row, item)
         row.selected:SetShown(item == focused)
-        local done = 0
-        for _, character in ipairs(characters) do if complete(stateFor(item, character)) then done = done + 1 end end
+        local done, total = 0, 0
+        for _, character in ipairs(characters) do
+            if compatible(item, character.guid) then
+                total = total + 1
+                if complete(stateFor(item, character)) then done = done + 1 end
+            end
+        end
         local state = selectedGUID and stateFor(item, { guid = selectedGUID }) or currentState(item)
         local used = complete(state)
         ui.setIcon(row.mark, used and (item.shared and "Lock" or "ObjectiveComplete") or "Rare")
@@ -187,31 +210,43 @@ function atlas.makePlannerSources(parent)
         row.place:SetText(atlas.displayName(item.place or mount.place))
         row.name:SetTextColor(unpack(used and ui.muted or ui.paper))
         row.status:SetText(not selectedGUID and item.shared and "" or (selectedGUID or not item.key) and L(labels[state] or labels.unknown)
-            or L("Выполнено: %d / %d", done, #characters))
+            or L("Выполнено: %d / %d", done, total))
         row.status:SetTextColor(unpack(used and ui.mint or ui.muted))
     end
     function overlay:refresh()
         if not mount then return end
         current = UnitGUID("player")
-        local progress
-        currentStates, progress = indexProgress(mount, current)
+        currentStates = indexProgress(mount, current)
         characters, snapshots = {}, {}
-        local count, total = 0, 0
+        local count, total, unknown = 0, 0, false
+        local groups, byKey, points = {}, {}, {}
         local selectedLabel = L("Весь отряд")
         for _, character in ipairs(atlas.accountCharacters()) do
             if not selectedGUID or selectedGUID == character.guid then
                 characters[#characters + 1] = character
-                local states, saved = indexProgress(mount, character.guid)
+                local states, saved, missing = indexProgress(mount, character.guid)
                 snapshots[character.guid] = states
+                unknown = unknown or missing
                 if saved then count = count + saved.completedAttempts; total = total + saved.totalAttempts end
+                for _, entry in ipairs(saved and saved.entries or {}) do
+                    if not byKey[entry.key] then groups[#groups + 1], byKey[entry.key] = entry, true end
+                end
                 if selectedGUID then selectedLabel = character.name .. " · " .. character.realm end
             end
         end
+        for _, point in ipairs(atlas.mountLocations(mount, selectedGUID)) do
+            for _, character in ipairs(characters) do
+                if atlas.sourceAvailableToCharacter(point.npc, character.guid) == true then
+                    points[#points + 1] = point
+                    break
+                end
+            end
+        end
         title:SetText(atlas.displayName(mount.name))
-        summary:SetText(selectedLabel .. "   /   " .. (total > 0 and L("Выполнено: %d / %d", count, total)
+        summary:SetText(selectedLabel .. "   /   " .. (unknown and L("Нет данных") or total > 0 and L("Выполнено: %d / %d", count, total)
             or L(currentStates.fallback and "Можно идти" or "Нет данных")))
         local previous = focused and focused.identity
-        list.items = sources(mount, progress)
+        list.items = sources(mount, groups, points)
         local sharedKey = #list.items > 1 and list.items[1].shared and list.items[1].key
         for _, item in ipairs(list.items) do
             if item.key ~= sharedKey then sharedKey = nil; break end
@@ -238,8 +273,9 @@ function atlas.makePlannerSources(parent)
         for _, updated in ipairs(self.items) do
             if updated.identity == item.identity then
                 focus(updated)
-                if not complete(currentState(updated)) and located(updated.point) then
-                    footer:SetText(atlas.openSource({}, updated.point) or "")
+                local point = waypointPoint(updated)
+                if not complete(currentState(updated)) and point then
+                    footer:SetText(atlas.openSource({}, point) or "")
                 end
                 break
             end

@@ -9,7 +9,7 @@
 ## Category: Collections
 ## Category-ruRU: Коллекции отряда
 ## IconTexture: Interface\AddOns\PawAtlas\Media\Brand\MountAtlasHeader.tga
-## Version: 0.2.1
+## Version: 0.2.2
 ## SavedVariablesPerCharacter: MountAtlasDB
 ## SavedVariables: MountAtlasAccountDB
 Libs/LibStub/LibStub.lua
