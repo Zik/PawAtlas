@@ -219,6 +219,158 @@ for _, legacyName in ipairs({ "Личный план", "Personal plan" }) do
     assert(atlas.deletePlanProfile(legacy) and atlas.selectPlan(activeBeforeCreate))
 end
 
+do
+    local originalCreateFrame, originalUI, originalL = CreateFrame, atlas.ui, atlas.L
+    local originalPreview = atlas.previewPlanImport
+    local edits, labels, buttons, previewCalls = {}, {}, {}, 0
+    local methods = {}
+    for _, method in ipairs({ "SetToplevel", "EnableMouse", "Raise", "SetPoint", "ClearAllPoints",
+        "SetMultiLine", "SetAutoFocus", "SetTextColor", "SetMaxLetters", "SetMaxLines", "HighlightText",
+        "SetAlpha", "setActive", "SetVertexColor" }) do methods[method] = function() end end
+    function methods:GetParent() return self.parent end
+    function methods:SetFrameLevel(value) self.level = value end
+    function methods:GetFrameLevel() return self.level or 1 end
+    function methods:SetScript(event, callback) self.scripts[event] = callback end
+    function methods:GetScript(event) return self.scripts[event] end
+    function methods:SetShown(value)
+        if self.shown == value then return end
+        self.shown = value
+        if not value and self.scripts.OnHide then self.scripts.OnHide(self) end
+    end
+    function methods:Show() self:SetShown(true) end
+    function methods:Hide() self:SetShown(false) end
+    function methods:IsShown() return self.shown end
+    function methods:IsVisible() return self.shown and (not self.parent or self.parent:IsVisible()) end
+    function methods:SetSize(width, height) self.width, self.height = width, height end
+    function methods:SetWidth(value) self.width = value end
+    function methods:SetHeight(value) self.height, self.heightWrites = value, (self.heightWrites or 0) + 1 end
+    function methods:GetHeight() return self.height end
+    function methods:SetScrollChild(value) self.child = value end
+    function methods:GetVerticalScroll() return self.scroll or 0 end
+    function methods:SetVerticalScroll(value) self.scroll = value end
+    function methods:GetText() return self.text or "" end
+    function methods:SetText(value)
+        self.text = value
+        if self.scripts.OnTextChanged then self.scripts.OnTextChanged(self, false) end
+    end
+    function methods:SetFocus() self.focused = true end
+    function methods:ClearFocus() self.focused = false end
+    function methods:SetEnabled(value) self.enabled = value end
+    local function widget(kind, parent)
+        local object = setmetatable({ parent = parent, scripts = {}, shown = true }, { __index = methods })
+        if kind == "EditBox" then edits[#edits + 1] = object end
+        return object
+    end
+    CreateFrame = function(kind, _, parent) return widget(kind, parent) end
+    atlas.ui = {
+        gold = {}, paper = {}, muted = {}, setFont = function() end, fieldSurface = function() end,
+        place = function(object, _, x, y, width, height)
+            object.x, object.y = x, y
+            object:SetSize(width, height)
+            return object
+        end,
+        surface = function()
+            local surface = {}
+            for index = 1, 9 do surface[index] = widget("Texture") end
+            return surface
+        end,
+        text = function(parent, x, y, _, _, _, text)
+            local label = widget("FontString", parent)
+            label.x, label.y, label.text = x, y, text
+            labels[#labels + 1] = label
+            return label
+        end,
+        action = function(parent, _, _, _, _, text, _, callback)
+            local button = widget("Button", parent)
+            button.click = callback
+            buttons[text] = button
+            return button
+        end,
+    }
+    atlas.L = function(text, ...) return string.format(text, ...) end
+    atlas.previewPlanImport = function(value)
+        previewCalls = previewCalls + 1
+        return originalPreview(value)
+    end
+    assert(loadfile("UI/PlanSharing.lua"))("PawAtlas", atlas)
+    local window = widget("Frame")
+    local parent = widget("Frame", window)
+    local changed, summary = 0
+    local dialog = atlas.makePlanSharing(parent, function() changed = changed + 1 end)
+    for _, label in ipairs(labels) do if label.y == 237 then summary = label end end
+    assert(summary and #edits == 4 and #timers == 0)
+    local code, input, name = edits[1], edits[2], edits[3]
+    local function notify() input:GetScript("OnTextChanged")(input, false) end
+    local function rename(value)
+        name.text = value
+        name:GetScript("OnTextChanged")(name, true)
+    end
+    local function openImport()
+        dialog:open({ id = "personal", name = "Личный план" })
+        assert(code:GetText() == atlas.exportPlan("personal"))
+        buttons["Импорт"].click()
+    end
+    openImport()
+    input:SetText(payload("3", "Предложенное"))
+    for _ = 1, 5 do notify() end
+    assert(#timers == 1 and not buttons["Импортировать"].enabled and summary:GetText() == "",
+        "identical layout notifications must preserve the pending validation timer")
+    runTimer()
+    assert(previewCalls == 1 and buttons["Импортировать"].enabled and summary:GetText() ~= "")
+    rename("Мой импорт")
+    local validSummary = summary:GetText()
+    for _ = 1, 5 do notify() end
+    assert(#timers == 0 and previewCalls == 1 and buttons["Импортировать"].enabled
+        and summary:GetText() == validSummary and name:GetText() == "Мой импорт",
+        "identical notifications must preserve a valid preview and a manually edited name")
+
+    input:SetText(payload("3", "Устаревшее"))
+    input:SetText(export)
+    assert(#timers == 2 and summary:GetText() == "" and not buttons["Импортировать"].enabled)
+    table.remove(timers, 1)()
+    assert(previewCalls == 1 and summary:GetText() == "" and not buttons["Импортировать"].enabled,
+        "a changed input must cancel the older validation")
+    runTimer()
+    local expected = assert(originalPreview(export))
+    assert(previewCalls == 2 and #expected.ids > 0 and buttons["Импортировать"].enabled
+        and name:GetText() == "Мой импорт", "personal-plan exports validate without overwriting a manual name")
+    local beforeDialogImport, previousActive = personalBytes(), atlas.activePlanID()
+    buttons["Импортировать"].click()
+    local dialogProfile = atlas.activePlanID()
+    assert(dialogProfile ~= previousActive and entries[dialogProfile].name == "Мой импорт"
+        and #atlas.planTargets(false, dialogProfile) == #expected.ids and changed == 1,
+        "the dialog imports an own personal-plan export as a named separate profile")
+    assert(personalBytes() == beforeDialogImport and db.plan == personalPlan and db.planOrder == personalOrder)
+    assert(atlas.deletePlanProfile(dialogProfile) and atlas.selectPlan(previousActive))
+
+    local beforeReopen = previewCalls
+    openImport()
+    input:SetText(export)
+    rename("Повторный импорт")
+    dialog:Hide()
+    dialog:Show()
+    buttons["Импорт"].click()
+    assert(#timers == 2, "reopening the same input must schedule a fresh validation")
+    table.remove(timers, 1)()
+    assert(previewCalls == beforeReopen, "a hidden dialog's pending timer must remain stale after reopening")
+    runTimer()
+    assert(previewCalls == beforeReopen + 1 and buttons["Импортировать"].enabled and summary:GetText() ~= ""
+        and name:GetText() == "Повторный импорт", "the same string revalidates when the import dialog reopens")
+
+    local scroll, cursor = input:GetParent(), input:GetScript("OnCursorChanged")
+    scroll:SetVerticalScroll(100)
+    local heightWrites = input.heightWrites or 0
+    cursor(input, 0, -110, 1, 15)
+    assert(scroll:GetVerticalScroll() == 100, "a visible caret must not reset the current scroll position")
+    cursor(input, 0, -60, 1, 15)
+    assert(scroll:GetVerticalScroll() == 60, "a caret above the viewport scrolls upward")
+    cursor(input, 0, -160, 1, 15)
+    assert(scroll:GetVerticalScroll() == 175 - scroll:GetHeight(), "a caret below the viewport scrolls downward")
+    assert((input.heightWrites or 0) == heightWrites, "caret movement must not resize the multiline edit box")
+    dialog:Hide()
+    CreateFrame, atlas.ui, atlas.L, atlas.previewPlanImport = originalCreateFrame, originalUI, originalL, originalPreview
+end
+
 for _ = 2, 20 do assert(atlas.importPlan(payload("3"))) end
 assert(#atlas.planProfiles() == 21 and select(2, atlas.importPlan(payload("3"))) == "profiles_limit")
 assert(select(2, atlas.createPlan("Лимит")) == "profiles_limit")
@@ -227,4 +379,4 @@ store.version = 99
 assert(atlas.activePlanID() == "personal" and select(2, atlas.importPlan(payload("3"))) == "profiles_version")
 assert(db.planProfiles == store and store.version == 99)
 assert(select(2, atlas.createPlan("Версия")) == "profiles_version" and db.planProfiles == store)
-print("PawAtlas plan sharing passed: isolated profiles, ordered transfer, revalidation, limits and acquisition")
+print("PawAtlas plan sharing passed: isolated profiles, dialog validation, ordered transfer, revalidation, limits and acquisition")

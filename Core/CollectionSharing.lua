@@ -9,6 +9,7 @@ local maxChunks = math.ceil(maxSnapshotSize / chunkSize)
 local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 local scopes = {
     CHAT_MSG_WHISPER = "whisper",
+    CHAT_MSG_BN_WHISPER = "bnwhisper",
     CHAT_MSG_PARTY = "party", CHAT_MSG_PARTY_LEADER = "party",
     CHAT_MSG_RAID = "raid", CHAT_MSG_RAID_LEADER = "raid",
     CHAT_MSG_GUILD = "guild",
@@ -16,8 +17,9 @@ local scopes = {
 }
 local draft, published, incoming, outgoing
 local sequence = 0
+local bnRoutes = {}
 
-local channels = { WHISPER = "whisper", PARTY = "party", RAID = "raid", GUILD = "guild",
+local channels = { WHISPER = "whisper", BN_WHISPER = "bnwhisper", PARTY = "party", RAID = "raid", GUILD = "guild",
     SAY = "public", YELL = "public", CHANNEL = "public" }
 
 local function readable(value)
@@ -45,6 +47,44 @@ local function sameIdentity(first, second)
     if not first or not second then return false end
     if strcmputf8i then return strcmputf8i(first, second) == 0 end
     return first:lower() == second:lower()
+end
+
+local function validID(value)
+    return readable(value) and type(value) == "number" and value > 0
+        and value < 2 ^ 53 and value == math.floor(value)
+end
+
+local function bnGameOwner(info)
+    if type(info) ~= "table" or not readable(info.isOnline) or info.isOnline ~= true
+        or not readable(info.clientProgram) or info.clientProgram ~= BNET_CLIENT_WOW
+        or not readable(info.wowProjectID) or info.wowProjectID ~= WOW_PROJECT_ID
+        or not validID(info.gameAccountID) or not readable(info.realmName)
+        or type(info.realmName) ~= "string" or info.realmName == "" then return end
+    return identity(info.characterName, (info.realmName:gsub("%s", "")))
+end
+
+-- Chat whispers identify a Battle.net account; addon data addresses a game account.
+-- Resolve only that friend's online Retail sessions, never a display name or BattleTag.
+local function bnGames(accountID)
+    if not validID(accountID) or not C_BattleNet or not C_BattleNet.SendGameData
+        or not C_BattleNet.GetFriendAccountInfo or not C_BattleNet.GetFriendNumGameAccounts
+        or not C_BattleNet.GetFriendGameAccountInfo or not BNGetNumFriends
+        or not BNET_CLIENT_WOW or not WOW_PROJECT_ID then return end
+    local count = BNGetNumFriends()
+    if not readable(count) or type(count) ~= "number" then return end
+    for index = 1, math.min(count, 1000) do
+        local account = C_BattleNet.GetFriendAccountInfo(index)
+        if account and readable(account.bnetAccountID) and account.bnetAccountID == accountID then
+            local games, total = {}, C_BattleNet.GetFriendNumGameAccounts(index)
+            if not readable(total) or type(total) ~= "number" then return end
+            for slot = 1, math.min(total, 100) do
+                local info = C_BattleNet.GetFriendGameAccountInfo(index, slot)
+                local owner = bnGameOwner(info)
+                if owner then games[("bn:%.0f"):format(info.gameAccountID)] = owner end
+            end
+            return next(games) and games or nil
+        end
+    end
 end
 
 local function findMarker(message, name)
@@ -77,7 +117,14 @@ end
 
 local function send(owner, text)
     if not canSend() then return false end
-    local result = C_ChatInfo.SendAddonMessage(prefix, text, "WHISPER", owner)
+    local gameID = owner:match("^bn:(%d+)$")
+    local result
+    if gameID then
+        if not C_BattleNet or not C_BattleNet.SendGameData then return false end
+        result = C_BattleNet.SendGameData(tonumber(gameID), prefix, text)
+    else
+        result = C_ChatInfo.SendAddonMessage(prefix, text, "WHISPER", owner)
+    end
     return readable(result) and result == Enum.SendAddonMessageResult.Success
 end
 
@@ -131,6 +178,7 @@ end
 
 local function audience(scope, target)
     if scope == "whisper" then return target and { [target] = true } end
+    if scope == "bnwhisper" then return bnGames(target) end
     if scope == "public" then return {} end
     local members = {}
     if scope == "guild" then
@@ -204,9 +252,14 @@ local function reply(owner, nonce)
     nextChunk()
 end
 
-local function receive(message, sender)
+local function receive(message, sender, battleNet)
     if not chatAccessible() or not readable(message) or type(message) ~= "string" or #message > 255 then return end
-    local owner = identity(sender)
+    local owner
+    if battleNet then
+        if validID(sender) then owner = ("bn:%.0f"):format(sender) end
+    else
+        owner = identity(sender)
+    end
     if not owner or owner == playerIdentity() then return end
     local nonce = message:match("^Q:(%d+)$")
     if nonce then
@@ -214,7 +267,7 @@ local function receive(message, sender)
         return
     end
     local request = incoming
-    if not request or request.owner ~= owner then return end
+    if not request or request.peer ~= owner then return end
     local token, index, total, data = message:match("^D:(%d+):(%d%d?):(%d%d?):([%w_-]*)$")
     if token ~= request.nonce then return end
     index, total = tonumber(index), tonumber(total)
@@ -233,7 +286,7 @@ local function receive(message, sender)
     request.chunks[index] = data
     request.received = request.received + 1
     if request.received == total then
-        finish(request, decodeSnapshot(owner, table.concat(request.chunks)))
+        finish(request, decodeSnapshot(request.owner, table.concat(request.chunks)))
     end
 end
 
@@ -253,18 +306,25 @@ function atlas.shareCollectionLink()
     if focused and focused.HasFocus and focused:HasFocus() then
         local window = focused.GetParent and focused:GetParent()
         if not focused.IsVisible or not focused:IsVisible() or not window or window.type ~= "whisper" then return false end
-        chat, chatType, recipient = focused, "WHISPER", window.theUser
+        chat, chatType = focused, window.isBN and "BN_WHISPER" or "WHISPER"
+        recipient = window.isBN and window.bn and window.bn.id or window.theUser
     else
         chat = ChatFrameUtil and ChatFrameUtil.GetActiveWindow and ChatFrameUtil.GetActiveWindow()
         if chat and chat.GetChatType then chatType = chat:GetChatType() end
-        if chatType == "WHISPER" and chat.GetTellTarget then recipient = chat:GetTellTarget() end
+        if (chatType == "WHISPER" or chatType == "BN_WHISPER") and chat.GetTellTarget then
+            recipient = chat:GetTellTarget()
+            if chatType == "BN_WHISPER" then
+                if not readable(recipient) or type(recipient) ~= "string" or not BNet_GetBNetIDAccount then return false end
+                recipient = BNet_GetBNetIDAccount(recipient)
+            end
+        end
     end
     local _, name = playerIdentity()
     if not chat or not name or not chat.Insert or not chat.GetText then return false end
     if not atlas.collectionShareChannelSupported(chatType) then return false end
     local scope = channels[chatType]
-    local target = scope == "whisper" and identity(recipient)
-    if sameIdentity(target, playerIdentity()) or not audience(scope, target) then return false end
+    local target = scope == "bnwhisper" and recipient or (scope == "whisper" and identity(recipient))
+    if (scope == "whisper" and sameIdentity(target, playerIdentity())) or not audience(scope, target) then return false end
     chat:Insert("[PawAtlas-" .. name .. "]")
     if not findMarker(chat:GetText(), name) then return false end
     draft = { expires = GetTime() + shareDuration, scope = scope, target = target }
@@ -273,7 +333,16 @@ end
 
 function atlas.requestSharedCollection(owner, callback)
     assert(type(callback) == "function", "Expected a collection callback")
-    owner = identity(owner)
+    local route = readable(owner) and type(owner) == "string" and bnRoutes[owner]
+    local peer
+    if route then
+        local games = GetTime() < route.expires and bnGames(route.accountID)
+        if not games or not sameIdentity(games[route.peer], route.owner) then callback(nil); return false end
+        owner, peer = route.owner, route.peer
+    else
+        owner = identity(owner)
+        peer = owner
+    end
     if sameIdentity(owner, playerIdentity()) then
         local encoded = encodeSnapshot()
         local snapshot = encoded and decodeSnapshot(playerIdentity(), encoded)
@@ -286,12 +355,12 @@ function atlas.requestSharedCollection(owner, callback)
     end
     sequence = sequence + 1
     local nonce = ("%d%06d"):format(GetServerTime(), sequence % 1000000)
-    local request = { owner = owner, callback = callback, nonce = nonce, chunks = {}, received = 0 }
+    local request = { owner = owner, peer = peer, callback = callback, nonce = nonce, chunks = {}, received = 0 }
     local previous = incoming
     incoming = request
     if previous then previous.callback(nil) end
     if incoming ~= request then return false end
-    if not send(owner, "Q:" .. nonce) then
+    if not send(peer, "Q:" .. nonce) then
         finish(request)
         return false
     end
@@ -302,7 +371,32 @@ end
 local function displayLink(_, event, message, sender, ...)
     if not chatAccessible() then return end
     local owner, name
-    if event == "CHAT_MSG_WHISPER_INFORM" then owner, name = playerIdentity()
+    if event == "CHAT_MSG_WHISPER_INFORM" or event == "CHAT_MSG_BN_WHISPER_INFORM" then
+        owner, name = playerIdentity()
+    elseif event == "CHAT_MSG_BN_WHISPER" then
+        if not readable(message) or type(message) ~= "string" or #message > 1024
+            or not message:find("[PawAtlas-", 1, true) then return end
+        local accountID = select(11, ...)
+        local games = bnGames(accountID)
+        local selectedPeer
+        for peer, character in pairs(games or {}) do
+            local _, characterName = identity(character)
+            if findMarker(message, characterName) then
+                -- Two sessions with the same character name cannot identify the sender.
+                if owner then return end
+                owner, name, selectedPeer = character, characterName, peer
+            end
+        end
+        if owner then
+            local now = GetTime()
+            for token, route in pairs(bnRoutes) do
+                if now >= route.expires then bnRoutes[token] = nil end
+            end
+            local token = owner .. "~BN" .. selectedPeer:sub(4)
+            bnRoutes[token] = { owner = owner, peer = selectedPeer, accountID = accountID,
+                expires = now + shareDuration }
+            owner = token
+        end
     else owner, name = identity(sender) end
     if not owner then return end
     local first, last = findMarker(message, name)
@@ -312,10 +406,10 @@ local function displayLink(_, event, message, sender, ...)
     return false, message:sub(1, first - 1) .. link .. message:sub(last + 1), sender, ...
 end
 
-frame:SetScript("OnEvent", function(_, event, message, sender, channel, author)
-    if event == "CHAT_MSG_ADDON" then
+frame:SetScript("OnEvent", function(_, event, message, sender, channel, author, ...)
+    if event == "CHAT_MSG_ADDON" or event == "BN_CHAT_MSG_ADDON" then
         if readable(message) and readable(channel) and message == prefix and channel == "WHISPER" then
-            receive(sender, author)
+            receive(sender, author, event == "BN_CHAT_MSG_ADDON")
         end
         return
     end
@@ -326,7 +420,10 @@ frame:SetScript("OnEvent", function(_, event, message, sender, channel, author)
     local scope = scopes[event]
     if event == "CHAT_MSG_WHISPER_INFORM" then
         scope = "whisper"
-    elseif scope == "whisper" or target ~= self then return end
+    elseif event == "CHAT_MSG_BN_WHISPER_INFORM" then
+        scope, target = "bnwhisper", select(9, ...)
+        if not validID(target) or target ~= draft.target then return end
+    elseif scope == "whisper" or scope == "bnwhisper" or target ~= self then return end
     if scope ~= draft.scope or (scope == "whisper" and not sameIdentity(target, draft.target)) then return end
     draft = nil
     local recipients = audience(scope, target)
@@ -347,15 +444,19 @@ if C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix and Enum
     if result == Enum.RegisterAddonMessagePrefixResult.Success then
         registered = true
         frame:RegisterEvent("CHAT_MSG_ADDON")
+        frame:RegisterEvent("BN_CHAT_MSG_ADDON")
         frame:RegisterEvent("CHAT_MSG_WHISPER_INFORM")
+        frame:RegisterEvent("CHAT_MSG_BN_WHISPER_INFORM")
         ChatFrameUtil.AddMessageEventFilter("CHAT_MSG_WHISPER_INFORM", displayLink)
+        ChatFrameUtil.AddMessageEventFilter("CHAT_MSG_BN_WHISPER_INFORM", displayLink)
         for event, scope in pairs(scopes) do
-            if scope ~= "whisper" then frame:RegisterEvent(event) end
+            if scope ~= "whisper" and scope ~= "bnwhisper" then frame:RegisterEvent(event) end
             ChatFrameUtil.AddMessageEventFilter(event, displayLink)
         end
         LinkUtil.RegisterLinkHandler(linkType, function(_, _, data, context)
             if context.button == "LeftButton" and atlas.openSharedCollection then
-                local owner = identity(data.options)
+                local owner = readable(data.options) and type(data.options) == "string"
+                    and bnRoutes[data.options] and data.options or identity(data.options)
                 if owner then atlas.openSharedCollection(owner) end
             end
             return LinkProcessorResponse.Handled

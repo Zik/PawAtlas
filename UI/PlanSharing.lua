@@ -5,7 +5,9 @@ function atlas.makePlanSharing(parent, changed)
     local window = parent:GetParent()
     local overlay = ui.place(CreateFrame("Frame", "MountAtlasPlanSharing", parent), window, 12, 96, 1016, 478)
     overlay:SetFrameLevel(parent:GetFrameLevel() + 45)
+    overlay:SetToplevel(true)
     overlay:EnableMouse(true)
+    overlay:Hide()
     for _, texture in ipairs(ui.surface(overlay, 0, 0, 1016, 478, false, "RoundedFill")) do
         texture:SetVertexColor(0, 0, 0, .65)
     end
@@ -33,26 +35,33 @@ function atlas.makePlanSharing(parent, changed)
     local profile, revision, editedName = nil, 0, false
 
     local function makeEdit(owner, x, y, width, height, multiline)
-        ui.fieldSurface(owner, x, y, width, height)
-        local holder = owner
+        local field = ui.place(CreateFrame("Frame", nil, owner), owner, x, y, width, height)
+        ui.fieldSurface(field, 0, 0, width, height)
+        field:EnableMouse(true)
+        local holder = field
         if multiline then
-            holder = ui.place(CreateFrame("ScrollFrame", nil, owner), owner, x + 10, y + 7, width - 20, height - 14)
+            holder = ui.place(CreateFrame("ScrollFrame", nil, field), field, 10, 7, width - 20, height - 14)
         end
-        local edit = CreateFrame("EditBox", nil, holder)
+        local edit = CreateFrame("EditBox", nil, holder, "InputBoxScriptTemplate")
         if multiline then
             edit:SetMultiLine(true)
             edit:SetSize(width - 20, height - 14)
             holder:SetScrollChild(edit)
             edit:SetScript("OnCursorChanged", function(self, _, cursorY, _, lineHeight)
-                local bottom = math.max(0, -cursorY) + lineHeight
+                local top = math.max(0, -cursorY)
                 local visible = holder:GetHeight()
-                self:SetHeight(math.max(visible, bottom))
-                holder:SetVerticalScroll(math.max(0, bottom - visible))
+                local offset = holder:GetVerticalScroll()
+                if top < offset then holder:SetVerticalScroll(top)
+                elseif top + lineHeight > offset + visible then
+                    holder:SetVerticalScroll(math.max(0, top + lineHeight - visible))
+                end
             end)
         else
-            ui.place(edit, owner, x + 10, y, width - 20, height)
+            ui.place(edit, field, 10, 0, width - 20, height)
         end
         edit:SetAutoFocus(false)
+        field:SetScript("OnMouseDown", function() edit:SetFocus() end)
+        edit:SetScript("OnHide", function(self) self:ClearFocus() end)
         ui.setFont(edit, 15)
         edit:SetTextColor(unpack(ui.paper))
         edit:SetScript("OnEscapePressed", function() overlay:Hide() end)
@@ -61,6 +70,7 @@ function atlas.makePlanSharing(parent, changed)
 
     local exportHint = ui.text(export, 22, 101, 516, 30, 15, "Ctrl+C — скопировать", ui.muted)
     local code = makeEdit(export, 22, 135, 516, 40)
+    code:SetAutoFocus(true)
     local exportValue = ""
     local function selectExport(self)
         self:SetFocus()
@@ -86,12 +96,15 @@ function atlas.makePlanSharing(parent, changed)
 
     ui.text(import, 22, 97, 516, 26, 15, "Вставь строку плана", ui.muted)
     local input = makeEdit(import, 22, 125, 516, 62, true)
+    input:SetAutoFocus(true)
     -- Leave one extra character so an oversized paste cannot become valid by truncation.
     local inputLimit = 32769
     input:SetMaxLetters(inputLimit)
     ui.text(import, 22, 197, 154, 34, 15, "Название плана", ui.muted)
     local name = makeEdit(import, 179, 197, 359, 34)
     name:SetMaxLetters(48)
+    input.nextEditBox, input.previousEditBox = name, name
+    name.nextEditBox, name.previousEditBox = input, input
     local summary = ui.text(import, 22, 237, 516, 26, 14, "", ui.gold)
     local confirmImport = ui.action(import, 370, 264, 168, 32, "Импортировать", nil, function()
         local id, count = atlas.importPlan(input:GetText(), name:GetText())
@@ -112,7 +125,7 @@ function atlas.makePlanSharing(parent, changed)
         confirmImport:SetEnabled(enabled)
         confirmImport:SetAlpha(enabled and 1 or .5)
     end
-    local importName
+    local importName, lastInputValue
     local function updateImportEnabled()
         setImportEnabled(importName ~= nil and (importName ~= "" or name:GetText():find("%S") ~= nil))
     end
@@ -121,8 +134,12 @@ function atlas.makePlanSharing(parent, changed)
         updateImportEnabled()
     end)
     input:SetScript("OnTextChanged", function(self)
+        local value = self:GetText()
+        -- Layout notifications must not restart validation of unchanged text.
+        if value == lastInputValue then return end
+        lastInputValue = value
         revision = revision + 1
-        local expected, value = revision, self:GetText()
+        local expected = revision
         importName = nil
         setImportEnabled(false)
         if not editedName then name:SetText("") end
@@ -153,6 +170,7 @@ function atlas.makePlanSharing(parent, changed)
     end)
     ui.text(create, 22, 62, 144, 34, 15, "Название плана", ui.muted)
     local createName = makeEdit(create, 169, 62, 229, 34)
+    createName:SetAutoFocus(true)
     createName:SetMaxLetters(48)
     local createError = ui.text(create, 22, 98, 376, 20, 12, "Не удалось создать план", ui.gold)
     createError:Hide()
@@ -200,6 +218,7 @@ function atlas.makePlanSharing(parent, changed)
         if exporting and not exportError:IsShown() then code:SetFocus() end
         if creating then createName:SetFocus() end
         if mode == "import" then
+            lastInputValue = nil
             input:GetScript("OnTextChanged")(input)
             input:SetFocus()
         end
@@ -211,6 +230,7 @@ function atlas.makePlanSharing(parent, changed)
     importTab:SetFrameLevel(import:GetFrameLevel() + 2)
     overlay:SetScript("OnHide", function()
         revision = revision + 1
+        lastInputValue = nil
         code:ClearFocus(); input:ClearFocus(); name:ClearFocus(); createName:ClearFocus()
         profile = nil
     end)
@@ -226,6 +246,7 @@ function atlas.makePlanSharing(parent, changed)
         removeName:SetText(selected.name)
         confirmRemove:SetEnabled(selected.id ~= "personal")
         self:Show()
+        self:Raise()
         showMode(delete and "remove" or "export")
     end
     function overlay:openCreate()
@@ -233,6 +254,7 @@ function atlas.makePlanSharing(parent, changed)
         createName:SetText("")
         createError:Hide()
         self:Show()
+        self:Raise()
         showMode("create")
     end
     if UISpecialFrames then table.insert(UISpecialFrames, "MountAtlasPlanSharing") end

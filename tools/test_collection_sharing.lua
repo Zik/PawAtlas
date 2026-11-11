@@ -18,7 +18,7 @@ end
 
 local function client(name, collection)
     local state = { name = name .. "-Realm", chatType = "WHISPER", enabled = true, draft = "",
-        group = {}, guild = {}, filters = {}, handlers = {}, events = {}, owned = collection }
+        group = {}, guild = {}, bnFriends = {}, filters = {}, handlers = {}, events = {}, owned = collection }
     local atlas = { collection = { byID = collection }, attempts = {}, plans = {} }
     local frame = {
         RegisterEvent = function(_, event) state.events[event] = true end,
@@ -35,6 +35,21 @@ local function client(name, collection)
         GetTime = function() return now end,
         GetServerTime = function() return math.floor(1000000000 + now) end,
         GetNormalizedRealmName = function() return "Realm" end,
+        BNET_CLIENT_WOW = "WoW",
+        WOW_PROJECT_ID = 1,
+        BNGetNumFriends = function() return #state.bnFriends end,
+        BNet_GetBNetIDAccount = function(target) return state.bnTargets and state.bnTargets[target] end,
+        C_BattleNet = {
+            GetFriendAccountInfo = function(index) return state.bnFriends[index] end,
+            GetFriendNumGameAccounts = function(index) return #state.bnFriends[index].games end,
+            GetFriendGameAccountInfo = function(index, slot) return state.bnFriends[index].games[slot] end,
+            SendGameData = function(target, prefix, text)
+                assert(prefix == state.prefix and type(target) == "number" and #text <= 255)
+                if state.sendResult then return state.sendResult end
+                packets[#packets + 1] = { sender = state.gameID, target = target, text = text, battleNet = true }
+                return 0
+            end,
+        },
         UnitFullName = function(unit)
             if unit == "player" then return name, "Realm" end
             local owner = state.group[tonumber(unit:match("%d+$"))]
@@ -311,4 +326,119 @@ assert(#packets == before, "party sharing stays inside the raid subgroup")
 raid.addon("Q:702", bob.name)
 assert(#packets == before + 1, "a raid subgroup member can request the collection")
 
-print("PASS: collection chat consent, WIM, public channels, raid subgroups, transfer, validation, and expiry")
+local bnAlice = client("Bnalice", { [1] = true, [7] = true, [3142] = true })
+local bnBob = client("Bnbob", { [8] = true })
+bnAlice.gameID, bnBob.gameID = 401, 402
+local function friend(accountID, gameID, name, realm)
+    return { bnetAccountID = accountID, games = { { gameAccountID = gameID, characterName = name,
+        realmName = realm or "Realm", clientProgram = "WoW", wowProjectID = 1, isOnline = true } } }
+end
+bnAlice.bnFriends, bnBob.bnFriends = { friend(42, 402, "Bnbob") }, { friend(41, 401, "Bnalice") }
+local function bnArgs(text, accountID)
+    return text, "|KfRecipient|k", "", "", "", "", 0, 0, "", 0, 1, "", accountID
+end
+local function bnAddon(state, text, gameID)
+    state.emit("BN_CHAT_MSG_ADDON", state.prefix, text, "WHISPER", gameID)
+end
+local bnWindow = { type = "whisper", isBN = true, theUser = "|KfRecipient|k", bn = { id = 42 } }
+local bnEditor = {
+    HasFocus = function() return true end, IsVisible = function() return true end,
+    GetParent = function() return bnWindow end,
+    GetText = function() return bnAlice.draft end,
+    Insert = function(_, text) bnAlice.draft = bnAlice.draft .. text end,
+}
+bnAlice.env.WIM, bnAlice.enabled = { EditBoxInFocus = bnEditor }, false
+assert(bnAlice.atlas.collectionShareChannelSupported("BN_WHISPER"))
+bnWindow.bn.id = nil
+assert(not bnAlice.atlas.shareCollectionLink(), "missing BN account ID cannot fall back to a display name")
+bnWindow.bn.id = secret
+assert(not bnAlice.atlas.shareCollectionLink(), "secret BN account IDs are rejected")
+bnWindow.bn.id = 42
+bnAlice.bnFriends[1].games[1].wowProjectID = 2
+assert(not bnAlice.atlas.shareCollectionLink(), "Classic sessions cannot authorize Retail sharing")
+bnAlice.bnFriends[1].games[1].wowProjectID = 1
+assert(bnAlice.atlas.shareCollectionLink() and bnAlice.draft == "[PawAtlas-Bnalice]",
+    "the focused WIM Battle.net editor accepts the marker")
+before = #packets
+bnAddon(bnAlice, "Q:801", 402)
+assert(#packets == before, "a BN draft cannot expose a collection")
+bnAlice.emit("CHAT_MSG_WHISPER_INFORM", bnAlice.draft, bnBob.name)
+bnAlice.emit("CHAT_MSG_BN_WHISPER_INFORM", bnArgs(bnAlice.draft, 99))
+bnAddon(bnAlice, "Q:802", 402)
+assert(#packets == before, "regular whisper and another BN recipient cannot publish the draft")
+bnAlice.emit("CHAT_MSG_BN_WHISPER_INFORM", bnArgs(bnAlice.draft, 42))
+bnAddon(bnAlice, "Q:803", 499)
+bnAlice.addon("Q:803", bnBob.name)
+assert(#packets == before, "BN publication authorizes game IDs only from the selected account")
+
+local bnFilter = bnBob.filters.CHAT_MSG_BN_WHISPER
+assert(bnFilter(nil, "CHAT_MSG_BN_WHISPER", bnArgs(bnAlice.draft, 99)) == nil)
+assert(bnFilter(nil, "CHAT_MSG_BN_WHISPER", bnArgs("[PawAtlas-Eve]", 41)) == nil,
+    "a marker must match a character of the sending BN account")
+local duplicate = friend(41, 403, "Bnalice", "Other Realm").games[1]
+bnBob.bnFriends[1].games[2] = duplicate
+assert(bnFilter(nil, "CHAT_MSG_BN_WHISPER", bnArgs(bnAlice.draft, 41)) == nil,
+    "identically named characters on multiple sessions are ambiguous")
+local bnResult, bnCalls = nil, 0
+local function bnCallback(value) bnResult, bnCalls = value, bnCalls + 1 end
+assert(not bnBob.atlas.requestSharedCollection("Bnalice-Realm~BN401", bnCallback)
+    and #packets == before, "ambiguous or forged links cannot create a BN route")
+bnBob.bnFriends[1].games[2] = nil
+local _, bnLink, bnSender = bnFilter(nil, "CHAT_MSG_BN_WHISPER", bnArgs(bnAlice.draft, 41))
+assert(bnLink:find("|Hpawatlascollection:Bnalice-Realm~BN401|h", 1, true)
+    and bnSender == "|KfRecipient|k", "incoming BN links bind the actual game account without changing the chat sender")
+local _, bnOwnLink = bnAlice.filters.CHAT_MSG_BN_WHISPER_INFORM(nil, "CHAT_MSG_BN_WHISPER_INFORM",
+    bnArgs(bnAlice.draft, 42))
+assert(bnOwnLink:find("|Hpawatlascollection:Bnalice-Realm|h", 1, true))
+assert(bnAlice.atlas.requestSharedCollection(bnAlice.name, bnCallback) and bnResult.count == 3
+    and #packets == before, "own BN link opens locally")
+assert(not bnBob.atlas.requestSharedCollection("Bnalice-Realm~BN999", bnCallback) and #packets == before,
+    "a manual game ID does not select a recipient")
+
+local bnOpened
+function bnBob.atlas.showSharedCatalog(owner) bnOpened = owner; return owner end
+function bnBob.atlas.finishSharedCatalog(request, snapshot)
+    assert(request == bnOpened)
+    bnCallback(snapshot)
+end
+setfenv(assert(loadfile("UI/CollectionSharing.lua")), bnBob.env)("PawAtlas", bnBob.atlas)
+bnBob.handlers.pawatlascollection(nil, nil, { options = "Bnalice-Realm~BN401" }, { button = "LeftButton" })
+assert(bnOpened == "Bnalice-Realm~BN401" and packets[#packets].battleNet and packets[#packets].target == 401,
+    "clicking a BN link requests the exact game account through the BN transport")
+nonce = assert(packets[#packets].text:match("^Q:(%d+)$"))
+bnResult, bnCalls = nil, 0
+bnBob.addon("D:" .. nonce .. ":1:1:B", bnAlice.name)
+bnAddon(bnBob, "D:" .. nonce .. ":1:1:B", 499)
+assert(bnCalls == 0, "a character whisper or another game account cannot complete a BN request")
+bnAddon(bnAlice, packets[#packets].text, 402)
+advance(1)
+assert(#packets == before + 4)
+for index = #packets, before + 2, -1 do
+    assert(packets[index].battleNet and packets[index].target == 402)
+    bnAddon(bnBob, packets[index].text, 401)
+    bnAddon(bnBob, packets[index].text, 401)
+end
+assert(bnCalls == 1 and bnResult.owner == bnAlice.name and bnResult.count == 3
+    and bnResult.collected[3142] and not bnResult.collected[8], "BN transfer returns a separate complete character-labelled snapshot")
+advance(12)
+assert(bnCalls == 1, "the BN request timeout cannot complete twice")
+before = #packets
+bnBob.bnFriends[1].games[1].characterName = "Changed"
+assert(not bnBob.atlas.requestSharedCollection("Bnalice-Realm~BN401", bnCallback) and #packets == before,
+    "a changed game session invalidates a previously displayed BN route")
+bnBob.bnFriends[1].games[1].characterName = "Bnalice"
+bnBob.sendResult = 11
+assert(not bnBob.atlas.requestSharedCollection("Bnalice-Realm~BN401", bnCallback) and #packets == before,
+    "BN transport rejection completes the request without sending data")
+bnBob.sendResult = nil
+
+bnAlice.env.WIM, bnAlice.enabled, bnAlice.chatType, bnAlice.draft = nil, true, "BN_WHISPER", ""
+bnAlice.target, bnAlice.bnTargets = "|KfRecipient|k", { ["|KfRecipient|k"] = 42 }
+assert(bnAlice.atlas.shareCollectionLink(), "Blizzard BN drafts resolve the same account ID as its native chat sender")
+advance(601)
+before = #packets
+bnAddon(bnAlice, "Q:804", 402)
+assert(#packets == before and not bnBob.atlas.requestSharedCollection("Bnalice-Realm~BN401", bnCallback),
+    "BN publication and displayed routes expire")
+
+print("PASS: collection chat consent, WIM and Battle.net, public channels, raid subgroups, transfer, validation, and expiry")
