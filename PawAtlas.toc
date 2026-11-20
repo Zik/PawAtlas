@@ -9,7 +9,7 @@
 ## Category: Collections
 ## Category-ruRU: Коллекции отряда
 ## IconTexture: Interface\AddOns\PawAtlas\Media\Brand\MountAtlasHeader.tga
-## Version: 0.2.3
+## Version: 0.3.22
 ## SavedVariablesPerCharacter: MountAtlasDB
 ## SavedVariables: MountAtlasAccountDB
 Libs/LibStub/LibStub.lua
@@ -44,6 +44,7 @@ Core/Sources.lua
 Core/SourceDetails.lua
 Core/VendorSources.lua
 Core/Links.lua
+Core/EventReminders.lua
 Core/CollectionSharing.lua
 UI/Theme.lua
 UI/Fonts.lua
@@ -63,4 +64,5 @@ UI/CollectedState.lua
 UI/Journal.lua
 UI/GameTooltips.lua
 UI/Minimap.lua
+UI/BlizzardIntegration.lua
 UI/Broker.lua

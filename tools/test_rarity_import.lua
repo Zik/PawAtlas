@@ -44,7 +44,10 @@ LOOT_ITEM_SELF_MULTIPLE = "You receive loot: %1$s ×%2$d."
 LOOT_ITEM_PUSHED_SELF = "You receive item: %s."
 local cageSpells = { [611] = 171619, [622] = 171630, [643] = 171837 }
 local reportedSpells = { [304] = 63796, [1507] = 354358, [2176] = 447213 }
-C_MountJournal = { GetMountInfoByID = function(id) return "Mount " .. id, cageSpells[id] or reportedSpells[id] or 100 + id end }
+local eggSpells = { [538] = 138641, [539] = 138642, [540] = 138643 }
+C_MountJournal = { GetMountInfoByID = function(id)
+    return "Mount " .. id, cageSpells[id] or reportedSpells[id] or eggSpells[id] or 100 + id
+end }
 
 local function nextTimer() table.remove(timers, 1)() end
 local function drain()
@@ -99,6 +102,25 @@ for _, id in ipairs({ 488, 624, 765 }) do
     atlas.mounts[#atlas.mounts + 1] = { id = id, journalOnly = true }
     atlas.attemptStages[id] = catalog.attemptStages[id]
 end
+local eggMounts = {}
+for _, id in ipairs({ 538, 539, 540 }) do
+    local mount = { id = id, journalOnly = true }
+    eggMounts[#eggMounts + 1] = mount
+    atlas.mounts[#atlas.mounts + 1] = mount
+    atlas.attemptStages[id] = catalog.attemptStages[id]
+end
+local eventSpells = { [769] = 191314, [781] = 201098, [1735] = 408651, [2328] = 472479 }
+local eventMounts = {}
+for id in pairs(eventSpells) do
+    local mount = { id = id, journalOnly = true, journalSourceRaw = "World Event: Event" }
+    eventMounts[id] = mount
+    atlas.mounts[#atlas.mounts + 1] = mount
+    atlas.attemptStages[id] = catalog.attemptStages[id]
+end
+local ascendedID, ascendedKey = 1426, "mount:1426"
+local ascended = { id = ascendedID, name = "Ascended Skymane", npcs = { 170832, 170833, 170834, 170835, 170836 } }
+atlas.mounts[#atlas.mounts + 1] = ascended
+atlas.attemptStages[ascendedID], atlas.lootItems[ascendedID] = catalog.attemptStages[ascendedID], catalog.lootItems[ascendedID]
 for id = 20, 100 do atlas.mounts[#atlas.mounts + 1] = { id = id } end
 for _, file in ipairs({ "Core/Tracking.lua", "Core/AttemptStages.lua", "Core/RarityImport.lua" }) do
     assert(loadfile(file))("PawAtlas", atlas)
@@ -371,4 +393,152 @@ equal(atlas.itemAttemptProgress(reportedMounts[2176]).collected, 4, "clearing st
 Rarity, RarityDB = nil, nil
 equal(run().status, "unavailable", "missing active profile is unavailable")
 
-print("PawAtlas Rarity import passed: account history, idempotence, profile changes, skips, reset, cages and collection counters")
+atlas.mountRewardContainerRewards = catalog.mountRewardContainerRewards
+local function checkEggProbability(count)
+    for _, mount in ipairs(eggMounts) do
+        local perAttempt, cumulative, attempts = atlas.dropProbability(mount)
+        equal(perAttempt, 1 / 300, "egg and selected colour per eligible loot attempt")
+        equal(attempts, count, "all three colours reuse the egg farm history")
+        equal(cumulative, 1 - (1 - 1 / 300) ^ count, "raptor chance across recorded attempts")
+        equal(atlas.itemAttemptProgress(mount).perAttempt, .01, "egg drop chance is separate")
+    end
+end
+local eggKey = "item:94295"
+for _, count in ipairs({ 0, 1 }) do
+    MountAtlasAccountDB.characters[player].stageAttempts[eggKey] = count
+    checkEggProbability(count)
+end
+
+-- Rarity CE DB/Toys/MistsOfPandaria.lua: one egg source lists all three spells.
+Rarity = { db = { profile = { groups = { items = { ["Primal Egg"] = {
+    type = "ITEM", method = "NPC", itemId = 94295, spellId = { 138642, 138643, 138641 },
+    unique = true, attempts = 100,
+} } } } } }
+local eggResult = run()
+equal(eggResult.updated, 3, "one egg source updates every raptor")
+equal(eggResult.skipped, 0, "the shared egg source is not skipped")
+local eggEntries = MountAtlasAccountDB.rarityImport.entries
+assert(same(eggEntries, { [eggKey] = { total = 100, source = 100, deltaByGUID = {}, mountIDs = { 538, 539, 540 } } }),
+    "Rarity egg history must be stored only once, under the prerequisite item")
+equal(atlas.rawStageAttempts(eggKey), 1, "the local egg counter is preserved")
+checkEggProbability(100)
+
+eggResult = run()
+equal(eggResult.updated, 0, "the same egg source adds no attempts on reimport")
+equal(eggResult.unchanged, 3, "reimport recognizes all three raptors")
+checkEggProbability(100)
+
+C_MountJournal.GetMountInfoByID = function(id)
+    if eventSpells[id] then return "Event mount " .. id, eventSpells[id] end
+    return getMountInfo(id)
+end
+
+local bagCounts = { [128670] = 1, [205368] = 1, [205374] = 1, [54537] = 3 }
+local getItemCount = C_Item.GetItemCount
+C_Item.GetItemCount = function(id, bank, uses, reagentBank, accountBank)
+    if not bank and bagCounts[id] then return bagCounts[id] end
+    return getItemCount(id, bank, uses, reagentBank, accountBank)
+end
+GetTime = GetServerTime
+lootSource = nil
+stageEvent("PLAYER_ENTERING_WORLD")
+
+local function checkEventAttempts(id, count)
+    local perAttempt, cumulative, attempts = atlas.dropProbability(eventMounts[id])
+    equal(attempts, count, "tracked attempts for event mount " .. id)
+    equal(cumulative, count == 0 and 0 or 1 - (1 - perAttempt) ^ count, "event cumulative probability " .. id)
+end
+for id in pairs(eventMounts) do checkEventAttempts(id, 0) end
+equal(atlas.rewardAttemptProgress(eventMounts[1735]).rateEstimated, true, "researcher gifts have an averaged rate")
+
+local function openContainer(item)
+    stageEvent("LOOT_OPENED", false, true)
+    bagCounts[item] = bagCounts[item] - 1
+    stageEvent("BAG_UPDATE_DELAYED")
+    stageEvent("LOOT_CLOSED")
+    stageEvent("BAG_UPDATE_DELAYED")
+end
+stageEvent("QUEST_TURNED_IN", 74905)
+checkEventAttempts(1735, 0)
+openContainer(205368)
+checkEventAttempts(1735, 1)
+openContainer(128670)
+checkEventAttempts(769, 1)
+openContainer(54537)
+openContainer(54537)
+checkEventAttempts(2328, 1)
+time = time + 3600
+openContainer(54537)
+checkEventAttempts(2328, 2)
+
+local difficulty = 1
+function GetInstanceInfo() return "Dungeon", "party", difficulty end
+stageEvent("ENCOUNTER_END", 343, "Timewalking boss", 1, 5, 1)
+difficulty = 24
+stageEvent("ENCOUNTER_END", 343, "Timewalking boss", 24, 5, 0)
+checkEventAttempts(781, 0)
+stageEvent("ENCOUNTER_END", 343, "Timewalking boss", 24, 5, 1)
+stageEvent("BOSS_KILL", 343, "Timewalking boss")
+checkEventAttempts(781, 1)
+
+local shalewing = { type = "MOUNT", method = "USE", spellId = 408651, itemId = 205204, attempts = 8 }
+Rarity.db.profile.groups = { mounts = { shalewing } }
+equal(run().updated, 1, "Rarity container openings import into the event counter")
+checkEventAttempts(1735, 8)
+openContainer(205374)
+checkEventAttempts(1735, 9)
+shalewing.attempts = 9
+equal(run().updated, 0, "an overlapping Rarity opening is not counted again")
+checkEventAttempts(1735, 9)
+
+local previousMountInfo = C_MountJournal.GetMountInfoByID
+C_MountJournal.GetMountInfoByID = function(id)
+    if id == ascendedID then return ascended.name, 342335, nil, nil, nil, nil, nil, nil, nil, nil, false end
+    return previousMountInfo(id)
+end
+atlas.L = function(s) return s end
+atlas.getLocale = function() return "enUS" end
+local cacheMessages = {}
+DEFAULT_CHAT_FRAME = { AddMessage = function(_, message) cacheMessages[#cacheMessages + 1] = message end }
+stageEvent("PLAYER_ENTERING_WORLD")
+
+-- Rarity CE DB/Mounts/Shadowlands.lua and LOOT_READY SPECIAL handler.
+local cache = { type = "MOUNT", method = "SPECIAL", spellId = 342335, itemId = 183741, attempts = 3 }
+Rarity.db.profile.groups = { mounts = { [ascended.name] = cache } }
+local function afterNativeCache(instance)
+    lootSource = "GameObject-0-1-2-3-354175-" .. instance
+    stageEvent("LOOT_READY")
+    stageEvent("LOOT_OPENED", true, false)
+    stageEvent("LOOT_CLOSED")
+end
+local function cacheAttempts(raw, expected, message)
+    equal(atlas.rawStageAttempts(ascendedKey), raw, "local cache attempts")
+    local rate, chance, attempts = atlas.dropProbability(ascended)
+    equal(rate, .05, "cache per-attempt chance")
+    equal(chance, 1 - .95 ^ expected, "cache cumulative probability")
+    equal(attempts, expected, "merged cache attempts")
+    if message then assert(cacheMessages[#cacheMessages]:find(message, 1, true), "incorrect cache chat message") end
+end
+
+afterNativeCache("000000001")
+cacheAttempts(1, 1, "5.00%")
+equal(#cacheMessages, 1, "a Rarity profile does not implicitly install its older attempts")
+equal(cache.attempts, 3, "native attempt leaves Rarity alone")
+assert(MountAtlasAccountDB.rarityImport.entries[ascendedKey] == nil, "cache history is opt-in")
+
+equal(run().updated, 1, "manually importing adds the shared history floor for the chest stage")
+equal(MountAtlasAccountDB.rarityImport.entries[ascendedID], nil, "SPECIAL import only updates the stage key")
+cacheAttempts(1, 3)
+equal(#cacheMessages, 1, "history import emits no attempt chat message")
+cache.attempts = 4 -- Rarity may observe this opening before PawAtlas.
+afterNativeCache("000000002")
+cacheAttempts(2, 4, "18.55%")
+equal(run().updated, 0, "reimport does not double-credit the shared opening")
+
+afterNativeCache("000000003")
+cache.attempts = 5 -- Rarity may also observe this opening after PawAtlas.
+cacheAttempts(3, 5, "22.62%")
+equal(run().updated, 0, "a Rarity update after PawAtlas also overlaps on reimport")
+equal(#cacheMessages, 3, "each opening writes its own PawAtlas message once")
+
+print("PawAtlas Rarity import passed: account history, idempotence, profile changes, skips, reset, cages, eggs, collections, events and chest attempts")

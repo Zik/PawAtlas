@@ -40,7 +40,11 @@ local function sources(mount, groups, points)
         if key then covered[key] = true end
     end
     for _, entry in ipairs(groups) do
-        if not covered[entry.key] then
+        local navigable = #entry.npcs == 0
+        for _, npc in ipairs(entry.npcs) do
+            if not atlas.sourceNavigationAllowed or atlas.sourceNavigationAllowed(mount, npc) then navigable = true end
+        end
+        if not covered[entry.key] and navigable then
             rows[#rows + 1] = { identity = entry.key, key = entry.key,
                 name = #groups == 1 and mount.boss or L("Нет данных"), place = mount.place }
         end
@@ -54,33 +58,21 @@ local function sources(mount, groups, points)
 end
 
 function atlas.makePlannerSources(parent)
-    local overlay = CreateFrame("Frame", "MountAtlasPlannerSources", parent)
-    overlay:SetAllPoints(parent)
-    overlay:SetFrameStrata("DIALOG")
-    overlay:SetFrameLevel(parent:GetFrameLevel() + 30)
-    overlay:EnableMouse(true)
-    -- Cover the window's whole content area between header and footer rules,
-    -- rather than drawing a dark rectangle at the planner's inset bounds.
-    local dismiss = ui.button(overlay, -34, -24, 1038, 497, function() overlay:Hide() end)
-    dismiss:ClearHighlightTexture()
-    ui.fill(dismiss, 0, 0, 1038, 497, { 0, .02, .025, .55 })
-    local panel = ui.place(CreateFrame("Frame", nil, overlay), overlay, 49, 0, 872, 450)
-    panel:EnableMouse(true)
-    panel:SetFrameLevel(dismiss:GetFrameLevel() + 1)
-    ui.surface(panel, 0, 0, 872, 450)
+    local overlay, panel = ui.journalDialog(parent, "MountAtlasPlannerSources", 872, 450, true)
     local title = ui.text(panel, 20, 12, 778, 28, 21, "", ui.gold)
     title.atlasGameText = true
     title:SetMaxLines(1)
     local summary = ui.text(panel, 20, 43, 820, 30, 12, "", ui.muted)
     ui.action(panel, 826, 12, 30, 30, nil, "Close", function() overlay:Hide() end)
-    ui.fill(panel, 20, 74, 832, 1, ui.rule)
+    ui.fill(panel, 20, 74, 832, 1, ui.rule):SetGradient("HORIZONTAL",
+        CreateColor(.53, .43, .26, .85), CreateColor(.24, .31, .32, .40))
     ui.text(panel, 25, 82, 530, 20, 12, "Рарки", ui.muted)
     local rosterTitle = ui.text(panel, 594, 82, 254, 20, 12, "", ui.gold)
     rosterTitle.atlasGameText = true
     rosterTitle:SetMaxLines(1)
     local list = ui.scrollingList(panel, 18, 106, 550, 41, 7)
     local roster = ui.scrollingList(panel, 590, 106, 262, 41, 7)
-    ui.fill(panel, 579, 88, 1, 301, ui.rule)
+    local divider = ui.fill(panel, 579, 88, 1, 301, ui.rule)
     local footer = ui.text(panel, 20, 410, 832, 23, 12, "", ui.muted)
     footer:SetMaxLines(1)
     overlay.list, overlay.roster = list, roster
@@ -130,7 +122,7 @@ function atlas.makePlannerSources(parent)
     disabledHover:EnableMouse(true)
     local function showWaypointTooltip(self)
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        ui.tooltipTitle(L(atlas.hasTomTomWaypoints() and "Поставить метки" or "Для нескольких меток нужен TomTom"))
+        ui.tooltipTitle(atlas.hasTomTomWaypoints() and L("Поставить метки") or atlas.bulkWaypointUnavailableText())
         GameTooltip:Show()
     end
     local function hideWaypointTooltip(self)
@@ -144,7 +136,7 @@ function atlas.makePlannerSources(parent)
     local function feedback(item)
         local state = currentState(item)
         if complete(state) then
-            return (UnitName("player") or "") .. " · " .. L(labels[state])
+            return selectedGUID and "" or (UnitName("player") or "") .. " · " .. L(labels[state])
         elseif not compatible(item, current) or atlas.sourceAvailableToCharacter(item.point and item.point.npc, current) == nil then
             return L("Нет данных")
         else
@@ -165,19 +157,53 @@ function atlas.makePlannerSources(parent)
         footer:SetText(feedback(item))
     end
     for _, row in ipairs(roster.rows) do
-        row.name = ui.text(row, 4, 1, 238, 20, 13, "")
+        row.icon = ui.icon(row, 4, 8, 24, "Unknown")
+        row.name = ui.text(row, 36, 1, 205, 20, 13, "")
         row.name.atlasGameText = true
         row.name:SetMaxLines(1)
-        row.state = ui.text(row, 4, 21, 238, 18, 12, "", ui.muted)
+        row.name:SetWordWrap(false)
+        row.state = ui.text(row, 36, 21, 205, 18, 12, "", ui.muted)
         row.state:SetMaxLines(1)
         row:ClearHighlightTexture()
     end
+    local function showCharacterTooltip(row)
+        local character = row.item
+        if not character then return end
+        GameTooltip:SetOwner(row, "ANCHOR_TOP")
+        ui.tooltipTitle(character.name .. " · " .. character.realm)
+        local shared = false
+        for _, item in ipairs(list.items) do
+            if compatible(item, character.guid) then
+                local state = stateFor(item, character)
+                local color = complete(state) and ui.mint or state == "available" and ui.paper or ui.muted
+                GameTooltip:AddDoubleLine(ui.safeText(atlas.displayName(item.name or mount.boss)),
+                    ui.safeText(L(labels[state] or labels.unknown)), ui.paper[1], ui.paper[2], ui.paper[3], unpack(color))
+                shared = shared or item.shared
+            end
+        end
+        if shared then
+            ui.tooltipLine(L("Общая попытка для этих противников — отдельно для каждого персонажа"),
+                ui.muted[1], ui.muted[2], ui.muted[3], true)
+        end
+        GameTooltip:Show()
+    end
+    for _, row in ipairs(roster.rows) do
+        row:SetScript("OnEnter", showCharacterTooltip)
+        local function hide(self) if GameTooltip:IsOwned(self) then GameTooltip:Hide() end end
+        row:SetScript("OnLeave", hide)
+        row:SetScript("OnHide", hide)
+    end
     function roster:onClick() end
     function roster:render(row, character)
+        if row.characterGUID ~= character.guid and GameTooltip:IsOwned(row) then GameTooltip:Hide() end
+        row.characterGUID = character.guid
         row.name:SetText(character.name .. " · " .. character.realm)
+        row.name:SetTextColor(unpack(ui.characterClassColor(character)))
+        ui.setCharacterClassIcon(row.icon, character)
         local state = stateFor(focused, character)
         row.state:SetText(labels[state] or labels.unknown)
         row.state:SetTextColor(unpack(complete(state) and ui.mint or state == "available" and ui.paper or ui.muted))
+        if GameTooltip:IsShown() and GameTooltip:IsOwned(row) then showCharacterTooltip(row) end
     end
     for _, row in ipairs(list.rows) do
         row.selected = ui.fill(row, 0, 5, 2, 28, ui.gold)
@@ -188,6 +214,11 @@ function atlas.makePlannerSources(parent)
         row.name.atlasGameText, row.place.atlasGameText = true, true
         row.name:SetMaxLines(1)
         row.place:SetMaxLines(1)
+        row.place:SetWordWrap(false)
+        row.placeLink = ui.locationLink(row.place)
+        row.placeLink:EnableMouseWheel(true)
+        row.placeLink:SetScript("OnMouseWheel", function(_, delta) list:scroll(-delta) end)
+        row.placeLink:HookScript("OnEnter", function() if row.item then focus(row.item) end end)
         row.status = ui.text(row, 382, 4, 144, 32, 12, "", ui.muted)
         row.status:SetJustifyH("RIGHT")
         row.status:SetMaxLines(2)
@@ -203,13 +234,15 @@ function atlas.makePlannerSources(parent)
             end
         end
         local state = selectedGUID and stateFor(item, { guid = selectedGUID }) or currentState(item)
-        local used = complete(state)
+        local used = selectedGUID and complete(state) or not selectedGUID and total > 0 and done == total
         ui.setIcon(row.mark, used and (item.shared and "Lock" or "ObjectiveComplete") or "Rare")
         row.mark:SetVertexColor(1, 1, 1)
         row.name:SetText(atlas.displayName(item.name or mount.boss))
-        row.place:SetText(atlas.displayName(item.place or mount.place))
+        local place = atlas.displayName(item.place or mount.place)
+        row.place:SetText(place)
+        row.placeLink:setLocation(atlas.sourceMapID(place, item.point, mount), place)
         row.name:SetTextColor(unpack(used and ui.muted or ui.paper))
-        row.status:SetText(not selectedGUID and item.shared and "" or (selectedGUID or not item.key) and L(labels[state] or labels.unknown)
+        row.status:SetText(selectedGUID and L(labels[state] or labels.unknown)
             or L("Выполнено: %d / %d", done, total))
         row.status:SetTextColor(unpack(used and ui.mint or ui.muted))
     end
@@ -234,13 +267,25 @@ function atlas.makePlannerSources(parent)
                 if selectedGUID then selectedLabel = character.name .. " · " .. character.realm end
             end
         end
-        for _, point in ipairs(atlas.mountLocations(mount, selectedGUID)) do
+        for _, point in ipairs(atlas.mountLocations(mount, selectedGUID, true)) do
             for _, character in ipairs(characters) do
                 if atlas.sourceAvailableToCharacter(point.npc, character.guid) == true then
                     points[#points + 1] = point
                     break
                 end
             end
+        end
+        local single = selectedGUID ~= nil
+        roster:SetShown(not single)
+        rosterTitle:SetShown(not single)
+        divider:SetShown(not single)
+        list:SetWidth(single and 836 or 550)
+        for _, row in ipairs(list.rows) do
+            row:SetWidth(single and 836 or 550)
+            row.name:SetWidth(single and 626 or 340)
+            row.place:SetWidth(single and 626 or 340)
+            row.status:ClearAllPoints()
+            ui.place(row.status, row, single and 668 or 382, 4, 144, 32)
         end
         title:SetText(atlas.displayName(mount.name))
         summary:SetText(selectedLabel .. "   /   " .. (unknown and L("Нет данных") or total > 0 and L("Выполнено: %d / %d", count, total)
@@ -289,7 +334,5 @@ function atlas.makePlannerSources(parent)
         self:Show()
     end
     overlay:SetScript("OnHide", function() GameTooltip:Hide() end)
-    if UISpecialFrames then table.insert(UISpecialFrames, "MountAtlasPlannerSources") end
-    overlay:Hide()
     return overlay
 end

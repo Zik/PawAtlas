@@ -62,13 +62,17 @@ jobs:
               exit 1
             fi
           done
-      - name: Test lifecycle, imports, collection sharing and Trading Post
+      - name: Test lifecycle, imports, collection sharing, Trading Post and journal sources
         run: |
           lua5.1 tools/test_lifecycle.lua
           lua5.1 tools/test_rarity_import.lua
           lua5.1 tools/test_plan_sharing.lua
           lua5.1 tools/test_collection_sharing.lua
           lua5.1 tools/test_trading_post.lua
+          lua5.1 tools/test_journal_sources.lua
+          lua5.1 tools/test_source_details.lua
+          lua5.1 tools/test_vendor_prices.lua
+          lua5.1 tools/test_event_reminders.lua
       - name: Build ZIP with BigWigs Packager
         uses: BigWigsMods/packager@01e8631a69c69d7654c788d152630d5fed9e3812 # v2
         with:

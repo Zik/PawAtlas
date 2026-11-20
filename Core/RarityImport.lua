@@ -212,8 +212,14 @@ local function matchesRewardCounter(source, definition)
 end
 
 local function buildIndex(step)
-    if atlas.syncJournal then atlas.syncJournal() end
-    local processed, total = 0, #atlas.mounts
+    if atlas.ensureJournal then
+        local _, ready = atlas.ensureJournal()
+        if not ready then return end
+    end
+    -- Journal events can update the catalog while the import coroutine yields.
+    local mounts = {}
+    for i, mount in ipairs(atlas.mounts) do mounts[i] = mount end
+    local processed, total = 0, #mounts
     for _ in pairs(atlas.attemptStages or {}) do total = total + 1 end
     local function nextEntry()
         processed = processed + 1
@@ -221,9 +227,11 @@ local function buildIndex(step)
     end
     if step then step(0, total, true) end
     local bySpell, byItem, known = {}, {}, {}
-    for _, mount in ipairs(atlas.mounts) do
+    for _, mount in ipairs(mounts) do
         known[mount.id] = mount
-        local _, spell = C_MountJournal.GetMountInfoByID(mount.id)
+        -- Only the journal index populates journalName alongside its live spell.
+        local spell = type(mount.journalName) == "string" and mount.journalName ~= "" and identifier(mount.spell)
+        if not spell then spell = select(2, C_MountJournal.GetMountInfoByID(mount.id)) end
         if number(spell) then bySpell[spell] = mount end
         local loot = atlas.lootItems[mount.id]
         if loot and loot.basis == "drop" and number(loot.item) then byItem[loot.item] = mount end
@@ -358,6 +366,7 @@ end
 local function prepareImport(checkpoint)
     if not activeProfile() then return end
     local known, bySpell, byItem, stagesByItem, stageOwners, relatedItems = buildIndex(checkpoint)
+    if not known then return end
     -- Capture the current profile after the last yield. Neither a profile
     -- switch nor an attempt during indexing can commit a stale snapshot.
     local profile, name = activeProfile()

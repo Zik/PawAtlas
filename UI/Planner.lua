@@ -109,18 +109,6 @@ local function expansionBoard(page, openExpansion)
     return board
 end
 
-local function sizeMenu(dropdown, surface, width, height)
-    dropdown:SetHeight(height)
-    local xs, ys = { 0, 10, width - 10, width }, { 0, 10, height - 10, height }
-    for row = 1, 3 do
-        for col = 1, 3 do
-            local texture = surface[(row - 1) * 3 + col]
-            texture:ClearAllPoints()
-            ui.place(texture, dropdown, xs[col], ys[row], xs[col + 1] - xs[col], ys[row + 1] - ys[row])
-        end
-    end
-end
-
 local function showPlanTooltip(owner, name)
     if not name then return end
     GameTooltip:SetOwner(owner, "ANCHOR_TOP")
@@ -128,37 +116,84 @@ local function showPlanTooltip(owner, name)
     GameTooltip:Show()
 end
 
-local function drawShareIcon(button)
-    for _, direction in ipairs({ -1, 1 }) do
-        local link = ui.fill(button, 12, 16.5 + direction * 4, 12, 2, ui.paper)
-        link:SetRotation(-direction * math.pi / 6)
-        link:SetDrawLayer("ARTWORK")
+local function achievementLabel(mount)
+    local function currentLabel(route)
+        if route.key == "achievement" and route.state == "current" and not route.requirement then
+            return L(route.label)
+        end
     end
-    for _, center in ipairs({ { 11, 17.5 }, { 23, 10.5 }, { 23, 24.5 } }) do
-        local x, y = unpack(center)
-        ui.fill(button, x - 2, y - 3, 4, 6, ui.paper):SetDrawLayer("OVERLAY")
-        ui.fill(button, x - 3, y - 2, 6, 4, ui.paper):SetDrawLayer("OVERLAY")
+
+    local primary = atlas.classifyMountSource(mount)
+    if primary.state == "historical" then return end
+    local label = currentLabel(primary)
+    if label then return label end
+
+    local grant = atlas.extraDirectGrantSource(mount)
+    label = grant and currentLabel(atlas.classifyMountSource(mount, grant))
+    if label then return label end
+
+    for _, step in ipairs(mount.achievementSteps or {}) do
+        if not step.purchase then
+            return currentLabel(atlas.classifyMountSource(mount, {
+                view = { kind = "Достижение" },
+            }))
+        end
     end
 end
 
+local function updateChoiceTint(row)
+    local color = row.chosen and { .10, .19, .30, 1 } or { .075, .115, .17, 1 }
+    row.selection:SetColorTexture(unpack(color))
+    row.selection:SetShown(row.chosen or row.hovered)
+    row.marker:SetShown(row.chosen)
+end
+
+local function drawShareIcon(button)
+    for _, direction in ipairs({ -1, 1 }) do
+        local link = ui.fill(button, 9, 13 + direction * 3, 10, 1.5, ui.paper)
+        link:SetRotation(-direction * math.pi / 6)
+        link:SetDrawLayer("ARTWORK")
+    end
+    for _, center in ipairs({ { 9, 14 }, { 18, 9 }, { 18, 19 } }) do
+        local x, y = unpack(center)
+        ui.fill(button, x - 1.5, y - 2.5, 3, 5, ui.paper):SetDrawLayer("OVERLAY")
+        ui.fill(button, x - 2.5, y - 1.5, 5, 3, ui.paper):SetDrawLayer("OVERLAY")
+    end
+end
+
+local menuInset = 6
+
 local function planProfileList(menu, selectProfile)
-    local width = menu:GetWidth()
-    local surface = ui.dropdownSurface(menu)
-    local plans = ui.scrollingList(menu, 8, 8, width - 16, 31, 6)
+    local width = menu:GetWidth() - menuInset * 2
+    ui.dropdownSurface(menu)
+    local plans = ui.scrollingList(menu, menuInset, menuInset, width, 36, 6)
     for _, row in ipairs(plans.rows) do
-        row.name = ui.text(row, 8, 0, width - 44, 29, 14, "")
+        row:SetSize(width, 36)
+        row:ClearHighlightTexture()
+        row.selection = ui.fill(row, 0, 0, width, 36, { .10, .19, .30, 1 })
+        row.marker = ui.fill(row, 0, 7, 2, 22, ui.gold)
+        row.name = ui.text(row, 12, 0, width - 32, 35, 14, "")
         row.name.atlasGameText = true
         row.name:SetMaxLines(1)
         row.name:SetWordWrap(false)
-        row:HookScript("OnEnter", function(self) showPlanTooltip(self, self.item and self.item.name) end)
-        row:HookScript("OnLeave", hidePlanTooltip)
-        row:HookScript("OnHide", hidePlanTooltip)
+        row:HookScript("OnEnter", function(self)
+            self.hovered = true; updateChoiceTint(self)
+            showPlanTooltip(self, self.item and self.item.name)
+        end)
+        local function leave(self)
+            self.hovered = false; updateChoiceTint(self); hidePlanTooltip(self)
+        end
+        row:HookScript("OnLeave", leave)
+        row:HookScript("OnHide", leave)
     end
     function plans:render(row, profile)
         if row.profileID ~= profile.id then hidePlanTooltip(row) end
         row.profileID = profile.id
         row.name:SetText(profile.name)
         row.name:SetTextColor(unpack(profile.id == atlas.activePlanID() and ui.gold or ui.paper))
+        row.chosen = profile.id == atlas.activePlanID()
+        updateChoiceTint(row)
+        if GameTooltip:IsShown() and GameTooltip:IsOwned(row) then showPlanTooltip(row, profile.name) end
     end
     function plans:onClick(profile)
         menu:Hide()
@@ -166,9 +201,9 @@ local function planProfileList(menu, selectProfile)
     end
     function plans:showProfiles(profiles, bottomSpace)
         self.items = profiles
-        local height = math.min(6, #profiles) * 31
+        local height = math.min(6, #profiles) * 36
         self:SetHeight(height)
-        sizeMenu(menu, surface, width, height + bottomSpace)
+        menu:SetHeight(menuInset + height + bottomSpace)
         self:redraw()
         return height
     end
@@ -176,51 +211,60 @@ local function planProfileList(menu, selectProfile)
 end
 
 function atlas.makePlanner(parent, openMount, openExpansion)
-    local page = ui.place(CreateFrame("Frame", nil, parent), parent, 35, 111, 970, 460)
-    ui.text(page, 0, 0, 175, 35, 23, "Планнер")
-    local add = ui.action(page, 811, 0, 159, 35, "Добавить цель", "Plus", function() openMount(nil) end)
+    local page = ui.place(CreateFrame("Frame", nil, parent), parent, 35, 92, 970, 460)
+    page:Hide()
+    ui.icon(page, 0, 4, 21, "Route"):SetVertexColor(unpack(ui.gold))
+    ui.text(page, 32, 0, 200, 30, 21, "Планнер")
+    local add = ui.action(page, 812, 0, 158, 30, "Добавить цель", "Plus", function() openMount(nil) end)
     add:setActive(true)
-    local note = ui.text(page, 0, 42, 950, 22, 12, "Данные других персонажей — по последнему входу", ui.muted)
+    local note = ui.text(page, 0, 33, 960, 20, 11, "Данные других персонажей — по последнему входу", ui.muted)
     local saved = type(MountAtlasAccountDB) == "table" and MountAtlasAccountDB.settings
     local selectedGUID = type(saved) == "table" and type(saved.plannerCharacterGUID) == "string" and saved.plannerCharacterGUID or nil
     local menu, planMenu, planChanged
     local sources = atlas.makePlannerSources(page)
     local sharing = atlas.makePlanSharing(page, function(keepSharing) planChanged(keepSharing) end)
-    local dismiss = ui.button(page, 0, 38, 970, 422, function() menu:Hide(); planMenu:Hide() end)
+    local dismiss = ui.button(page, 0, 0, 1, 1, function() menu:Hide(); planMenu:Hide() end)
+    dismiss:ClearAllPoints()
+    dismiss:SetAllPoints(parent)
     dismiss:SetFrameLevel(page:GetFrameLevel() + 12)
     dismiss:ClearHighlightTexture()
     dismiss:Hide()
-    local characterX, characterWidth = 480, 270
+    local planX, planWidth = 259, 219
+    local characterX, characterWidth = 496, 242
+    local fieldY, fieldHeight = 1, 28
+    local menuY = fieldY + fieldHeight + 5
     local fieldSilver = { .87, .89, .92 }
-    local picker = ui.action(page, characterX, 0, characterWidth, 35, nil, nil, function()
+    local picker = ui.action(page, characterX, fieldY, characterWidth, fieldHeight, nil, nil, function()
         planMenu:Hide()
         menu:SetShown(not menu:IsShown())
-    end, true)
-    picker:setFieldStyle(fieldSilver)
+    end)
     picker:SetFrameLevel(page:GetFrameLevel() + 13)
-    local pickerName = ui.text(picker, 12, 0, characterWidth - 44, 35, 14, "Весь отряд")
+    local pickerIcon = ui.icon(picker, 9, 5, 18, "Unknown")
+    pickerIcon:Hide()
+    local pickerName = ui.text(picker, 36, 0, characterWidth - 70, fieldHeight, 13, "Весь отряд")
     pickerName:SetMaxLines(1)
     pickerName:SetWordWrap(false)
-    ui.dropdownArrow(picker, characterWidth - 26, 9, 16):SetColor(fieldSilver)
-    picker:HookScript("OnEnter", function(self) showPlanTooltip(self, pickerName:GetText()) end)
+    ui.dropdownArrow(picker, characterWidth - 23, 8, 13):SetColor(fieldSilver)
+    picker:HookScript("OnEnter", function(self) showPlanTooltip(self, picker.characterLabel or pickerName:GetText()) end)
     picker:HookScript("OnLeave", hidePlanTooltip)
     picker:HookScript("OnHide", hidePlanTooltip)
-    menu = ui.place(CreateFrame("Frame", nil, page), page, characterX, 41, characterWidth, 50)
+    menu = ui.place(CreateFrame("Frame", "MountAtlasPlannerCharacterMenu", page), page, characterX, menuY, characterWidth, 50)
     menu:SetFrameLevel(picker:GetFrameLevel() + 3)
     menu:EnableMouse(true)
-    local menuSurface = ui.dropdownSurface(menu)
-    local characterList = ui.scrollingList(menu, 8, 8, characterWidth - 16, 34, 10)
-    local planPicker = ui.action(page, 185, 0, 279, 35, nil, nil, function()
+    ui.dropdownSurface(menu)
+    local characterListWidth = characterWidth - menuInset * 2
+    local characterList = ui.scrollingList(menu, menuInset, menuInset, characterListWidth, 42, 7)
+    local planPicker = ui.action(page, planX, fieldY, planWidth, fieldHeight, nil, nil, function()
         menu:Hide()
         planMenu:SetShown(not planMenu:IsShown())
-    end, true)
-    planPicker:setFieldStyle(fieldSilver)
+    end)
     planPicker:SetFrameLevel(picker:GetFrameLevel())
-    local planName = ui.text(planPicker, 12, 0, 235, 35, 14, "")
+    local planName = ui.text(planPicker, 12, 0, planWidth - 44, fieldHeight, 13, "")
     planName.atlasGameText = true
     planName:SetMaxLines(1)
-    ui.dropdownArrow(planPicker, 253, 9, 16):SetColor(fieldSilver)
-    planMenu = ui.place(CreateFrame("Frame", nil, page), page, 185, 41, 279, 90)
+    planName:SetWordWrap(false)
+    ui.dropdownArrow(planPicker, planWidth - 23, 8, 13):SetColor(fieldSilver)
+    planMenu = ui.place(CreateFrame("Frame", "MountAtlasPlannerProfileMenu", page), page, planX, menuY, planWidth, 90)
     planMenu:SetFrameLevel(menu:GetFrameLevel())
     planMenu:EnableMouse(true)
     local plans = planProfileList(planMenu, function() planChanged() end)
@@ -228,19 +272,20 @@ function atlas.makePlanner(parent, openMount, openExpansion)
     planPicker:HookScript("OnEnter", function(self) showPlanTooltip(self, activeProfile and activeProfile.name) end)
     planPicker:HookScript("OnLeave", hidePlanTooltip)
     planPicker:HookScript("OnHide", hidePlanTooltip)
-    local share = ui.action(page, 762, 0, 35, 35, nil, nil, function()
+    local share = ui.action(page, 760, 1, 28, 28, nil, nil, function()
         menu:Hide(); planMenu:Hide(); sources:Hide(); sharing:open(activeProfile)
     end)
     drawShareIcon(share)
-    share:HookScript("OnEnter", function(self) showPlanTooltip(self, L("Поделиться текущим планом")) end)
+    share:HookScript("OnEnter", function(self) showPlanTooltip(self, L("Поделиться или импортировать план")) end)
     share:HookScript("OnLeave", hidePlanTooltip)
     share:HookScript("OnHide", hidePlanTooltip)
-    local create = ui.action(planMenu, 8, 0, 263, 30, "Создать план", nil, function()
+    local create = ui.action(planMenu, 8, 0, planWidth - 16, 30, "Создать план", nil, function()
         planMenu:Hide(); sources:Hide(); sharing:openCreate()
     end)
-    local delete = ui.action(planMenu, 8, 0, 263, 30, "Удалить план", nil, function()
+    local delete = ui.action(planMenu, 8, 0, planWidth - 16, 30, "Удалить план", nil, function()
         planMenu:Hide(); sources:Hide(); sharing:open(activeProfile, true)
     end)
+    local planDivider = ui.fill(planMenu, 9, 0, planWidth - 18, 1, ui.rule)
     local function refreshPlans()
         local activeID = atlas.activePlanID()
         sharing:closeIfStale(activeID)
@@ -251,13 +296,15 @@ function atlas.makePlanner(parent, openMount, openExpansion)
         planName:SetText(activeProfile.name)
         if not planMenu:IsShown() then return end
         local imported = activeProfile.id ~= "personal"
-        local height = plans:showProfiles(profiles, imported and 83 or 49)
+        local listBottom = menuInset + plans:showProfiles(profiles, imported and 80 or 46)
+        planDivider:ClearAllPoints()
+        ui.place(planDivider, planMenu, 9, listBottom + 5, planWidth - 18, 1)
         create:ClearAllPoints()
-        ui.place(create, planMenu, 8, height + 11, 263, 30)
+        ui.place(create, planMenu, 8, listBottom + 10, planWidth - 16, 30)
         delete:SetShown(imported)
         if imported then
             delete:ClearAllPoints()
-            ui.place(delete, planMenu, 8, height + 45, 263, 30)
+            ui.place(delete, planMenu, 8, listBottom + 44, planWidth - 16, 30)
         end
     end
     planMenu:SetScript("OnShow", function()
@@ -275,7 +322,8 @@ function atlas.makePlanner(parent, openMount, openExpansion)
         local choices, unpinned, selected = { { label = "Весь отряд" } }, {}, nil
         for _, character in ipairs(atlas.accountCharacters()) do
             local pinned = type(pins) == "table" and pins[character.guid] == true
-            local entry = { guid = character.guid, label = character.name .. " · " .. character.realm, pinned = pinned }
+            local entry = { guid = character.guid, name = character.name, realm = character.realm, class = character.class,
+                label = character.name .. " · " .. character.realm, pinned = pinned }
             local group = pinned and choices or unpinned
             group[#group + 1] = entry
             if selectedGUID == character.guid then selected = entry end
@@ -287,17 +335,42 @@ function atlas.makePlanner(parent, openMount, openExpansion)
             if type(settings) == "table" then settings.plannerCharacterGUID = nil end
             if previousGUID and atlas.queueExpeditionStatsRefresh then atlas.queueExpeditionStatsRefresh() end
         end
-        pickerName:SetText(selected and selected.label or "Весь отряд")
+        pickerName:SetText(selected and selected.name or "Весь отряд")
+        pickerIcon:SetShown(selected ~= nil)
+        ui.setCharacterClassIcon(pickerIcon, selected)
+        pickerName:ClearAllPoints()
+        ui.place(pickerName, picker, selected and 36 or 12, 0, selected and characterWidth - 70 or characterWidth - 46, fieldHeight)
+        picker.characterLabel = selected and selected.label or L("Весь отряд")
         characterList.items = choices
     end
     local function hidePinTooltip(pin)
         if GameTooltip:IsOwned(pin) then GameTooltip:Hide() end
     end
+    local function updatePin(pin)
+        pin.shade:SetShown(pin.hovered == true)
+        pin.icon:SetColorTexture(unpack(pin.hovered and { 1, .90, .63 } or pin.pinned and ui.gold or ui.muted))
+        pin.center:SetShown(not pin.pinned)
+    end
+    local function showPinTooltip(pin)
+        if not pin.guid then return end
+        GameTooltip:SetOwner(pin, "ANCHOR_TOP")
+        ui.tooltipTitle(L(pin.pinned and "Открепить персонажа" or "Закрепить персонажа"))
+        GameTooltip:Show()
+    end
     for _, row in ipairs(characterList.rows) do
-        row.name = ui.text(row, 9, 0, characterWidth - 69, 30, 14, "")
+        row:SetSize(characterListWidth, 42)
+        row:ClearHighlightTexture()
+        row.selection = ui.fill(row, 0, 0, characterListWidth, 42, { .10, .19, .30, 1 })
+        row.marker = ui.fill(row, 0, 9, 2, 24, ui.gold)
+        row.icon = ui.icon(row, 10, 9, 24, "Unknown")
+        row.name = ui.text(row, 44, 2, characterListWidth - 96, 21, 14, "")
+        row.realm = ui.text(row, 44, 23, characterListWidth - 96, 17, 12, "", ui.muted)
+        row.name.atlasGameText, row.realm.atlasGameText = true, true
+        row.realm:SetMaxLines(1)
+        row.realm:SetWordWrap(false)
         row.name:SetMaxLines(1)
         row.name:SetWordWrap(false)
-        local pin = ui.button(row, characterWidth - 56, 0, 30, 30, function(self)
+        local pin = ui.button(row, characterListWidth - 40, 7, 28, 28, function(self)
             local character = row.item
             if not character or not character.guid then return end
             if type(MountAtlasAccountDB.settings) ~= "table" then MountAtlasAccountDB.settings = {} end
@@ -308,35 +381,70 @@ function atlas.makePlanner(parent, openMount, openExpansion)
                 pins[character.guid] = nil
             else
                 pins[character.guid] = true
-                characterList.offset = 0
             end
             hidePinTooltip(self)
             refreshCharacterChoices()
             characterList:redraw()
         end)
-        pin.icon = ui.icon(pin, 4, 4, 22, "Place")
+        pin.shade = ui.fill(pin, 0, 0, 28, 28, { .92, .76, .44, .12 })
+        pin.shade:Hide()
+        pin.icon = ui.fill(pin, 8, 8, 12, 12, ui.muted)
+        pin.icon:SetDrawLayer("ARTWORK")
+        pin.icon:SetRotation(math.pi / 4)
+        pin.center = ui.fill(pin, 11, 11, 6, 6, ui.ink)
+        pin.center:SetDrawLayer("ARTWORK", 1)
+        pin.center:SetRotation(math.pi / 4)
+        pin:ClearHighlightTexture()
         pin:EnableMouseWheel(true)
         pin:SetScript("OnMouseWheel", function(_, delta) characterList:scroll(-delta) end)
         pin:SetScript("OnEnter", function(self)
-            local character = row.item
-            if not character or not character.guid then return end
-            GameTooltip:SetOwner(self, "ANCHOR_TOP")
-            ui.tooltipTitle(L(character.pinned and "Открепить персонажа" or "Закрепить персонажа"))
-            GameTooltip:Show()
+            row.hovered = true; updateChoiceTint(row)
+            self.hovered = true
+            updatePin(self)
+            showPinTooltip(self)
         end)
-        pin:SetScript("OnLeave", hidePinTooltip)
-        pin:SetScript("OnHide", hidePinTooltip)
+        local function clearPinHover(self)
+            self.hovered = false
+            updatePin(self)
+            hidePinTooltip(self)
+        end
+        pin:SetScript("OnLeave", function(self)
+            row.hovered = row:IsMouseOver(); updateChoiceTint(row)
+            clearPinHover(self)
+        end)
+        pin:SetScript("OnHide", clearPinHover)
         row.pin = pin
+        row:HookScript("OnEnter", function(self)
+            self.hovered = true; updateChoiceTint(self)
+            showPlanTooltip(self, self.item and self.item.label)
+        end)
+        row:HookScript("OnLeave", function(self)
+            self.hovered = self:IsMouseOver(); updateChoiceTint(self); hidePlanTooltip(self)
+        end)
+        row:HookScript("OnHide", function(self)
+            self.hovered = false; updateChoiceTint(self); hidePlanTooltip(self)
+        end)
     end
     function characterList:render(row, character)
-        row.name:SetText(character.label)
-        row.name:SetTextColor(unpack(character.guid == selectedGUID and ui.gold or ui.paper))
+        if row.characterGUID ~= character.guid then row.hovered = false; hidePlanTooltip(row) end
+        row.characterGUID = character.guid
+        row.name:SetText(character.name or character.label)
+        row.realm:SetText(character.realm or "")
+        row.name:ClearAllPoints()
+        ui.place(row.name, row, character.guid and 44 or 12, character.guid and 2 or 0,
+            character.guid and characterListWidth - 96 or characterListWidth - 42, character.guid and 21 or 41)
+        row.name:SetTextColor(unpack(ui.characterClassColor(character)))
+        row.icon:SetShown(character.guid ~= nil)
+        ui.setCharacterClassIcon(row.icon, character)
+        row.chosen = character.guid == selectedGUID
+        updateChoiceTint(row)
+        if GameTooltip:IsShown() and GameTooltip:IsOwned(row) then showPlanTooltip(row, character.label) end
         local pin = row.pin
         if pin.guid ~= character.guid then hidePinTooltip(pin) end
-        pin.guid = character.guid
+        pin.guid, pin.pinned = character.guid, character.pinned
         pin:SetShown(character.guid ~= nil)
-        pin.icon:SetDesaturated(not character.pinned)
-        pin.icon:SetAlpha(character.pinned and 1 or .70)
+        updatePin(pin)
+        if pin.hovered and pin:IsMouseOver() then showPinTooltip(pin) end
     end
     function characterList:onClick(character)
         selectedGUID = character.guid
@@ -348,28 +456,55 @@ function atlas.makePlanner(parent, openMount, openExpansion)
     end
     menu:SetScript("OnShow", function()
         hidePlanTooltip(picker)
-        local first = characterList.items[2]
-        if first and first.pinned then characterList.offset = 0 end
         characterList:redraw()
-        if not first or not first.pinned then
-            for _, character in ipairs(characterList.items) do
-                if character.guid == selectedGUID then characterList:reveal(character); break end
-            end
+        for _, character in ipairs(characterList.items) do
+            if character.guid == selectedGUID then characterList:reveal(character); break end
         end
         dismiss:Show()
         picker:setActive(true)
     end)
     menu:SetScript("OnHide", function() dismiss:Hide(); picker:setActive(false) end)
+    if UISpecialFrames then
+        table.insert(UISpecialFrames, menu:GetName())
+        table.insert(UISpecialFrames, planMenu:GetName())
+    end
+    local rosterTooltipOwner
+    page:SetScript("OnShow", function(self)
+        self:RegisterEvent("GLOBAL_MOUSE_DOWN")
+        self:RegisterEvent("MODIFIER_STATE_CHANGED")
+    end)
+    page:SetScript("OnEvent", function(_, event, key)
+        if event == "MODIFIER_STATE_CHANGED" then
+            if (key == "LSHIFT" or key == "RSHIFT") and rosterTooltipOwner and GameTooltip:IsShown()
+                and GameTooltip:IsOwned(rosterTooltipOwner) and rosterTooltipOwner:IsVisible() then
+                rosterTooltipOwner:showStatusTooltip()
+            end
+            return
+        end
+        if menu:IsShown() and not menu:IsMouseOver() and not picker:IsMouseOver() then menu:Hide() end
+        if planMenu:IsShown() and not planMenu:IsMouseOver() and not planPicker:IsMouseOver() then planMenu:Hide() end
+    end)
     menu:Hide()
-    page:SetScript("OnHide", function() menu:Hide(); planMenu:Hide(); sources:Hide(); sharing:Hide() end)
+    page:SetScript("OnHide", function(self)
+        self:UnregisterEvent("GLOBAL_MOUSE_DOWN")
+        self:UnregisterEvent("MODIFIER_STATE_CHANGED")
+        menu:Hide()
+        planMenu:Hide()
+        dismiss:Hide()
+        picker:setActive(false)
+        planPicker:setActive(false)
+        sources:Hide()
+        sharing:Hide()
+    end)
     local board = expansionBoard(page, openExpansion)
-    local rowStep, capacity = 76, 5
-    local list = ui.scrollingList(page, 0, 76, 970, rowStep, capacity)
+    local rowStep, rowWidth, capacity = 48, 962, 8
+    local list = ui.scrollingList(page, 0, 56, 970, rowStep, capacity)
+    ui.fill(list, 0, 0, rowWidth, 1, ui.rule):SetAlpha(.65)
     local overlay = CreateFrame("Frame", nil, list)
     overlay:SetAllPoints(list)
     overlay:SetFrameLevel(list:GetFrameLevel() + 8)
     overlay:EnableMouse(false)
-    local marker = ui.fill(overlay, 2, 0, 958, 2, ui.gold)
+    local marker = ui.fill(overlay, 2, 0, rowWidth - 4, 2, ui.gold)
     marker:Hide()
     local ghost = ui.place(CreateFrame("Frame", nil, overlay), overlay, 0, 0, 280, 38)
     ui.surface(ghost, 0, 0, 280, 38, true)
@@ -391,7 +526,7 @@ function atlas.makePlanner(parent, openMount, openExpansion)
         if not left or not top then drag.anchor = nil; return end
         x, y = x / scale - left, top - y / scale
         local visible = math.min(capacity, #list.items)
-        if x < 0 or x > 962 or y < 0 or y >= visible * rowStep then
+        if x < 0 or x > rowWidth or y < 0 or y >= visible * rowStep then
             drag.anchor, drag.edge, drag.elapsed = nil, nil, 0
             marker:Hide()
             ghost:Hide()
@@ -413,7 +548,7 @@ function atlas.makePlanner(parent, openMount, openExpansion)
         local slot = math.floor(y / rowStep)
         local index = list.offset + slot + 1
         local anchor = list.items[index]
-        local after = y - slot * rowStep >= (rowStep - 4) / 2
+        local after = y - slot * rowStep >= rowStep / 2
         local neighbor = list.items[index + (after and 1 or -1)]
         if anchor.id ~= drag.mountID and (not neighbor or neighbor.id ~= drag.mountID) then
             drag.anchor, drag.after = anchor.id, after
@@ -429,7 +564,7 @@ function atlas.makePlanner(parent, openMount, openExpansion)
             marker:Hide()
         end
 
-        local gx = math.min(x + 14, 962 - ghost:GetWidth())
+        local gx = math.min(x + 14, rowWidth - ghost:GetWidth())
         local gy = y + 12
         if gy + ghost:GetHeight() > visible * rowStep then gy = y - ghost:GetHeight() - 12 end
         if gx ~= drag.x or gy ~= drag.y then
@@ -495,40 +630,71 @@ function atlas.makePlanner(parent, openMount, openExpansion)
     end
 
     local labels = { boss = "Босс убит", attempt = "Попытка использована", available = "Можно идти", unknown = "Нет данных", stale = "Нужно обновить" }
+    local progressX, progressWidth = 530, 356
     for _, row in ipairs(list.rows) do
-        row:GetHighlightTexture():SetAlpha(0)
-        row.surface = ui.surface(row, 0, 0, 962, 72)
-        row.accent = ui.fill(row, 2, 12, 2, 48, ui.rule)
-        row.accent:SetDrawLayer("ARTWORK")
-        ui.surface(row, 14, 12, 48, 48)
-        row.icon = row:CreateTexture(nil, "ARTWORK")
-        ui.place(row.icon, row, 18, 16, 40, 40)
-        row.icon:SetTexCoord(.08, .92, .08, .92)
+        row:ClearHighlightTexture()
+        row:SetWidth(rowWidth)
+        ui.fill(row, 0, rowStep - 1, rowWidth, 1, ui.rule):SetAlpha(.48)
+        local hoverTint = ui.fill(row, 2, 1, rowWidth - 4, rowStep - 2, { .88, .71, .39, .10 })
+        hoverTint:SetGradient("VERTICAL", CreateColor(.87, .73, .47, .03), CreateColor(.87, .73, .47, .14))
+        local hoverRim = ui.surface(row, 0, 0, rowWidth, rowStep, false, "OrnateOutline")
+        for _, texture in ipairs(hoverRim) do texture:SetVertexColor(.85, .69, .42, .65) end
+        local accent = ui.fill(row, 1, 7, 2, rowStep - 14, ui.gold)
+        accent:SetDrawLayer("ARTWORK")
+        local accentLight = row:CreateTexture(nil, "ARTWORK")
+        ui.place(accentLight, row, -10, 21, 26, 6)
+        accentLight:SetTexture("Interface\\AddOns\\PawAtlas\\Media\\Controls\\SoftGlow.tga")
+        accentLight:SetVertexColor(1, .76, .30, .72)
+        accentLight:SetRotation(math.pi / 2)
+        row.icon = ui.itemIcon(row, 15, 6, 36)
         row.grip = {}
         for i = 0, 5 do
-            local dot = ui.fill(row, 65 + i % 2 * 4, 31 + math.floor(i / 2) * 4, 2, 2, ui.gold)
+            local dot = ui.fill(row, 57 + i % 2 * 4, 19 + math.floor(i / 2) * 4, 2, 2, ui.gold)
             dot:SetDrawLayer("ARTWORK")
             row.grip[#row.grip + 1] = dot
         end
-        row.place = ui.text(row, 76, 10, 480, 19, 12, "", ui.gold)
+        function row:showHover(owner)
+            self.hoverOwner = owner
+            local hovered = owner ~= nil
+            hoverTint:SetShown(hovered)
+            accent:SetShown(hovered)
+            accentLight:SetShown(hovered)
+            for _, texture in ipairs(hoverRim) do texture:SetShown(hovered) end
+            for _, dot in ipairs(self.grip) do dot:SetShown(hovered and self.draggable) end
+        end
+        row:showHover(nil)
+        local function leaveHover(owner)
+            if row.hoverOwner == owner then row:showHover(nil) end
+            hidePlanTooltip(owner)
+        end
+        row.place = ui.text(row, 70, 4, 446, 16, 12, "", ui.gold)
         row.place:SetMaxLines(1)
-        row.name = ui.text(row, 76, 31, 480, 29, 17, "")
+        row.place:SetWordWrap(false)
+        row.placeLink = ui.locationLink(row.place)
+        row.placeLink:EnableMouseWheel(true)
+        row.placeLink:SetScript("OnMouseWheel", function(_, delta) list:scroll(-delta) end)
+        row.placeLink:HookScript("OnEnter", function(self) row:showHover(self) end)
+        row.placeLink:HookScript("OnLeave", leaveHover)
+        row.placeLink:HookScript("OnHide", leaveHover)
+        row.name = ui.text(row, 70, 19, 446, 24, 16, "")
         row.name.atlasGameText = true
         row.place.atlasGameText = true
         row.name:SetMaxLines(1)
-        ui.fill(row, 574, 14, 1, 44, ui.rule)
-        row.status = ui.text(row, 615, 8, 296, 25, 16, "")
+        row.name:SetWordWrap(false)
+        row.status = ui.text(row, progressX + 22, 3, progressWidth - 22, 21, 14, "")
         row.status:SetMaxLines(1)
-        row.detail = ui.text(row, 590, 49, 321, 18, 12, "", ui.muted)
+        row.status:SetWordWrap(false)
+        row.detail = ui.text(row, progressX, 30, progressWidth, 16, 11, "", ui.muted)
         row.detail:SetMaxLines(1)
-        row.check = ui.icon(row, 589, 10, 22, "ObjectiveComplete")
-        row.unknown = ui.text(row, 589, 8, 22, 25, 20, "?", ui.muted)
+        row.detail:SetWordWrap(false)
+        row.check = ui.icon(row, progressX, 6, 15, "ObjectiveComplete")
+        row.unknown = ui.text(row, progressX, 3, 15, 21, 15, "?", ui.paper)
         row.unknown:SetJustifyH("CENTER")
-        row.track = ui.fill(row, 590, 38, 321, 5, { .20, .26, .28, .65 })
-        row.progress = ui.fill(row, 590, 38, 321, 5, ui.mint)
+        row.track = ui.fill(row, progressX, 25, progressWidth, 3, { .24, .32, .41, .75 })
+        row.progress = ui.fill(row, progressX, 25, progressWidth, 3, ui.gold)
         row.track:SetDrawLayer("ARTWORK", 0)
         row.progress:SetDrawLayer("ARTWORK", 1)
-        row.sourceButton = ui.button(row, 586, 4, 329, 63, function()
+        row.sourceButton = ui.button(row, progressX - 4, 1, progressWidth + 8, rowStep - 2, function()
             if row.item then menu:Hide(); planMenu:Hide(); sources:open(row.item, selectedGUID) end
         end)
         row.sourceButton:EnableMouseWheel(true)
@@ -536,21 +702,24 @@ function atlas.makePlanner(parent, openMount, openExpansion)
         row.sourceButton:SetScript("OnMouseWheel", function(_, delta) list:scroll(-delta) end)
         registerDrag(row, row)
         registerDrag(row.sourceButton, row)
-        local remove = ui.action(row, 924, 22, 28, 28, nil, "Close", function()
+        local remove = ui.action(row, 925, 12, 24, 24, nil, "Close", function()
             local planID = atlas.activePlanID()
             if row.item and atlas.isPlanned(row.item, planID) then atlas.togglePlan(row.item, planID) end
             page:update()
         end)
+        remove.glyph:ClearAllPoints()
+        ui.place(remove.glyph, remove, 5, 5, 14, 14)
         remove:HookScript("OnEnter", function(self)
+            row:showHover(self)
             if drag then return end
             GameTooltip:SetOwner(self, "ANCHOR_TOP")
             ui.tooltipTitle(L("Убрать из плана"))
             GameTooltip:Show()
         end)
-        local function hideRemoveTooltip(self) if GameTooltip:IsOwned(self) then GameTooltip:Hide() end end
-        remove:HookScript("OnLeave", hideRemoveTooltip)
-        remove:HookScript("OnHide", hideRemoveTooltip)
+        remove:HookScript("OnLeave", leaveHover)
+        remove:HookScript("OnHide", leaveHover)
         local function showStatusTooltip(self)
+            rosterTooltipOwner = nil
             if drag or not row.item then return end
             if not GameTooltip:IsShown() or not GameTooltip:IsOwned(self) then GameTooltip:SetOwner(self, "ANCHOR_TOP") end
             if self == row.sourceButton then
@@ -591,13 +760,18 @@ function atlas.makePlanner(parent, openMount, openExpansion)
                     ui.tooltipLine(" ")
                 end
             end
-            local shown = 0
-            for _, character in ipairs(atlas.accountCharacters()) do
+            local characters = atlas.accountCharacters()
+            local limit = (row.item.isRaid or row.item.kind == "Рейд") and 3 or 10
+            local expandable = not selectedGUID and #characters > limit
+            if expandable then rosterTooltipOwner = self end
+            local expanded = expandable and IsShiftKeyDown()
+            for index, character in ipairs(characters) do
                 if not selectedGUID or selectedGUID == character.guid then
-                    -- The full roster is scrollable in the source panel/picker.
-                    -- A native tooltip cannot scroll through an entire account.
-                    if shown == 10 then ui.tooltipLine("…", unpack(ui.muted)); break end
-                    shown = shown + 1
+                    if expandable and not expanded and index > limit then
+                        ui.tooltipLine("…", unpack(ui.muted))
+                        ui.tooltipLine(L("Зажми Shift, чтобы посмотреть весь отряд"), unpack(ui.gold))
+                        break
+                    end
                     local state, _, _, progress = atlas.planCharacterStatus(row.item, character.guid)
                     local status = L(labels[state] or labels.unknown)
                     if progress and progress.totalAttempts > 1 then
@@ -609,16 +783,16 @@ function atlas.makePlanner(parent, openMount, openExpansion)
                     local color = complete and ui.mint or uncertain and ui.muted or ui.paper
                     local name = ui.safeText(character.name .. " · " .. character.realm)
                     GameTooltip:AddDoubleLine(name, ui.safeText(status), ui.paper[1], ui.paper[2], ui.paper[3], unpack(color))
+                    if atlas.appendBossDifficultyTooltip then atlas.appendBossDifficultyTooltip(row.item, character.guid) end
                 end
             end
-            if shown > 0 then ui.tooltipLine(" ") end
-            ui.tooltipLine(L("Показан статус сохранения. Требования уровня, фракции и призыва проверяй в карточке маунта."),
-                mutedR, mutedG, mutedB, true)
-            ui.tooltipLine(L("Данные других персонажей — по последнему входу"), mutedR, mutedG, mutedB, true)
             GameTooltip:Show()
         end
         row.showStatusTooltip = showStatusTooltip
-        row:SetScript("OnEnter", showStatusTooltip)
+        row:SetScript("OnEnter", function(self)
+            row:showHover(self)
+            showStatusTooltip(self)
+        end)
         local function highlightProgress(hovered)
             row.progress:SetAlpha(hovered and 1 or .85)
             if row.statusColor then
@@ -629,14 +803,22 @@ function atlas.makePlanner(parent, openMount, openExpansion)
             end
         end
         row.sourceButton:SetScript("OnEnter", function(self)
+            row:showHover(self)
             highlightProgress(true)
             showStatusTooltip(self)
         end)
-        local function hide(self) if GameTooltip:IsOwned(self) then GameTooltip:Hide() end end
-        row:SetScript("OnLeave", hide)
-        row:SetScript("OnHide", hide)
-        row.sourceButton:SetScript("OnLeave", function(self) highlightProgress(false); hide(self) end)
-        row.sourceButton:SetScript("OnHide", function(self) highlightProgress(false); hide(self) end)
+        row:SetScript("OnLeave", leaveHover)
+        row:SetScript("OnHide", function(self)
+            row:showHover(nil)
+            hidePlanTooltip(self)
+        end)
+        local function leaveSource(self)
+            highlightProgress(false)
+            leaveHover(self)
+        end
+        row.sourceButton:SetScript("OnLeave", leaveSource)
+        row.sourceButton:SetScript("OnHide", leaveSource)
+        atlas.bindMountPreviewCursor(row, function() return row.item end)
     end
     function list:render(row, mount)
         local tooltipOwner = GameTooltip:IsShown() and GameTooltip:GetOwner()
@@ -646,17 +828,23 @@ function atlas.makePlanner(parent, openMount, openExpansion)
             tooltipOwner = nil
         end
         row.shownMountID = mount.id
+        atlas.refreshMountPreviewCursor(row)
         row:SetAlpha(drag and drag.mountID == mount.id and .48 or 1)
-        for _, dot in ipairs(row.grip) do dot:SetShown(#self.items > 1) end
+        row.draggable = #self.items > 1
+        row:showHover(row.hoverOwner)
         local sourceButton = row.sourceButton
         sourceButton.hasPlanSources = mount.kind == "Рарка" or atlas.planOpportunityProgress(mount) ~= nil
         -- A recycled row must keep the native drag receiver visible through mouse release.
         sourceButton:SetShown(sourceButton.hasPlanSources or (drag and drag.button == sourceButton))
-        row.place:SetText(atlas.displayName(mount.place))
+        local place = atlas.displayName(mount.place)
+        local subtitle = place ~= "" and place or achievementLabel(mount) or ""
         local frequency = atlas.lootFrequency(mount)
         if frequency == "daily" or frequency == "weekly" then
-            row.place:SetText(atlas.displayName(mount.place) .. " · " .. L(frequency == "daily" and "Ежедневно" or "Еженедельно"))
+            local period = L(frequency == "daily" and "Ежедневно" or "Еженедельно")
+            subtitle = subtitle ~= "" and subtitle .. " · " .. period or period
         end
+        row.place:SetText(subtitle)
+        row.placeLink:setLocation(atlas.sourceMapID(place, nil, mount), place)
         row.name:SetText(atlas.displayName(mount.name))
         row.icon:SetTexture(mount.icon or 132261)
         local complete, fraction, state = false, 0, "unknown"
@@ -715,8 +903,6 @@ function atlas.makePlanner(parent, openMount, openExpansion)
         row.icon:SetDesaturated(complete)
         row.place:SetTextColor(unpack(complete and ui.muted or ui.gold))
         row.name:SetTextColor(unpack(complete and ui.muted or ui.paper))
-        local surfaceTone = complete and .72 or 1
-        for _, texture in ipairs(row.surface) do texture:SetVertexColor(surfaceTone, surfaceTone, surfaceTone) end
         for _, dot in ipairs(row.grip) do dot:SetAlpha(complete and .42 or .72) end
         row.check:SetShown(not uncertain)
         row.unknown:SetShown(uncertain)
@@ -725,13 +911,15 @@ function atlas.makePlanner(parent, openMount, openExpansion)
         row.statusColor = color
         row.status:SetTextColor(unpack(color))
         row.progress:SetAlpha(.85)
-        row.accent:SetColorTexture(unpack(complete and ui.mint or state == "available" and ui.gold or ui.rule))
+        row.progress:SetColorTexture(unpack(complete and ui.mint or ui.gold))
         row.progress:SetShown(fraction > 0)
-        row.progress:SetWidth(math.max(1, 321 * fraction))
-        row.track:SetAlpha(uncertain and .4 or 1)
+        row.progress:SetWidth(math.max(1, progressWidth * fraction))
+        row.track:SetAlpha(uncertain and .72 or 1)
         if tooltipOwner and tooltipOwner:IsVisible() then row.showStatusTooltip(tooltipOwner) end
     end
-    function list:onClick(mount) openMount(mount) end
+    function list:onClick(mount)
+        if not atlas.mountModifiedClick(mount) then openMount(mount) end
+    end
     local lastPlanID
     function page:update()
         local activeID = atlas.activePlanID()
@@ -749,10 +937,9 @@ function atlas.makePlanner(parent, openMount, openExpansion)
         end
         refreshPlans()
         refreshCharacterChoices()
-        local listHeight = math.min(10, #characterList.items) * 34
-        local menuHeight = listHeight + 16
+        local listHeight = math.min(7, #characterList.items) * 42
         characterList:SetHeight(listHeight)
-        sizeMenu(menu, menuSurface, characterWidth, menuHeight)
+        menu:SetHeight(listHeight + menuInset * 2)
         characterList:redraw()
         note:SetShown(#targets > 0)
         board:SetShown(#targets == 0)
@@ -762,6 +949,5 @@ function atlas.makePlanner(parent, openMount, openExpansion)
         list:redraw()
         if sources:IsShown() then sources:refresh() end
     end
-    page:Hide()
     return page
 end

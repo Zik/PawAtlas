@@ -75,6 +75,7 @@ function ui.applyFont(id)
         if object.atlasRawText ~= nil then object:SetText(object.atlasRawText) end
     end
     if atlas.refreshDetails then atlas.refreshDetails() end
+    if atlas.queueExpeditionStatsRefresh then atlas.queueExpeditionStatsRefresh() end
 end
 function ui.applyFontScale(value)
     local previous = ui.selectedFontScale()

@@ -1,10 +1,13 @@
 local _, atlas = ...
+-- The journal API uses BATTLE_PET_SOURCE_* indices, one above Mount.db2's
+-- SourceTypeEnum. Zero is uncategorized and must remain unknown.
 local kinds = {
-    [0] = "Добыча", [1] = "Квест", [2] = "Торговец", [3] = "Профессия", [4] = "Битвы питомцев",
-    [5] = "Достижение", [6] = "Событие", [7] = "Акция", [8] = "Карточная игра",
-    [9] = "Магазин", [10] = "Исследование", [11] = "Торговая лавка",
+    [1] = "Добыча", [2] = "Квест", [3] = "Торговец", [4] = "Профессия", [5] = "Битвы питомцев",
+    [6] = "Достижение", [7] = "Событие", [8] = "Акция", [9] = "Карточная игра",
+    [10] = "Магазин", [11] = "Исследование", [12] = "Торговая лавка",
 }
 local known, baseKeys = {}, {}
+atlas.journalSourceRevision = 0
 function atlas.mountByID(id)
     return known[id]
 end
@@ -30,9 +33,10 @@ local function itemSearchWords(id)
     for _, stage in pairs((atlas.attemptStages or {})[id] or {}) do entry(stage) end
     return table.concat(words, " ")
 end
+local placeholderMarkers = { "PH", "DND", "NYI" }
 local function isPlaceholder(name)
     local upper = name:upper()
-    for _, marker in ipairs({ "PH", "DND", "NYI" }) do
+    for _, marker in ipairs(placeholderMarkers) do
         if upper:find("[" .. marker .. "]", 1, true) or upper:match("%(" .. marker .. "[%s%)]") then return true end
     end
     return upper:match("^TEST MOUNT")
@@ -41,33 +45,41 @@ end
 local excludedSpells, unreleasedSpells = {}, {}
 for _, spell in pairs(atlas.nonCollectibleMounts or {}) do excludedSpells[spell] = true end
 for _, spell in pairs(atlas.unreleasedMounts or {}) do unreleasedSpells[spell] = true end
-local function excluded(id, name, spell, collected, source)
+local function excludedByIdentity(id, name, spell, collected)
     -- A changed live spell must not inherit the old MountID's exclusion.
     if excludedSpells[spell] or (not spell and (atlas.nonCollectibleMounts or {})[id]) then return true end
     -- Acquisition confirms a collectible, but cannot turn a known movement
     -- ability into one. Unreleased/placeholder metadata may become obsolete.
     if collected then return false end
-    if unreleasedSpells[spell] or (not spell and (atlas.unreleasedMounts or {})[id]) then
-        local liveSource = (source or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("|n", " ")
-            :match("^%s*(.-)%s*$")
-        if liveSource == "" or liveSource == "Старинное" or liveSource == "Legacy" then return true end
-    end
     -- Prefer the current localized name over a stale English [PH] entry.
     return isPlaceholder(name and name ~= "" and name or atlas.englishNames[id] or "")
 end
 
+local function excludedBySource(id, spell, source)
+    if unreleasedSpells[spell] or (not spell and (atlas.unreleasedMounts or {})[id]) then
+        local liveSource = (source or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("|n", " ")
+            :match("^%s*(.-)%s*$")
+        if liveSource == "" or liveSource == "Старинное" or liveSource == "Legacy" then return true end
+        -- The old 2186 placeholder has only a Trading Post category heading.
+        if id == 2186 and (not spell or spell == 448845)
+            and (liveSource == "Торговая лавка" or liveSource == "Trading Post") then return true end
+    end
+end
+
 function atlas.isExcludedJournalMount(id, name, spell, collected, source)
-    if source == nil and unreleasedSpells[spell] and not collected and C_MountJournal
+    if excludedByIdentity(id, name, spell, collected) then return true end
+    if collected then return false end
+    if source == nil and unreleasedSpells[spell] and C_MountJournal
         and C_MountJournal.GetMountInfoExtraByID then
         source = select(3, C_MountJournal.GetMountInfoExtraByID(id))
         if issecretvalue and issecretvalue(source) then source = nil end
     end
-    return excluded(id, name, spell, collected, source)
+    return excludedBySource(id, spell, source)
 end
 
 for index = #atlas.mounts, 1, -1 do
     local m = atlas.mounts[index]
-    if excluded(m.id, m.name) then table.remove(atlas.mounts, index)
+    if atlas.isExcludedJournalMount(m.id, m.name) then table.remove(atlas.mounts, index)
     else known[m.id], baseKeys[m.id] = m, m.key or "" end
 end
 local raidZones = {}
@@ -108,15 +120,30 @@ local sourceKinds = {
     ["Источник"] = "Добыча", ["Добыча"] = "Добыча", ["Сокровище"] = "Добыча",
     ["Торговец"] = "Торговец", ["Торговцы"] = "Торговец", ["Продавец"] = "Торговец",
     ["Задание"] = "Квест", ["Локальное задание"] = "Квест", ["Задание гарнизона"] = "Квест",
-    ["Достижение"] = "Достижение", ["Профессия"] = "Профессия", ["Класс"] = "Класс",
+    ["Достижение"] = "Достижение", ["Великий подвиг"] = "Достижение", ["Профессия"] = "Профессия", ["Класс"] = "Класс",
     ["Событие"] = "Событие", ["Особое событие"] = "Событие", ["Праздник"] = "Событие",
-    ["Промоакция"] = "Акция", ["PvP"] = "PvP",
+    ["Промоакция"] = "Акция", ["Исследование"] = "Исследование", ["PvP"] = "PvP",
+    ["Рыбалка"] = "Рыбалка", ["Рыбная ловля"] = "Рыбалка",
+    ["Коллекционная карточная игра"] = "Карточная игра", ["Карточная игра"] = "Карточная игра",
     ["Drop"] = "Добыча", ["Source"] = "Добыча", ["Treasure"] = "Добыча", ["Vendor"] = "Торговец", ["Quest"] = "Квест",
-    ["Achievement"] = "Достижение", ["Profession"] = "Профессия", ["Class"] = "Класс",
+    ["Achievement"] = "Достижение", ["Feats of Strength"] = "Достижение", ["Profession"] = "Профессия", ["Class"] = "Класс",
     ["Vendors"] = "Торговец", ["World Quest"] = "Квест", ["Garrison Mission"] = "Квест",
     ["Event"] = "Событие", ["World Event"] = "Событие", ["Special Event"] = "Событие", ["Holiday"] = "Событие",
-    ["Promotion"] = "Акция",
+    ["Promotion"] = "Акция", ["Exploration"] = "Исследование", Fishing = "Рыбалка",
+    ["Trading Card Game"] = "Карточная игра",
 }
+
+local missingPlaces = { ["—"] = true, ["-"] = true, ["Журнал"] = true, ["Нет данных"] = true,
+    ["Рарка"] = true, ["Босс"] = true, ["Рейд"] = true, ["Подземелье"] = true,
+    ["Торговая лавка"] = true, ["Старинное"] = true,
+    Journal = true, Unknown = true, Rare = true, Boss = true, Raid = true, Dungeon = true,
+    ["Trading Post"] = true, Legacy = true }
+function atlas.sourcePlaceValue(value, kind)
+    if type(value) ~= "string" then return end
+    local name = plain(value):match("^%s*(.-)%s*$")
+    if name == "" or name == kind or kind and name == atlas.L(kind) or missingPlaces[name] or sourceKinds[name] then return end
+    return value:match("^%s*(.-)%s*$")
+end
 
 local function sourceKind(source, category)
     if source == "Старинное" or source == "Legacy" then return "Журнал", true end
@@ -126,7 +153,8 @@ local function sourceKind(source, category)
         if bare == "Задание" or bare == "Квест" or bare == "Quest" then return "Квест", true end
         local label = line:match("^%s*([^:]+):")
         label = label and label:match("^%s*(.-)%s*$")
-        local kind = label and sourceKinds[label]
+        local kind = sourceKinds[label or bare]
+        if not label and (bare == "Источник" or bare == "Source") then kind = nil end
         if kind then return kind, true end
         if label == "Ковенант" or label == "Covenant" then covenantOnly = true end
         if line:match("^Паладин%s*$") or line:match("^Paladin%s*$") then return "Класс", true end
@@ -136,6 +164,10 @@ local function sourceKind(source, category)
         if bare == "Торговая лавка" or bare == "Trading Post" then return "Торговая лавка", true end
     end
     return kinds[category] or "Журнал", false, covenantOnly
+end
+
+function atlas.isAchievementSourceLabel(label)
+    return sourceKinds[label] == "Достижение"
 end
 
 local function routeVersionCurrent(route)
@@ -160,12 +192,20 @@ end
 
 function atlas.raidLootReward(mount)
     local reward = atlas.raidLootRewards and atlas.raidLootRewards[mount.id]
+    if not reward or reward.scope ~= "raid" or not routeVersionCurrent(reward) then return end
+    if reward.spell and mount.spell and mount.spell ~= reward.spell then return end
     local stages = atlas.attemptStages and atlas.attemptStages[mount.id]
     local definition = stages and stages.reward
-    if not reward or not definition or reward.item ~= definition.item or reward.scope ~= "raid"
-        or not (definition.difficulties and definition.difficulties[reward.difficultyID])
-        or not routeVersionCurrent(reward) then return end
-    return reward
+    if definition then
+        if reward.item == definition.item and definition.difficulties and definition.difficulties[reward.difficultyID] then return reward end
+        return
+    end
+    local source = atlas.dropSourceInfo and atlas.dropSourceInfo[mount.id]
+    if not reward.spell or not source or source.map ~= reward.map
+        or not (source.difficulties and source.difficulties[reward.difficultyID]) then return end
+    for _, item in ipairs((atlas.mountRewardItems or {})[mount.id] or {}) do
+        if item.item == reward.item then return reward end
+    end
 end
 
 local dropLabels = { ["Источник"] = true, ["Добыча"] = true, ["Сокровище"] = true, Drop = true, Source = true, Treasure = true }
@@ -212,15 +252,53 @@ function atlas.sourceDifficultySuffix(value)
 end
 
 local function sourceLine(line)
-    local heading, value = line:match("^(.-):%s*(.-)%s*$")
+    local heading, value = line:match("^([^:{]*):%s*(.-)%s*$")
     if not heading then return end
     local label = heading:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):match("^%s*(.-)%s*$")
     if label == "" or label:find("|", 1, true) then return end
     if label == "Торгоец" then label = "Торговец" end -- Native ruRU vendor heading typo.
+    if label == "в" and line:match("^%s*|c[fF][fF][fF][fF][dD]200в:|r%s*%S") then
+        label = "Зона" -- A short location header in the native ruRU journal.
+    end
     -- A heading's closing color escape can follow its colon. Remove only that
     -- closing escape; links, textures and colors belonging to values stay intact.
     if heading:match("|c%x%x%x%x%x%x%x%x[^|]*$") then value = value:gsub("^|r%s*", "", 1) end
     return label, value
+end
+
+local inlineReference = "{%a+:%d+:"
+local function journalSourceFields(source, kind)
+    local target, place
+    for line in source:gmatch("[^\n]+") do
+        local label, value = sourceLine(line)
+        if value and value ~= "" and not value:find(inlineReference) then
+            if not place and placeLabels[label] then place = atlas.sourcePlaceValue(value, kind) end
+            if not target and (sourceKinds[label] == kind
+                or (kind == "Добыча" or kind == "Рейд") and (dropLabels[label] or label == "NPC")) then
+                target = value
+            end
+        end
+    end
+    return target or kind, place
+end
+
+local function achievementAlternatives(source)
+    local alternatives, newRoute, faction = {}, true, nil
+    local factionHeaders = { ["Альянс"] = "Alliance", ["Орда"] = "Horde", Alliance = "Alliance", Horde = "Horde" }
+    for line in (source .. "\n"):gmatch("(.-)\n") do
+        local text = plain(line)
+        if factionHeaders[text] then
+            faction, newRoute = factionHeaders[text], true
+        elseif text == "" then newRoute = true
+        elseif newRoute then
+            local label, value = sourceLine(line)
+            if atlas.isAchievementSourceLabel(label) and value ~= "" then
+                alternatives[#alternatives + 1] = { text = label .. ": " .. value, faction = faction }
+            end
+            newRoute = false
+        end
+    end
+    return alternatives
 end
 
 -- Card helpers repeatedly parse the same journal text. Keep a small bounded
@@ -261,8 +339,9 @@ function atlas.normalizeSource(source)
 end
 
 local function journalSourceDetail(id, spell, kind, source)
-    local detail = atlas.journalSourceDetails and atlas.journalSourceDetails[id]
-    if not detail or detail.spell ~= spell or detail.replacesKind ~= kind then return end
+    local reward = atlas.questMountRewards and atlas.questMountRewards[id]
+    local detail = atlas.journalSourceDetails and atlas.journalSourceDetails[id] or reward and reward.journalDetail
+    if not detail or detail.spell ~= spell or (detail.replacesKind ~= kind and detail.alternateKind ~= kind) then return end
     if not detail.replacesSource then return detail end
     if source == nil then return end
     local normalized = atlas.normalizeSource(source)
@@ -271,11 +350,22 @@ local function journalSourceDetail(id, spell, kind, source)
     end
 end
 
+local function directMountGrant(id, spell, kind, source, covenantOnly)
+    local grant = atlas.directMountGrants and atlas.directMountGrants[id]
+    if not grant or grant.spell ~= spell or grant.kind ~= kind or not source then return end
+    if grant.covenant then return (covenantOnly or grant.alternate) and grant or nil end
+    local normalized = atlas.normalizeSource(display(source))
+    for _, expected in ipairs(grant.source or {}) do
+        if normalized == atlas.normalizeSource(expected) then return grant end
+    end
+end
+
 local function sourcePanels(mount, source, kind)
     if not mount.journalOnly or (kind ~= "Добыча" and kind ~= "Рейд") then return end
     -- Source buttons cannot render/click rich inline payloads. Keep those in the
     -- hyperlink-enabled journal surface instead of flattening them into labels.
-    if (mount.journalSourceOverride or mount.journalSourceRaw or ""):find("|[HTA]") then return end
+    local raw = mount.journalSourceOverride or mount.journalSourceRaw or ""
+    if raw:find("|[HTA]") or raw:find(inlineReference) then return end
     local groups, current = {}, { lines = {}, modes = {}, seenModes = {}, conditions = {} }
     local prefixMode, hasConditions
     local function addModes(group, entries)
@@ -391,179 +481,560 @@ local function sourcePanels(mount, source, kind)
     return groups[1].boss, groups[1].place, groups[1].sourceKind, groups
 end
 
-function atlas.syncJournal()
-    local added, rejected, collectedByID = {}, {}, {}
-    for _, id in ipairs(C_MountJournal.GetMountIDs() or {}) do
-        local mount = known[id]
-        local name, spell, icon, _, _, category, _, _, _, _, collected = C_MountJournal.GetMountInfoByID(id)
-        if issecretvalue and issecretvalue(collected) then collected = nil end
-        if issecretvalue and issecretvalue(icon) then icon = nil end
-        local rawSource
-        if unreleasedSpells[spell] and not collected then
-            local _, _, source = C_MountJournal.GetMountInfoExtraByID(id)
-            rawSource = source
+local function indexJournalMount(mount, id, name, spell, category, rawSource)
+    local source = plain(rawSource)
+    local kind, explicitKind, covenantOnly = sourceKind(source, category)
+    local vendorSource, vendorOffer
+    if atlas.vendorTokenSource then
+        vendorSource, vendorOffer = atlas.vendorTokenSource({ id = id, spell = spell, journalSourceRaw = rawSource })
+    end
+    if vendorSource then source, kind, explicitKind = vendorSource, "Торговец", true end
+    local reviewedSource, reviewedOffer
+    if atlas.reviewedVendorSource then
+        reviewedSource, reviewedOffer = atlas.reviewedVendorSource({ id = id, spell = spell, journalSourceRaw = rawSource })
+    end
+    if reviewedSource and not vendorSource then source, kind, explicitKind = reviewedSource, "Торговец", true end
+    local saddlePurchase = atlas.reviewSaddlePurchase and atlas.reviewSaddlePurchase(id, spell, kind, source)
+    if saddlePurchase and saddlePurchase.season then
+        source, kind, explicitKind = atlas.saddlePurchaseSource(saddlePurchase), "Торговец", true
+    end
+    local detail = journalSourceDetail(id, spell, kind, rawSource ~= nil and source or nil)
+    if detail then
+        kind, explicitKind = detail.kind, true
+        if detail.source then
+            source = GetLocale and GetLocale() ~= "ruRU" and detail.englishSource or atlas.L(detail.source)
         end
-        if excluded(id, name, spell, collected, rawSource) then
-            rejected[id], known[id] = true, nil
-        elseif not mount or not mount.indexed then
-            if name and name ~= "" then
-                if rawSource == nil then
-                    local _, _, source = C_MountJournal.GetMountInfoExtraByID(id)
-                    rawSource = source
-                end
-                local source = plain(rawSource)
-                local kind, explicitKind, covenantOnly = sourceKind(source, category)
-                local vendorSource, vendorOffer
-                if atlas.vendorTokenSource then
-                    vendorSource, vendorOffer = atlas.vendorTokenSource({ id = id, spell = spell, journalSourceRaw = rawSource })
-                end
-                if vendorSource then source, kind, explicitKind = vendorSource, "Торговец", true end
-                local detail = journalSourceDetail(id, spell, kind, rawSource ~= nil and source or nil)
-                if detail then
-                    kind, explicitKind = detail.kind, true
-                    if detail.source then source = atlas.L(detail.source) end
-                end
-                local route = atlas.verifiedRewardDropRoute({ id = id })
-                local raidReward = atlas.raidLootReward({ id = id })
-                local raidMode
-                if raidReward and kind == "Добыча" and raidReward.boss and raidReward.place and raidReward.npc then
-                    local bosses, places = {}, {}
-                    for _, name in ipairs({ raidReward.boss, raidReward.englishBoss }) do bosses[atlas.searchKey(name)] = true end
-                    for _, name in ipairs({ raidReward.place, raidReward.englishPlace }) do places[atlas.searchKey(name)] = true end
-                    local bossSeen, placeSeen
-                    for line in source:gmatch("[^\n]+") do
-                        local label, value = sourceLine(line)
-                        if value and (dropLabels[label] or placeLabels[label]) then
-                            local base, mode = atlas.sourceDifficultySuffix(value)
-                            local name = atlas.searchKey(base or value)
-                            bossSeen, placeSeen = bossSeen or bosses[name], placeSeen or places[name]
-                            raidMode = raidMode or mode
-                        end
-                    end
-                    -- A reviewed boss/place pair may be reversed in the journal.
-                    -- A new, unrelated live source never inherits that correction.
-                    if bossSeen and placeSeen then route = raidReward end
-                end
-                local sourceOverride
-                if route and (route == raidReward or route.replacesJournalKind == kind)
-                    and route.boss and route.place and route.sourceKind then
-                    sourceOverride = route
-                    local english = GetLocale and GetLocale() ~= "ruRU"
-                    local boss, place = english and route.englishBoss or route.boss, english and route.englishPlace or route.place
-                    source = (english and "Drop: " or "Источник: ") .. boss .. "\n" .. (english and "Zone: " or "Место: ") .. place
-                    if route == raidReward and raidMode then source = source .. "\n" .. (english and "Difficulty: " or "Режим: ") .. raidMode end
-                    kind, explicitKind = "Добыча", true
-                end
-                local legacy = source == "Старинное" or source == "Legacy"
-                local reviewedAvailability = atlas.legacySourceDetails
-                    and atlas.legacySourceDetails({ id = id, spell = spell, journalSourceRaw = rawSource })
-                -- A review without a confirmed replacement must not overwrite
-                -- the current journal or disable its source interactions.
-                local availability = reviewedAvailability and type(reviewedAvailability.source) == "string"
-                    and reviewedAvailability.source ~= "" and reviewedAvailability or nil
-                local unavailable = availability and availability.state == "unavailable" or false
-                if availability then
-                    source = atlas.L(availability.source)
-                    local routeKind = availability.routes and availability.routes[1] and availability.routes[1].kind
-                    kind = availability.state == "available" and availability.kind or nil
-                    kind = kind or ((routeKind == "vendor" or availability.state == "blackmarket") and "Торговец")
-                        or (routeKind == "tradingpost" and "Торговая лавка")
-                        or (routeKind == "quest" and "Квест") or (routeKind == "class" and "Класс") or "Журнал"
-                    explicitKind, sourceOverride, detail = true, nil, nil
-                end
-                if not mount then
-                    mount = { id = id, journalOnly = true, english = atlas.englishNames[id] or name }
-                    known[id] = mount
-                    added[#added + 1] = mount
-                end
-                if mount.journalOnly then
-                    mount.name, mount.kind = name, kind
-                    mount.boss = source:match("^[^:\n]+:%s*([^\n]+)") or kind
-                    mount.place = source:match("Зона:%s*([^\n]+)") or source:match("Место:%s*([^\n]+)")
-                        or source:match("Область:%s*([^\n]+)") or source:match("Zone:%s*([^\n]+)")
-                        or source:match("Location:%s*([^\n]+)") or source:match("Area:%s*([^\n]+)") or kind
-                end
-                mount.spell = spell
-                mount.availability = availability
-                if availability then mount.kind = kind end
-                mount.expansion = mount.expansion or atlas.mountExpansions[id]
-                mount.covenantSourceOnly = covenantOnly and not explicitKind or nil
-                mount.journalSourceRaw = rawSource or ""
-                mount.vendorTokenOffer = vendorOffer
-                mount.sourceOverride = sourceOverride
-                mount.journalSourceOverride = (sourceOverride or (detail and detail.source) or availability or vendorOffer) and source or nil
-                mount.unavailable = unavailable
-                mount.journalSource = unavailable and "Недоступно для получения" or display(mount.journalSourceOverride or rawSource)
-                mount.isRaid = raidSource(mount, source)
-                mount.sourcePlaceKind = nil
-                local sourceBoss, sourcePlace, panelKind, groups = sourcePanels(mount, source, kind)
-                mount.hasSourcePanels = sourceBoss ~= nil
-                mount.sourceKind = panelKind
-                mount.sourceGroups = groups
-                if sourceBoss then mount.boss, mount.place = sourceBoss, sourcePlace end
-                mount.questFrequency = not legacy and atlas.questFrequencies[id] or nil
-                local reward = atlas.attemptStages[id] and atlas.attemptStages[id].reward
-                local trackedLoot = reward and reward.method ~= "SPECIAL"
-                -- Hidden loot-lockout quests and world quests around a rare are
-                -- not quest rewards. Actual quest starters keep their own flag.
-                mount.hasQuest = not legacy and (mount.quest ~= nil or (not trackedLoot and
-                    ((explicitKind and kind == "Квест") or source:find("Задание:", 1, true) ~= nil
-                        or source:find("Quest:", 1, true) ~= nil)))
-                local alternatives = {}
-                for _, group in ipairs(groups or {}) do
-                    alternatives[#alternatives + 1] = group.boss
-                    alternatives[#alternatives + 1] = group.englishBoss or ""
-                end
-                mount.key = atlas.searchKey(table.concat({ baseKeys[id] or "", name, mount.english, kind, source, table.concat(alternatives, " "),
-                    itemSearchWords(id) }, " "))
-                -- The extra-info API may return nothing while data is unavailable.
-                -- An empty source is valid, but nil must be retried on the next sync.
-                mount.indexed = rawSource ~= nil
+    end
+    local route = atlas.verifiedRewardDropRoute({ id = id })
+    local raidReward = atlas.raidLootReward({ id = id, spell = spell })
+    local raidMode
+    if raidReward and kind == "Добыча" and raidReward.boss and raidReward.place and raidReward.npc then
+        local bosses, places = {}, {}
+        for _, name in ipairs({ raidReward.boss, raidReward.englishBoss }) do bosses[atlas.searchKey(name)] = true end
+        for _, name in ipairs({ raidReward.place, raidReward.englishPlace }) do places[atlas.searchKey(name)] = true end
+        local bossSeen, placeSeen
+        for line in source:gmatch("[^\n]+") do
+            local label, value = sourceLine(line)
+            if value and (dropLabels[label] or placeLabels[label]) then
+                local base, mode = atlas.sourceDifficultySuffix(value)
+                local name = atlas.searchKey(base or value)
+                bossSeen, placeSeen = bossSeen or bosses[name], placeSeen or places[name]
+                raidMode = raidMode or mode
             end
         end
-        if mount and not rejected[id] then
-            mount.icon = icon or mount.icon
-            if type(collected) == "boolean" then collectedByID[id] = collected
-            else collectedByID[id] = "unknown" end
+        -- A reviewed boss/place pair may be reversed in the journal.
+        -- A new, unrelated live source never inherits that correction.
+        if bossSeen and placeSeen then route = raidReward end
+    end
+    local sourceOverride
+    if route and (route == raidReward or route.replacesJournalKind == kind)
+        and route.boss and route.place and route.sourceKind then
+        sourceOverride = route
+        local english = GetLocale and GetLocale() ~= "ruRU"
+        local boss, place = english and route.englishBoss or route.boss, english and route.englishPlace or route.place
+        source = (english and "Drop: " or "Источник: ") .. boss .. "\n" .. (english and "Zone: " or "Место: ") .. place
+        if route == raidReward and raidMode then source = source .. "\n" .. (english and "Difficulty: " or "Режим: ") .. raidMode end
+        kind, explicitKind = "Добыча", true
+    end
+    local legacy = source == "Старинное" or source == "Legacy"
+    local reviewedAvailability = atlas.legacySourceDetails
+        and atlas.legacySourceDetails({ id = id, spell = spell, journalSourceRaw = rawSource })
+    -- A review without a confirmed replacement must not overwrite
+    -- the current journal or disable its source interactions.
+    local availability = reviewedAvailability and type(reviewedAvailability.source) == "string"
+        and reviewedAvailability.source ~= "" and reviewedAvailability or nil
+    local unavailable = availability and availability.state == "unavailable" or false
+    if availability then
+        source = atlas.L(availability.source)
+        local routeKind = availability.routes and availability.routes[1] and availability.routes[1].kind
+        kind = availability.state == "available" and availability.kind or nil
+        kind = kind or ((routeKind == "vendor" or availability.state == "blackmarket") and "Торговец")
+            or (routeKind == "tradingpost" and "Торговая лавка")
+            or (routeKind == "quest" and "Квест") or (routeKind == "class" and "Класс") or "Журнал"
+        explicitKind, sourceOverride, detail = true, nil, nil
+    end
+    local grant = (not availability or availability.state == "available")
+        and directMountGrant(id, spell, kind, rawSource, covenantOnly) or nil
+    local grantSource
+    if grant and not grant.alternate and grant.text then
+        grantSource = GetLocale and GetLocale() ~= "ruRU" and grant.englishText or grant.text
+        source = grantSource
+    elseif grant and grant.renown and not grant.alternate
+        and not source:match("\nИзвестность:") and not source:match("\nRenown:") then
+        local requirement = atlas.L("Известность") .. ": " .. grant.renown
+        grantSource = atlas.normalizeSource(rawSource):gsub("%s+$", "") .. "\n" .. requirement
+        source = plain(grantSource)
+    end
+    if mount.journalOnly then
+        mount.name, mount.kind = name, kind
+        mount.boss, mount.place = journalSourceFields(source, kind)
+    end
+    mount.spell = spell
+    mount.availability = availability
+    mount.sourceReview = reviewedAvailability
+    mount.saddlePurchase = not availability and saddlePurchase or nil
+    mount.directSourceGrant = grant
+    if availability then mount.kind = kind end
+    mount.expansion = mount.expansion or atlas.mountExpansions[id]
+    mount.covenantSourceOnly = covenantOnly and not explicitKind or nil
+    mount.journalSourceRaw = rawSource or ""
+    mount.vendorTokenOffer = vendorOffer
+    mount.reviewedVendorOffer = not availability and not vendorOffer and reviewedOffer or nil
+    mount.sourceOverride = sourceOverride
+    mount.journalSourceOverride = (sourceOverride or (detail and detail.source) or availability or vendorOffer or reviewedOffer
+        or (saddlePurchase and saddlePurchase.season) or grantSource) and source or nil
+    mount.unavailable = unavailable
+    mount.journalUnknownSourceNote = detail and detail.unknownSourceNote or nil
+    mount.sourceRequirements = detail and detail.kind == kind and detail.requirements or nil
+    mount.journalSource = unavailable and "Недоступно для получения" or display(mount.journalSourceOverride or rawSource)
+    mount.isRaid = raidSource(mount, source)
+    mount.sourcePlaceKind = nil
+    local sourceBoss, sourcePlace, panelKind, groups = sourcePanels(mount, source, kind)
+    mount.hasSourcePanels = sourceBoss ~= nil
+    mount.sourceKind = panelKind
+    mount.sourceGroups = groups
+    if sourceBoss then mount.boss, mount.place = sourceBoss, sourcePlace end
+    local forgeMap
+    if kind == "Профессия" and not availability and not mount.place then
+        local item = atlas.craftedMountItem(mount)
+        if item and atlas.protoformMountRecipes[item] then
+            forgeMap = atlas.sourceUiMaps[atlas.protoformForgeMapID]
+            mount.place = forgeMap[atlas.getLocale() == "enUS" and 2 or 1]
         end
     end
-    -- Apply the same policy to curated and already indexed entries. Keep saved
-    -- account data intact; only the visible catalog is being filtered.
-    for index = #atlas.mounts, 1, -1 do
-        if rejected[atlas.mounts[index].id] then table.remove(atlas.mounts, index) end
+    mount.questFrequency = not legacy and atlas.questFrequencies[id] or nil
+    local reward = atlas.attemptStages[id] and atlas.attemptStages[id].reward
+    local trackedLoot = reward and reward.method ~= "SPECIAL"
+    -- Hidden loot-lockout quests and world quests around a rare are
+    -- not quest rewards. Actual quest starters keep their own flag.
+    mount.hasQuest = not legacy and (mount.quest ~= nil or (not trackedLoot and
+        ((explicitKind and kind == "Квест") or source:find("Задание:", 1, true) ~= nil
+            or source:find("Quest:", 1, true) ~= nil)))
+    mount.achievementSteps = nil
+    mount.hasAchievement = not legacy and kind == "Достижение"
+    for _, route in ipairs(availability and availability.routes or {}) do
+        if route.kind == "achievement" then mount.hasAchievement = true; break end
     end
-    table.sort(added, function(a,b)
+    local hasAchievementField = source:find("Достижение:", 1, true) or source:find("Achievement:", 1, true)
+        or source:find("Великий подвиг:", 1, true) or source:find("Feats of Strength:", 1, true)
+    if not legacy and not availability and (vendorOffer or hasAchievementField) then
+        local hasVendorField = vendorOffer or kind == "Торговец" or source:find("Торговец:", 1, true)
+            or source:find("Торговцы:", 1, true) or source:find("Продавец:", 1, true)
+            or source:find("Vendor:", 1, true) or source:find("Vendors:", 1, true)
+        local steps = hasVendorField and atlas.vendorAchievementRequirements and atlas.vendorAchievementRequirements(mount)
+        if (not steps or #steps == 0) and not mount.hasAchievement then
+            steps = achievementAlternatives(atlas.normalizeSource(mount.journalSourceOverride or rawSource or ""))
+        end
+        if steps and #steps > 0 then mount.achievementSteps, mount.hasAchievement = steps, true end
+    end
+    local alternatives = {}
+    for _, group in ipairs(groups or {}) do
+        alternatives[#alternatives + 1] = group.boss
+        alternatives[#alternatives + 1] = group.englishBoss or ""
+    end
+    mount.key = atlas.searchKey(table.concat({ baseKeys[id] or "", name, mount.english, kind, source, table.concat(alternatives, " "),
+        itemSearchWords(id), forgeMap and forgeMap[1] or "", forgeMap and forgeMap[2] or "" }, " "))
+
+    -- An empty source is valid. Nil means the extra info needs to be retried.
+    mount.indexed = rawSource ~= nil
+end
+
+local pending, pendingIdentity, membershipReady = {}, {}, false
+
+local function journalValue(value)
+    if not (issecretvalue and issecretvalue(value)) then return value end
+end
+
+local function validMountID(id)
+    return type(id) == "number" and id > 0 and id % 1 == 0
+end
+
+local function changeCounts(collection, expansion, total, collected)
+    local counts = collection.expansions[expansion]
+    if not counts then
+        counts = { total = 0, collected = 0 }
+        collection.expansions[expansion] = counts
+    end
+    counts.total, counts.collected = counts.total + total, counts.collected + collected
+    if counts.total == 0 then collection.expansions[expansion] = nil end
+    collection.total, collection.collected = collection.total + total, collection.collected + collected
+end
+
+local function journalBatch(collection)
+    return { collection = collection or { byID = {}, expansions = {}, collected = 0, total = 0 },
+        added = {}, removed = {}, changed = collection == nil }
+end
+
+local function publishJournal(batch)
+    if not batch.changed then return false end
+    if next(batch.removed) then
+        for i = #atlas.mounts, 1, -1 do
+            if batch.removed[atlas.mounts[i]] then table.remove(atlas.mounts, i) end
+        end
+    end
+    local added = {}
+    for _, mount in pairs(batch.added) do added[#added + 1] = mount end
+    table.sort(added, function(a, b)
         if a.name == b.name then return a.id < b.id end
         return a.name < b.name
     end)
-    for _, m in ipairs(added) do atlas.mounts[#atlas.mounts + 1] = m end
-    -- Use the same ownership sample for the catalog and planner. A missing
-    -- journal value is distinct from an explicitly uncollected mount.
-    local collection = { byID = collectedByID, expansions = {}, collected = 0, total = #atlas.mounts }
-    for _, mount in ipairs(atlas.mounts) do
-        local owned = collectedByID[mount.id]
-        if owned == nil then
-            -- Curated mounts can be present before the journal list is ready.
-            local _, _, icon, _, _, _, _, _, _, _, collected = C_MountJournal.GetMountInfoByID(mount.id)
-            if not (issecretvalue and issecretvalue(icon)) then mount.icon = icon or mount.icon end
-            if not (issecretvalue and issecretvalue(collected)) and type(collected) == "boolean" then
-                owned = collected
-                collectedByID[mount.id] = collected
-            end
-        end
-        local expansion = atlas.collectionCategory(mount)
-        local counts = collection.expansions[expansion]
-        if not counts then
-            counts = { collected = 0, total = 0 }
-            collection.expansions[expansion] = counts
-        end
-        counts.total = counts.total + 1
-        if owned == true then
-            counts.collected = counts.collected + 1
-            collection.collected = collection.collected + 1
-        end
-    end
-    atlas.collection = collection
+    for _, mount in ipairs(added) do atlas.mounts[#atlas.mounts + 1] = mount end
+    if batch.sourcesChanged then atlas.journalSourceRevision = atlas.journalSourceRevision + 1 end
+    -- Publish a new identity for the UI. The underlying index is updated by ID.
+    local collection = batch.collection
+    atlas.collection = { byID = collection.byID, expansions = collection.expansions,
+        collected = collection.collected, total = collection.total }
     if atlas.queuePlanBrokerRefresh then atlas.queuePlanBrokerRefresh() end
     if atlas.queueExpeditionTrackerRefresh then atlas.queueExpeditionTrackerRefresh() end
+    return true
 end
+
+local function sampleMount(batch, id, retryable, requestedOnly)
+    local collection = batch.collection
+    local mount = known[id]
+    local name, spell, icon, _, _, category, _, _, _, _, collected = C_MountJournal.GetMountInfoByID(id)
+    name, spell, icon = journalValue(name), journalValue(spell), journalValue(icon)
+    category, collected = journalValue(category), journalValue(collected)
+    -- An arbitrary requested ID without a native record must not subscribe
+    -- that ID to future journal events. A later explicit request can try again.
+    if requestedOnly and not mount and name == nil and spell == nil then return false end
+    local previousOwned = collection.byID[id]
+    local acquiring = pending[id] == true
+    local identityReady = type(name) == "string" and name ~= "" and type(spell) == "number"
+    if retryable and not identityReady and not (mount and mount.journalName) then
+        pendingIdentity[id] = true
+    else
+        pendingIdentity[id] = nil
+    end
+    local ownershipReady = type(collected) == "boolean" and (not acquiring or collected == true)
+    local owned = previousOwned
+    if ownershipReady then owned = collected end
+    if owned == nil then owned = "unknown" end
+
+    local sameIdentity = mount and mount.journalName == name and mount.spell == spell
+    local indexed = sameIdentity and mount.indexed
+    local rawSource
+    if identityReady and (retryable or indexed or excludedSpells[spell]) then
+        local excludedEarly = excludedByIdentity(id, name, spell, owned == true)
+        if not excludedEarly then
+            if indexed then rawSource = mount.journalSourceRaw
+            else rawSource = journalValue(select(3, C_MountJournal.GetMountInfoExtraByID(id))) end
+        end
+        if excludedEarly or (owned ~= true and excludedBySource(id, spell, rawSource)) then
+            -- An unreleased entry can appear once its source arrives. Genuine
+            -- non-collectible abilities and resolved placeholder IDs can stop.
+            pending[id] = nil
+            if not excludedSpells[spell] then
+                if acquiring and not ownershipReady then pending[id] = true
+                elseif not ownershipReady or not excludedEarly and rawSource == nil then pending[id] = false end
+            end
+            if not mount then return end
+            known[id], collection.byID[id] = nil, nil
+            batch.changed, batch.sourcesChanged = true, true
+            if previousOwned ~= nil then
+                changeCounts(collection, atlas.collectionCategory(mount), -1, previousOwned == true and -1 or 0)
+            end
+            if batch.added[id] == mount then batch.added[id] = nil
+            else batch.removed[mount] = true end
+            return
+        end
+    end
+
+    if acquiring and owned ~= true then pending[id] = true
+    elseif retryable and (not identityReady or not ownershipReady or rawSource == nil) then pending[id] = false
+    else pending[id] = nil end
+
+    local previousExpansion = previousOwned ~= nil and mount and atlas.collectionCategory(mount)
+    local changed = false
+    if retryable and identityReady and not indexed and (rawSource ~= nil or not sameIdentity) then
+        if not mount then
+            mount = { id = id, journalOnly = true, english = atlas.englishNames[id] or name }
+            known[id] = mount
+            batch.added[id] = mount
+        end
+        indexJournalMount(mount, id, name, spell, category, rawSource)
+        mount.journalName = name
+        batch.sourcesChanged = true
+        changed = true
+    end
+    if not mount then return end
+
+    if icon ~= nil and mount.icon ~= icon then
+        mount.icon, changed = icon, true
+    end
+    mount.unknownSourceNote = owned == false and mount.journalUnknownSourceNote or nil
+    local expansion = atlas.collectionCategory(mount)
+    if previousExpansion ~= expansion then
+        if previousExpansion then
+            changeCounts(collection, previousExpansion, -1, previousOwned == true and -1 or 0)
+        end
+        changeCounts(collection, expansion, 1, owned == true and 1 or 0)
+        changed = true
+    elseif previousOwned ~= owned then
+        local collectedDelta = (owned == true and 1 or 0) - (previousOwned == true and 1 or 0)
+        changeCounts(collection, expansion, 0, collectedDelta)
+        changed = true
+    end
+    collection.byID[id] = owned
+    if changed then batch.changed = true end
+end
+
+local function samplePending(ids)
+    local batch = journalBatch(atlas.collection)
+    for id in pairs(ids) do sampleMount(batch, id, true) end
+    return publishJournal(batch)
+end
+
+local function notifyJournalChanged(changed)
+    if changed and atlas.onJournalChanged then atlas.onJournalChanged() end
+end
+
+local function retryAcquisitions(acquisitions)
+    if not next(acquisitions) then return end
+    -- NEW_MOUNT_ADDED can arrive before ownership is readable. Allow one
+    -- delayed read even when Blizzard's journal has no follow-up search event.
+    C_Timer.After(.25, function()
+        for id in pairs(acquisitions) do
+            if pending[id] ~= true then acquisitions[id] = nil end
+        end
+        if next(acquisitions) then notifyJournalChanged(samplePending(acquisitions)) end
+    end)
+end
+
+local draft, scan, scanTimer
+local prepareRequested, retryBeforePublish = false, false
+local initialRetryDelays, initialRetry = { .25, .75, 1.5, 3, 6 }, 0
+local earlyAcquisitions = {}
+
+local function scanCheckpoint(job)
+    if not job.rows then return end
+    job.rows = job.rows + 1
+    if job.rows >= 32 or (job.deadline and debugprofilestop() >= job.deadline) then coroutine.yield() end
+end
+
+local function scanJournal(job)
+    local ids = journalValue(C_MountJournal.GetMountIDs())
+    if type(ids) ~= "table" or (canaccesstable and not canaccesstable(ids)) or not next(ids) then return false end
+
+    local batch, sampled, complete = job.batch, {}, true
+    for _, id in ipairs(ids) do
+        id = journalValue(id)
+        if not validMountID(id) then
+            complete = false
+        elseif not sampled[id] then
+            sampled[id] = true
+            sampleMount(batch, id, true)
+        end
+        scanCheckpoint(job)
+    end
+    -- Curated entries can exist outside the client's current membership.
+    for _, mount in ipairs(atlas.mounts) do
+        local id = mount.id
+        if not sampled[id] and known[id] == mount then
+            sampled[id] = true
+            sampleMount(batch, id, pending[id] == true)
+        end
+        scanCheckpoint(job)
+    end
+    local staged = {}
+    for id in pairs(batch.added) do
+        if not sampled[id] then staged[#staged + 1] = id end
+    end
+    for _, id in ipairs(staged) do
+        sampled[id] = true
+        sampleMount(batch, id, true)
+        scanCheckpoint(job)
+    end
+    local retry, retryLoaded = {}, job.initial and retryBeforePublish
+    retryBeforePublish = false
+    for id, acquiring in pairs(pending) do
+        if not sampled[id] then
+            if acquiring or batch.added[id] then retry[#retry + 1] = id
+            elseif complete then pending[id], pendingIdentity[id] = nil, nil end
+        elseif retryLoaded and not acquiring then
+            retry[#retry + 1] = id
+        end
+    end
+    for _, id in ipairs(retry) do
+        if pending[id] ~= nil then sampleMount(batch, id, true) end
+        scanCheckpoint(job)
+    end
+    -- A mount acquired after its first sample must still be reflected in the
+    -- initial snapshot. Swap each set before yielding so new events stay queued.
+    while next(earlyAcquisitions) do
+        local acquisitions = earlyAcquisitions
+        earlyAcquisitions = {}
+        for id in pairs(acquisitions) do
+            if pending[id] == true then sampleMount(batch, id, true) end
+            scanCheckpoint(job)
+        end
+    end
+    return complete
+end
+
+local function advanceJournalScan(sliced)
+    if not scan or scan.invalidated then
+        local initial = atlas.collection == nil
+        if initial and not draft then draft = journalBatch() end
+        local job = { batch = initial and draft or journalBatch(atlas.collection), initial = initial }
+        job.thread = coroutine.create(function() return scanJournal(job) end)
+        scan = job
+    end
+    local job = scan
+    job.rows = sliced and 0 or nil
+    job.deadline = sliced and debugprofilestop and (debugprofilestop() + 4) or nil
+    local ok, complete = coroutine.resume(job.thread)
+    if not ok then
+        scan = nil
+        error(complete, 0)
+    end
+    if coroutine.status(job.thread) ~= "dead" then return false end
+    scan = nil
+    membershipReady = complete
+    if job.initial and not complete then return false end
+    local awaiting = job.initial and prepareRequested
+    if job.initial then
+        draft, prepareRequested, retryBeforePublish, initialRetry = nil, false, false, 0
+    end
+    local changed = publishJournal(job.batch)
+    if job.initial then
+        local acquisitions = {}
+        for id, acquiring in pairs(pending) do
+            if acquiring then acquisitions[id] = true end
+        end
+        retryAcquisitions(acquisitions)
+    end
+    if awaiting then notifyJournalChanged(changed) end
+    return changed
+end
+
+local function scheduleInitialScan(delay)
+    if scanTimer then return end
+    local ticket = {}
+    scanTimer = ticket
+    C_Timer.After(delay, function()
+        if scanTimer ~= ticket then return end
+        scanTimer = nil
+        advanceJournalScan(true)
+        if scan then
+            scheduleInitialScan(0)
+        elseif not atlas.collection and initialRetryDelays[initialRetry + 1] then
+            initialRetry = initialRetry + 1
+            scheduleInitialScan(initialRetryDelays[initialRetry])
+        end
+    end)
+end
+
+function atlas.syncJournal()
+    -- Consume the same scan if a synchronous caller needs the full catalog now.
+    local changed = advanceJournalScan(false)
+    if atlas.collection then scanTimer = nil end
+    return changed
+end
+
+function atlas.ensureJournal()
+    local changed = false
+    if not membershipReady then
+        changed = atlas.syncJournal()
+    elseif next(pending) then
+        changed = samplePending(pending)
+    end
+    return changed, membershipReady and not next(pendingIdentity)
+end
+
+function atlas.resolveJournalMount(id)
+    id = journalValue(id)
+    if not validMountID(id) then return end
+    local mount = known[id]
+    if mount and pending[id] == nil and (atlas.collection or mount.journalName) then return mount end
+    local batch
+    if atlas.collection then
+        batch = journalBatch(atlas.collection)
+    else
+        if not draft then draft = journalBatch() end
+        batch = draft
+    end
+    sampleMount(batch, id, true, pending[id] == nil)
+    if atlas.collection then publishJournal(batch) end
+    return known[id]
+end
+
+local acquired, retryPending, rescan, queued = {}, false, false, false
+local function flushJournalEvents()
+    local acquisitions, shouldRetry, shouldRescan = acquired, retryPending, rescan
+    acquired, retryPending, rescan, queued = {}, false, false, false
+    for id in pairs(acquisitions) do pending[id] = true end
+
+    local changed
+    if shouldRescan then changed = atlas.syncJournal()
+    elseif shouldRetry then changed = atlas.ensureJournal()
+    else changed = samplePending(acquisitions) end
+    notifyJournalChanged(changed)
+
+    for id in pairs(acquisitions) do
+        if pending[id] ~= true then acquisitions[id] = nil end
+    end
+    retryAcquisitions(acquisitions)
+end
+
+local function queueJournalEvents()
+    if queued then return end
+    queued = true
+    C_Timer.After(0, flushJournalEvents)
+end
+
+function atlas.prepareJournal()
+    if atlas.collection then
+        if not membershipReady or next(pending) then
+            retryPending = true
+            queueJournalEvents()
+        end
+        return true
+    end
+    if not draft then draft = journalBatch() end
+    if not scan and not scanTimer then initialRetry = 0 end
+    prepareRequested = true
+    scheduleInitialScan(0)
+    return false
+end
+
+local journalEvents = CreateFrame("Frame")
+journalEvents:RegisterEvent("NEW_MOUNT_ADDED")
+journalEvents:RegisterEvent("COMPANION_UNLEARNED")
+journalEvents:RegisterEvent("MOUNT_JOURNAL_SEARCH_UPDATED")
+journalEvents:RegisterEvent("PLAYER_ENTERING_WORLD")
+journalEvents:RegisterEvent("PLAYER_REGEN_ENABLED")
+journalEvents:SetScript("OnEvent", function(_, event, value, reloadingUI)
+    -- Keep the journal dormant until a consumer requests data.
+    if not atlas.collection and not draft then return end
+    value = journalValue(value)
+    local reset = event == "PLAYER_ENTERING_WORLD" and (value == true or journalValue(reloadingUI) == true)
+    if event == "COMPANION_UNLEARNED" then
+        if value and value ~= "MOUNT" then return end
+        reset = true
+    end
+    if not atlas.collection then
+        if event == "NEW_MOUNT_ADDED" then
+            if not validMountID(value) or pending[value] == true then return end
+            pending[value], earlyAcquisitions[value] = true, true
+        elseif reset and scan then
+            -- A login or mount removal can change earlier samples in the draft.
+            scan.invalidated = true
+        else
+            retryBeforePublish = true
+        end
+        if prepareRequested then scheduleInitialScan(0) end
+        return
+    end
+    if event == "NEW_MOUNT_ADDED" then
+        if not validMountID(value) or pending[value] == true or atlas.collection.byID[value] == true then return end
+        acquired[value] = true
+    elseif reset then
+        rescan = true
+    else
+        -- The native search and filter controls also fire the search event.
+        if membershipReady and not next(pending) then return end
+        retryPending = true
+    end
+    queueJournalEvents()
+end)

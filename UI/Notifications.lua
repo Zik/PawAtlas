@@ -85,43 +85,55 @@ function atlas.playRewardSound()
     soundHandle = ok and handle or nil
 end
 
-function atlas.makeNotificationSettings(parent)
-    local refreshSoundControls
-    local function hideTooltip(self) if GameTooltip:IsOwned(self) then GameTooltip:Hide() end end
-    local function updateSoundControls() refreshSoundControls() end
-    ui.text(parent, 0, 80, 470, 26, 16, "Чат", ui.gold)
-    local chat = ui.accountCheckbox(parent, 0, 108, 350, "Сообщения в чат", "chatMessages", updateSoundControls)
-    ui.text(parent, 0, 140, 480, 24, 14, "Формат сообщения", ui.muted)
-    ui.fieldSurface(parent, 0, 166, 614, 40)
-    local edit = ui.place(CreateFrame("EditBox", "MountAtlasChatFormat", parent), parent, 10, 166, 594, 40)
+local function hideTooltip(self)
+    if GameTooltip:IsOwned(self) then GameTooltip:Hide() end
+end
+
+local function makeChatMessageEditor(parent, y, widgetName, key, defaultFormat, preview)
+    ui.text(parent, 0, y, 480, 24, 15, "Формат сообщения", ui.muted)
+    local formatFrame = ui.place(CreateFrame("Frame", nil, parent), parent, 0, y + 26, 614, 36)
+    local formatSurface = ui.dropdownSurface(formatFrame)
+    local edit = ui.place(CreateFrame("EditBox", widgetName, formatFrame), formatFrame, 10, 0, 594, 36)
     edit:SetAutoFocus(false)
     edit:SetMaxLetters(300)
     edit:SetTextInsets(4, 4, 0, 0)
-    ui.setFont(edit, 14)
+    ui.setFont(edit, 15)
+    local function formatFocus(focused)
+        local color = focused and { .35, .48, .65, 1 } or { .25, .32, .42, 1 }
+        for _, edge in ipairs({ "TOP", "BOTTOM", "LEFT", "RIGHT" }) do
+            formatSurface[edge]:SetColorTexture(unpack(color))
+        end
+    end
+    edit:SetScript("OnEditFocusGained", function() formatFocus(true) end)
+    edit:SetScript("OnEditFocusLost", function() formatFocus(false) end)
     edit:SetTextColor(unpack(ui.paper))
     edit:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
     edit:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
-    local sample = ui.text(parent, 12, 234, 682, 40, 14, "", ui.mint)
+    edit:SetScript("OnHide", function(self) self:ClearFocus() end)
+    local sample = ui.text(parent, 8, y + 90, 690, 34, 14, "", ui.mint)
     sample:SetMaxLines(2)
     local applyFormat, applyCheck
     local function savedFormat()
-        return settings().chatMessageFormat or atlas.defaultChatMessageFormat()
+        local saved = settings()[key]
+        return type(saved) == "string" and saved:find("%S") and saved or defaultFormat()
     end
+    local editSavedFormat = savedFormat()
     local function refreshSample()
         local value = edit:GetText()
-        local template = value:match("%S") and value or atlas.defaultChatMessageFormat()
-        sample:SetText(atlas.formatAttemptMessage(L("Тлеющий осколок"), 25, 1 - .999 ^ 25, .001, 224025, template))
+        local template = value:match("%S") and value or defaultFormat()
+        sample:SetText(preview(template))
         local dirty = value ~= savedFormat()
         applyFormat:SetEnabled(dirty)
         applyFormat:SetAlpha(dirty and 1 or .45)
         applyCheck:SetDesaturated(not dirty)
     end
-    applyFormat = ui.place(CreateFrame("Button", nil, parent), parent, 622, 170, 32, 32)
+    applyFormat = ui.place(CreateFrame("Button", nil, parent), parent, 622, y + 28, 32, 32)
     applyCheck = ui.icon(applyFormat, 5.5, 5.5, 21, "ObjectiveComplete")
     applyFormat:SetScript("OnClick", function()
         local value = edit:GetText()
-        settings().chatMessageFormat = value:match("%S") and value or nil
-        edit:SetText(savedFormat())
+        settings()[key] = value:match("%S") and value or nil
+        editSavedFormat = savedFormat()
+        edit:SetText(editSavedFormat)
         edit:ClearFocus()
         refreshSample()
     end)
@@ -134,31 +146,41 @@ function atlas.makeNotificationSettings(parent)
     edit:SetText(savedFormat())
     edit:SetScript("OnTextChanged", refreshSample)
     refreshSample()
-    ui.resetButton(parent, 666, 170, function()
-        settings().chatMessageFormat = nil
-        edit:SetText(atlas.defaultChatMessageFormat())
+    ui.resetButton(parent, 666, y + 28, function()
+        settings()[key] = nil
+        editSavedFormat = savedFormat()
+        edit:SetText(editSavedFormat)
         refreshSample()
     end)
     -- Tokens are inserted at the current cursor, without replacing typed text.
     for i, token in ipairs({ "{название}", "{попытки}", "{вероятность}" }) do
         local x = (i - 1) * 170
-        local button = ui.button(parent, x, 209, 160, 25, function()
+        local button = ui.button(parent, x, y + 64, 160, 25, function()
             edit:SetFocus(); edit:Insert(L(token))
             refreshSample()
         end)
-        local label = ui.text(button, 8, 0, 148, 25, 12, token, ui.gold)
+        local label = ui.text(button, 8, 0, 148, 25, 15, token, ui.gold)
         label:SetJustifyH("LEFT")
     end
-    ui.fill(parent, 0, 279, 706, 1, ui.rule)
-    ui.text(parent, 0, 284, 470, 28, 16, "Получение маунта", ui.gold)
-    local reward = ui.accountCheckbox(parent, 0, 316, 350, "Всплывающее уведомление", "rewardToast", updateSoundControls)
-    local screenshot = ui.accountCheckbox(parent, 370, 316, 336, "Скриншот при получении", "rewardScreenshot", updateSoundControls)
-    ui.action(parent, 492, 284, 162, 30, "Предпросмотр", nil, function() atlas.previewMountNotification() end)
+    return function()
+        local persisted = savedFormat()
+        if edit:GetText() == editSavedFormat and edit:GetText() ~= persisted then edit:SetText(persisted) end
+        editSavedFormat = persisted
+        refreshSample()
+    end
+end
+
+local function makeCollectionNotificationSettings(parent)
+    local refreshSoundControls
+    local function updateSoundControls() refreshSoundControls() end
+    local reward = ui.accountCheckbox(parent, 0, 53, 350, "Всплывающее уведомление", "rewardToast", updateSoundControls)
+    local screenshot = ui.accountCheckbox(parent, 370, 53, 336, "Скриншот при получении", "rewardScreenshot")
+    ui.action(parent, 492, 16, 162, 30, "Предпросмотр", nil, function() atlas.previewMountNotification() end)
     local lock, lockIcon
     local function refreshLock()
         ui.setIcon(lockIcon, positionUnlocked and "Unlock" or "Lock")
     end
-    lock = ui.place(CreateFrame("Button", nil, parent), parent, 666, 283, 32, 32)
+    lock = ui.place(CreateFrame("Button", nil, parent), parent, 666, 15, 32, 32)
     lock:SetScript("OnClick", function()
         atlas.setNotificationPositionUnlocked(not positionUnlocked)
         refreshLock()
@@ -172,10 +194,10 @@ function atlas.makeNotificationSettings(parent)
     end)
     lock:HookScript("OnLeave", function(self) if GameTooltip:IsOwned(self) then GameTooltip:Hide() end end)
     lock:HookScript("OnHide", function(self) if GameTooltip:IsOwned(self) then GameTooltip:Hide() end end)
-    ui.text(parent, 0, 351, 210, 32, 14, "Размер уведомления", ui.muted)
-    local scaleValue = ui.text(parent, 644, 351, 62, 32, 14, "", ui.gold)
+    ui.text(parent, 0, 100, 210, 32, 14, "Размер уведомления", ui.muted)
+    local scaleValue = ui.text(parent, 644, 100, 62, 32, 14, "", ui.gold)
     scaleValue:SetJustifyH("RIGHT")
-    local scale = ui.place(CreateFrame("Slider", "MountAtlasNotificationScale", parent), parent, 220, 357, 400, 20)
+    local scale = ui.place(CreateFrame("Slider", "MountAtlasNotificationScale", parent), parent, 220, 106, 400, 20)
     scale:SetOrientation("HORIZONTAL")
     scale:SetMinMaxValues(50, 150)
     scale:SetValueStep(5)
@@ -192,8 +214,9 @@ function atlas.makeNotificationSettings(parent)
         scaleValue:SetText(string.format("%d%%", math.floor(value + .5)))
         if not refreshingScale then atlas.setNotificationScale(value / 100) end
     end)
-    local soundToggle = ui.accountCheckbox(parent, 0, 385, 282, "Звук уведомления", "rewardSoundEnabled", updateSoundControls)
-    local volumeArea = ui.place(CreateFrame("Frame", nil, parent), parent, 334, 385, 372, 32)
+    ui.fill(parent, 0, 148, 706, 1, ui.rule)
+    local soundToggle = ui.accountCheckbox(parent, 0, 163, 282, "Звук уведомления", "rewardSoundEnabled", updateSoundControls)
+    local volumeArea = ui.place(CreateFrame("Frame", nil, parent), parent, 334, 163, 372, 32)
     volumeArea:EnableMouse(true)
     local volumeLabel = ui.text(volumeArea, 0, 0, 106, 32, 14, "Громкость", ui.muted)
     local volumeValue = ui.text(volumeArea, 310, 0, 62, 32, 14, "", ui.gold)
@@ -222,10 +245,13 @@ function atlas.makeNotificationSettings(parent)
     volumeArea:SetScript("OnLeave", function(self) if GameTooltip:IsOwned(self) then GameTooltip:Hide() end end)
     volumeArea:SetScript("OnHide", function(self) if GameTooltip:IsOwned(self) then GameTooltip:Hide() end end)
     local menu
-    local picker = ui.action(parent, 0, 423, 654, 40, nil, nil, function() menu:SetShown(not menu:IsShown()) end, true)
+    local pickerY, menuGap = 220, 5
+    local picker = ui.action(parent, 0, pickerY, 654, 40, nil, nil, function() menu:SetShown(not menu:IsShown()) end)
     local selected = ui.text(picker, 14, 0, 600, 40, 16, "")
+    selected:SetMaxLines(1)
+    selected:SetWordWrap(false)
     ui.dropdownArrow(picker, 626, 9, 22)
-    local play = ui.place(CreateFrame("Button", nil, parent), parent, 666, 427, 32, 32)
+    local play = ui.place(CreateFrame("Button", nil, parent), parent, 666, pickerY + 4, 32, 32)
     play:SetNormalAtlas("charactercreate-customize-playbutton")
     play:SetPushedAtlas("charactercreate-customize-playbutton-down")
     play:SetScript("OnClick", atlas.playRewardSound)
@@ -234,18 +260,20 @@ function atlas.makeNotificationSettings(parent)
     end)
     play:SetScript("OnLeave", hideTooltip)
     play:SetScript("OnHide", hideTooltip)
-    local dismiss = ui.button(parent, 0, 74, 706, 404, function() menu:Hide() end)
+    local dismiss = ui.button(parent, 0, 0, 706, 363, function() menu:Hide() end)
     dismiss:ClearHighlightTexture()
     dismiss:SetFrameLevel(parent:GetFrameLevel() + 10)
     dismiss:Hide()
-    menu = ui.place(CreateFrame("Frame", nil, parent), parent, 0, 207, 654, 210)
+    picker:SetFrameLevel(dismiss:GetFrameLevel() + 1)
+    menu = ui.place(CreateFrame("Frame", nil, parent), parent, 0, pickerY - menuGap - 208, 654, 208)
     menu:EnableMouse(true)
-    menu:SetFrameLevel(dismiss:GetFrameLevel() + 1)
-    local menuSurface = ui.dropdownSurface(menu)
+    menu:SetFrameLevel(picker:GetFrameLevel() + 1)
+    ui.dropdownSurface(menu)
     local choices = ui.scrollingList(menu, 8, 8, 638, 32, 6)
     for _, row in ipairs(choices.rows) do
         row.label = ui.text(row, 10, 0, 606, 30, 15, "")
         row.label:SetMaxLines(1)
+        row.label:SetWordWrap(false)
     end
     function choices:render(row, sound)
         row.label:SetText(sound.name)
@@ -261,20 +289,24 @@ function atlas.makeNotificationSettings(parent)
         choices.items = sounds()
         local height = math.min(6, #choices.items) * 32 + 16
         menu:ClearAllPoints()
-        ui.place(menu, parent, 0, 417 - height, 654, height)
+        ui.place(menu, parent, 0, pickerY - menuGap - height, 654, height)
         choices:SetHeight(height - 16)
-        local xs, ys = { 0, 10, 644, 654 }, { 0, 10, height - 10, height }
-        for row = 1, 3 do for col = 1, 3 do
-            local texture = menuSurface[(row - 1) * 3 + col]
-            texture:ClearAllPoints()
-            ui.place(texture, menu, xs[col], ys[row], xs[col + 1] - xs[col], ys[row + 1] - ys[row])
-        end end
-        choices:redraw(); dismiss:Show()
+        picker:setActive(true)
+        choices:redraw()
+        local selectedID = selectedSound().id
+        for _, sound in ipairs(choices.items) do
+            if sound.id == selectedID then choices:reveal(sound); break end
+        end
+        dismiss:Show()
     end)
-    menu:SetScript("OnHide", function() dismiss:Hide() end)
+    local function resetSoundPicker()
+        dismiss:Hide()
+        picker:setActive(false)
+    end
+    menu:SetScript("OnHide", resetSoundPicker)
     parent:HookScript("OnHide", function()
-        menu:Hide(); edit:ClearFocus()
-        edit:SetText(savedFormat())
+        menu:Hide()
+        resetSoundPicker()
         atlas.setNotificationPositionUnlocked(false)
     end)
     menu:Hide()
@@ -297,11 +329,9 @@ function atlas.makeNotificationSettings(parent)
     end
     local function refresh()
         local values = settings()
-        chat:SetChecked(values.chatMessages ~= false)
         screenshot:SetChecked(values.rewardScreenshot == true)
         reward:SetChecked(values.rewardToast ~= false)
         soundToggle:SetChecked(values.rewardSoundEnabled ~= false)
-        edit:SetText(savedFormat())
         selected:SetText(selectedSound().name)
         volume:SetValue(soundVolume() * 100)
         volumeValue:SetText(string.format("%d%%", math.floor(soundVolume() * 100 + .5)))
@@ -311,14 +341,54 @@ function atlas.makeNotificationSettings(parent)
         refreshingScale = false
         refreshLock()
         refreshSoundControls()
-        refreshSample()
     end
     parent:SetScript("OnShow", refresh)
     return refresh
 end
 
+function atlas.makeNotificationSettings(parent)
+    local chatPage = ui.place(CreateFrame("Frame", nil, parent), parent, 0, 115, 706, 363)
+    local collectionPage = ui.place(CreateFrame("Frame", nil, parent), parent, 0, 115, 706, 363)
+    local attempts = ui.accountCheckbox(chatPage, 0, 8, 706, "Сообщения о попытках", "chatMessages")
+    local acquisitions = ui.accountCheckbox(chatPage, 0, 183, 706, "Сообщения о получении маунтов и предметов", "mountCollectionChat")
+    ui.fill(chatPage, 0, 173, 706, 1, ui.rule)
+    local refreshAttemptEditor = makeChatMessageEditor(chatPage, 42, "MountAtlasChatFormat", "chatMessageFormat",
+        atlas.defaultChatMessageFormat, function(template)
+            return atlas.formatAttemptMessage(L("Тлеющий осколок"), 25, 1 - .999 ^ 25, .001, 224025, template)
+        end)
+    local refreshAcquisitionEditor = makeChatMessageEditor(chatPage, 217, "MountAtlasCollectionChatFormat",
+        "mountCollectionMessageFormat", atlas.defaultMountCollectionMessageFormat, function(template)
+            local mount = atlas.mounts and atlas.mounts[1]
+            local name = mount and atlas.displayName(mount.name) or L("Маунт")
+            return atlas.formatMountCollectionMessage(name, 25, 1 - .999 ^ 25, .001, template)
+        end)
+    local refreshCollection = makeCollectionNotificationSettings(collectionPage)
+    ui.fill(parent, 0, 110, 706, 1, ui.rule)
+    local chatTab, collectionTab
+    local function selectTab(chat)
+        chatPage:SetShown(chat)
+        collectionPage:SetShown(not chat)
+        chatTab:setActive(chat)
+        collectionTab:setActive(not chat)
+    end
+    chatTab = ui.tab(parent, 0, 78, 146, 32, "Чат", nil, function() selectTab(true) end, .6)
+    collectionTab = ui.tab(parent, 154, 78, 240, 32, "", nil, function() selectTab(false) end, .6)
+    collectionTab.caption.atlasGameText = true
+    collectionTab.caption:SetText(atlas.getLocale() == "enUS" and "Pop-up notification" or "Всплывающее уведомление")
+    selectTab(true)
+    return function()
+        local values = settings()
+        attempts:SetChecked(values.chatMessages ~= false)
+        acquisitions:SetChecked(values.mountCollectionChat ~= false)
+        refreshAttemptEditor()
+        refreshAcquisitionEditor()
+        refreshCollection()
+    end
+end
+
 -- Only actual loot and learning events can announce a reward.
 local pending, seen, toast = {}, {}, nil
+local collectionReady, collectionSeen = false, {}
 local nextReward
 local mascotPoses = { 1, 2, 3, 4, 6, 7, 8, 9 }
 local lastMascotPose
@@ -413,15 +483,19 @@ local function makeToast()
         end
     end)
     ui.rewardFrame(frame, 0, -12, 480, 124)
-    local mascot = frame:CreateTexture(nil, "ARTWORK")
-    ui.place(mascot, frame, 0, -12, 126, 126)
+    local foreground = CreateFrame("Frame", nil, frame)
+    foreground:SetAllPoints(frame)
+    foreground:SetFrameLevel(frame:GetFrameLevel() + 2)
+    foreground:EnableMouse(false)
+    local mascot = foreground:CreateTexture(nil, "ARTWORK")
+    ui.place(mascot, foreground, 0, -12, 126, 126)
     frame.mascot = mascot
     mascot:SetVertexColor(.90, .90, .90)
-    ui.text(frame, 130, 20, 236, 23, 13, "Новый маунт в коллекции", ui.gold)
+    local heading = ui.text(foreground, 130, 20, 236, 23, 13, "Новый маунт в коллекции", ui.gold)
     frame.nameGlow = {}
     for _, offset in ipairs({ { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 },
         { -1.5, -1.5 }, { 1.5, -1.5 }, { -1.5, 1.5 }, { 1.5, 1.5 } }) do
-        local glow = ui.text(frame, 130 + offset[1], 52 + offset[2], 236, 45, 18, "", { 1, .56, .12 })
+        local glow = ui.text(foreground, 130 + offset[1], 52 + offset[2], 236, 45, 18, "", { 1, .56, .12 })
         glow.atlasGameText = true
         glow.offsetX, glow.offsetY = offset[1], offset[2]
         glow:SetMaxLines(2)
@@ -429,13 +503,46 @@ local function makeToast()
         glow:SetAlpha(0)
         frame.nameGlow[#frame.nameGlow + 1] = glow
     end
-    frame.name = ui.text(frame, 130, 52, 236, 45, 18, "", { 1, .74, .28 })
+    frame.name = ui.text(foreground, 130, 52, 236, 45, 18, "", { 1, .74, .28 })
     frame.name.atlasGameText = true
     frame.name:SetMaxLines(2)
-    frame.attempts = ui.text(frame, 130, 87, 236, 19, 12, "", ui.muted)
+    frame.attempts = ui.text(foreground, 130, 87, 236, 19, 12, "", ui.muted)
     frame.attempts:SetMaxLines(1)
-    local icon, _, iconSlot = ui.itemIcon(frame, 378, 26, 64)
+    for _, text in ipairs({ heading, frame.name, frame.attempts }) do
+        text:SetShadowColor(0, 0, 0, .95)
+        text:SetShadowOffset(1, -1)
+    end
+    local icon, _, iconSlot = ui.itemIcon(foreground, 378, 26, 64)
     frame.icon = icon
+    local shineClip = ui.place(CreateFrame("Frame", nil, frame), frame, 120, 11, 336, 97)
+    shineClip:SetFrameLevel(frame:GetFrameLevel() + 1)
+    shineClip:EnableMouse(false)
+    shineClip:SetClipsChildren(true)
+    local shine = shineClip:CreateTexture(nil, "BORDER")
+    local shineAtlas = "ui-achievement-alert-glow-shine"
+    local shineInfo = C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo(shineAtlas)
+    local shineTopCrop, shineBottomCrop = 18 / 72, 12 / 72
+    local shineHeight = 100 / (1 - shineTopCrop - shineBottomCrop)
+    local shineWidth = shineHeight * (shineInfo and shineInfo.width / math.max(1, shineInfo.height) or 67 / 72)
+    if shineInfo then shine:SetAtlas(shineAtlas, false)
+    else
+        shine:SetTexture("Interface\\AchievementFrame\\UI-Achievement-Alert-Glow")
+        shine:SetTexCoord(.78125, .912109375, 0, .28125)
+    end
+    shine:SetSize(shineWidth, shineHeight)
+    shine:SetBlendMode("ADD")
+    frame.shine = shine
+    function frame:updateShine(age)
+        -- Match AchievementAlertFrame's single left-to-right pass: .2s in,
+        -- .85s movement, with its final .5s fading away. Hover never restarts it.
+        -- Keep the sprite caps beyond the clip, preserving its native aspect.
+        if age >= 1.05 then shine:Hide(); return end
+        shine:Show()
+        local travel = math.max(0, math.min(1, (age - .2) / .85))
+        shine:ClearAllPoints()
+        shine:SetPoint("TOPLEFT", shineClip, "TOPLEFT", travel * (336 - shineWidth), shineHeight * shineTopCrop + 3)
+        shine:SetAlpha(.85 * math.max(0, math.min(1, age / .2, (1.05 - age) / .5)))
+    end
     frame.iconGlow = {}
     for i = 0, 23 do
         local tail = i % 8
@@ -493,10 +600,12 @@ nextReward = function()
     toast.age = 0
     toast.glowAge = 0
     toast:updateIconGlow(0)
+    toast:updateShine(0)
     toast.hovered = false
     toast:SetScript("OnUpdate", function(self, elapsed)
         self.glowAge = self.glowAge + elapsed
         self:updateIconGlow(self.glowAge)
+        self:updateShine(self.glowAge)
         local pulse = math.sin(math.pi * math.min(1, self.glowAge / 1.8)) ^ 2
         for _, glow in ipairs(self.nameGlow) do glow:SetAlpha(.025 + .16 * pulse) end
         self.name:SetTextColor(1, .74 + .14 * pulse, .28 + .36 * pulse)
@@ -554,19 +663,25 @@ local function lootNotifications()
     end
 end
 
-local function received(id, retry, fromLoot)
+local function received(id, retry, fromLoot, skipToast, announceCollection)
     local ok, name, _, icon, _, _, _, _, _, _, _, collected = pcall(C_MountJournal.GetMountInfoByID, id)
     if not ok or not readable(name) or type(name) ~= "string" or name == ""
         or not readable(collected) or type(collected) ~= "boolean" or (not fromLoot and not collected) then
-        if retry < 60 then C_Timer.After(.5, function() received(id, retry + 1, fromLoot) end)
-        else seen[id] = nil end
+        if retry < 60 then
+            C_Timer.After(.5, function() received(id, retry + 1, fromLoot, skipToast, announceCollection) end)
+        else
+            if not skipToast then seen[id] = nil end
+            if announceCollection then collectionSeen[id] = nil end
+        end
         return
     end
     if not fromLoot and atlas.completePlanTarget then atlas.completePlanTarget(id) end
     if atlas.mountLootAttemptsPending(id) then
-        C_Timer.After(.25, function() received(id, retry, fromLoot) end)
+        C_Timer.After(.25, function() received(id, retry, fromLoot, skipToast, announceCollection) end)
         return
     end
+    if announceCollection then atlas.notifyMountCollected(id, name) end
+    if skipToast then return end
     if not readable(icon) or (type(icon) ~= "number" and type(icon) ~= "string") then icon = 132261 end
     local acquired
     for _, mount in ipairs(atlas.mounts) do
@@ -622,24 +737,34 @@ end
 
 local events = CreateFrame("Frame")
 events:RegisterEvent("PLAYER_LOGIN")
+events:RegisterEvent("PLAYER_ENTERING_WORLD")
 events:RegisterEvent("DISPLAY_SIZE_CHANGED")
 events:RegisterEvent("UI_SCALE_CHANGED")
 events:SetScript("OnEvent", function(self, event, id)
     if event == "PLAYER_LOGIN" then
         self:UnregisterEvent("PLAYER_LOGIN")
         self:RegisterEvent("NEW_MOUNT_ADDED")
+    elseif event == "PLAYER_ENTERING_WORLD" then
+        self:UnregisterEvent("PLAYER_ENTERING_WORLD")
+        collectionReady = true
     elseif event == "DISPLAY_SIZE_CHANGED" or event == "UI_SCALE_CHANGED" then
         if toast then toast:StopMovingOrSizing(); toast.dragging = nil; applyToastPosition(toast) end
     elseif event == "NEW_MOUNT_ADDED" and readable(id) and type(id) == "number" then
         local notifications = lootNotifications()
-        if notifications and notifications[id] then
+        local shownAtLoot = notifications and notifications[id]
+        if shownAtLoot then
             notifications[id] = nil
-            seen[id] = true
             if atlas.completePlanTarget then atlas.completePlanTarget(id) end
-            return
         end
-        if seen[id] then return end
-        seen[id] = true
-        received(id, 0)
+        local skipToast = shownAtLoot or seen[id]
+        local announceCollection = collectionReady and not collectionSeen[id]
+        collectionSeen[id], seen[id] = true, true
+        if skipToast and not announceCollection then return end
+        if announceCollection then
+            -- Award and statistic handlers settle before the collection message reads the frozen count.
+            C_Timer.After(.25, function() received(id, 0, false, skipToast, true) end)
+        else
+            received(id, 0)
+        end
     end
 end)

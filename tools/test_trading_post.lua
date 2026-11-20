@@ -31,10 +31,13 @@ frozen = { mountID = 371, price = 650, timeRemaining = 0, purchased = false }
 activities = { secondsRemaining = 90, thresholds = { { itemReward = 777 }, { itemReward = 888 } } }
 refresh()
 equal(atlas.tradingPostOffer({ id = 2696 }).price, 500, "Live price")
+equal(atlas.tradingPostOffer({ id = 2696 }).expires, 160, "Live offer retains the confirmed expiration")
 equal(atlas.tradingPostOffer({ id = 2696 }).frozen, false, "Current rotation")
 equal(atlas.tradingPostOffer({ id = 371 }).frozen, true, "Frozen outside rotation")
+equal(atlas.tradingPostOffer({ id = 371 }).expires, nil, "Frozen stock does not inherit a rotation expiration")
 equal(atlas.tradingPostOffer({ id = 371 }).price, 650, "Frozen price")
 equal(atlas.tradingPostOffer({ id = 3142 }).bonus, true, "Reward linked by item ID")
+equal(atlas.tradingPostOffer({ id = 3142 }).expires, 190, "Current bonus retains the activity expiration")
 equal(atlas.tradingPostOffer({ id = 888 }), nil, "Non-mount reward ignored")
 equal(atlas.tradingPostOffer({ id = 532, kind = "Торговая лавка" }), nil, "No invented negative availability")
 

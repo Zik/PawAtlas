@@ -116,7 +116,7 @@ local function canAppend(tooltip, data)
     return readable(owner)
 end
 
-local function appendMounts(tooltip, ids, directID)
+local function appendMounts(tooltip, ids, directID, separate)
     local getMount = C_MountJournal and C_MountJournal.GetMountInfoByID
     if not (ids or directID) or not getMount then return end
     local count = 0
@@ -133,6 +133,7 @@ local function appendMounts(tooltip, ids, directID)
         elseif atlas.isPlanned({ id = id }, atlas.activePlanID()) then status = L("В плане") end
         local label = rewardLabel(id, name)
         local prefix = count == 1 and ("|cffe0b86b" .. addonName .. ":|r ") or ""
+        if separate and count == 1 then tooltip:AddLine(" ") end
         tooltip:AddLine(prefix .. label .. (collected == true and "" or attemptText(id)), 1, 1, 1, true)
         if status then
             tooltip:AddLine(ui.safeText(status), 1, collected == true and .2 or .82, collected == true and .2 or .44, true)
@@ -162,7 +163,7 @@ local function onUnit(tooltip, data)
     if not readable(guid) or type(guid) ~= "string" then return end
     local unitType, npc = guid:match("^(%a+)%-%d+%-%d+%-%d+%-%d+%-(%d+)%-")
     if unitType ~= "Creature" and unitType ~= "Vehicle" then return end
-    appendMounts(tooltip, byNPC[tonumber(npc)])
+    appendMounts(tooltip, byNPC[tonumber(npc)], nil, true)
 end
 
 local function reset(tooltip)

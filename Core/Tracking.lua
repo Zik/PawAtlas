@@ -8,6 +8,9 @@ local brokerStatisticSamples = {}
 local brokerStatisticCreditUntil
 local questRefreshPending = false
 local raidRefreshPending = false
+local encounterTargets, visitTargets = {}, {}
+local lastLootPrune
+local pendingAttemptRefresh
 
 local function requestLockoutsAfterKill()
     if raidRefreshPending then return end
@@ -41,13 +44,95 @@ local function validNumber(value)
     return readable(value) and type(value) == "number" and value >= 0 and value < math.huge
 end
 
+local function modeBoolean(getter)
+    local value = getter and getter()
+    if readable(value) and type(value) == "boolean" then return value end
+end
+
+function atlas.warModeToggleStatus()
+    local api = C_PvP
+    if not api or not api.ToggleWarMode or not api.CanToggleWarMode then return false, "unknown" end
+    local desired = modeBoolean(api.IsWarModeDesired)
+    if desired == nil then return false, "unknown" end
+    if inCombat() or modeBoolean(function() return UnitAffectingCombat and UnitAffectingCombat("player") end) == true then return false, "combat" end
+    if IsInInstance and IsInInstance() then return false, "instance" end
+    if modeBoolean(function() return api.CanToggleWarMode(not desired) end) == true then return true end
+    if modeBoolean(api.CanToggleWarModeInArea) == false then return false, "area" end
+    return false, "restricted"
+end
+
+-- Call only from a hardware click. Native permission checks own the location,
+-- level and character restrictions; no desired state is predicted or persisted.
+function atlas.toggleWarMode()
+    local allowed, reason = atlas.warModeToggleStatus()
+    if not allowed then return false, reason end
+    C_PvP.ToggleWarMode()
+    return true
+end
+
+function atlas.currentCharacterModes()
+    local api = C_PvP
+    local result = {
+        warModeActive = modeBoolean(api and api.IsWarModeActive),
+        warModeDesired = modeBoolean(api and api.IsWarModeDesired),
+        chromieTimeActive = modeBoolean(C_PlayerInfo and C_PlayerInfo.IsPlayerInChromieTime),
+    }
+    result.warModeCanToggle, result.warModeToggleReason = atlas.warModeToggleStatus()
+    if result.chromieTimeActive == true and UnitChromieTimeID then
+        local id = UnitChromieTimeID("player")
+        if validNumber(id) and id > 0 then
+            result.chromieTimeID = id
+            local option = C_ChromieTime and C_ChromieTime.GetChromieTimeExpansionOption
+                and C_ChromieTime.GetChromieTimeExpansionOption(id)
+            if option and option.id == id and readable(option.name) and type(option.name) == "string" and option.name ~= "" then
+                result.chromieTimeName = option.name
+            end
+        end
+    end
+    return result
+end
+
+local previousModes
+local modeEvents = CreateFrame("Frame")
+for _, event in ipairs({ "PLAYER_ENTERING_WORLD", "WAR_MODE_STATUS_UPDATE", "ZONE_CHANGED", "ZONE_CHANGED_NEW_AREA",
+    "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED" }) do modeEvents:RegisterEvent(event) end
+modeEvents:RegisterUnitEvent("UNIT_PHASE", "player")
+modeEvents:RegisterEvent("PLAYER_FLAGS_CHANGED")
+modeEvents:SetScript("OnEvent", function(_, event, unit)
+    if (event == "UNIT_PHASE" or event == "PLAYER_FLAGS_CHANGED") and unit ~= "player" then return end
+    local current, changed = atlas.currentCharacterModes(), previousModes == nil
+    for _, key in ipairs({ "warModeActive", "warModeDesired", "warModeCanToggle", "warModeToggleReason",
+        "chromieTimeActive", "chromieTimeID", "chromieTimeName" }) do
+        if previousModes and current[key] ~= previousModes[key] then changed = true end
+    end
+    previousModes = current
+    if changed and atlas.refreshCharacterModes then atlas.refreshCharacterModes() end
+end)
+
 local function active(expires, now)
     return validNumber(expires) and expires > (now or GetServerTime())
 end
 
 local function refresh()
+    pendingAttemptRefresh = nil
     if atlas.capturePlanSnapshot then atlas.capturePlanSnapshot(lockoutsReady) end
     if atlas.refreshDetails then atlas.refreshDetails() end
+end
+
+function atlas.queueAttemptRefresh(planChanged)
+    local pending = pendingAttemptRefresh
+    if pending then
+        if planChanged then pending.capture = true end
+        return
+    end
+    pending = { capture = planChanged }
+    pendingAttemptRefresh = pending
+    C_Timer.After(0, function()
+        if pendingAttemptRefresh ~= pending then return end
+        pendingAttemptRefresh = nil
+        if pending.capture then refresh()
+        elseif atlas.refreshDetails then atlas.refreshDetails() end
+    end)
 end
 
 local function localKills(mount)
@@ -115,6 +200,9 @@ local function characterCounts()
     if readable(realm) and type(realm) == "string" and realm ~= "" then record.realm = realm end
     local level = UnitLevel and UnitLevel("player")
     if validNumber(level) and level > 0 then record.level = math.floor(level) end
+    local class
+    if UnitClass then class = select(2, UnitClass("player")) end
+    if readable(class) and type(class) == "string" and class ~= "" then record.class = class end
     local faction = UnitFactionGroup and UnitFactionGroup("player")
     if readable(faction) and (faction == "Horde" or faction == "Alliance") then record.faction = faction end
     if not record.migrated and type(MountAtlasDB) == "table" and type(MountAtlasDB.kills) == "table" then
@@ -256,7 +344,8 @@ function atlas.accountCharacters()
     local result = {}
     for guid, record in pairs(type(characters) == "table" and characters or {}) do
         if type(record) == "table" then
-            result[#result + 1] = { guid = guid, name = record.name or "—", realm = record.realm or "—", level = record.level }
+            result[#result + 1] = { guid = guid, name = record.name or "—", realm = record.realm or "—",
+                level = record.level, class = record.class }
         end
     end
     table.sort(result, function(a, b)
@@ -470,53 +559,60 @@ end
 
 local function countEncounter(encounter, difficulty)
     if not validNumber(encounter) or not validNumber(difficulty) then return end
-    local changed, credited = false, {}
-    for _, mount in ipairs(atlas.mounts) do
-        if mount.encounter and mount.encounter == encounter and mount.difficulties[difficulty] then
-            if atlas.usesKillAPI(mount) then
-                RequestRaidInfo()
-                queueStatisticRetries()
+    local targets = encounterTargets[encounter]
+    if not targets then return end
+    targets = targets[difficulty]
+    if not targets then return end
+    local changed, retryStatistics, credited = false, false, {}
+    for _, mount in ipairs(targets) do
+        if atlas.usesKillAPI(mount) then
+            retryStatistics = true
+        else
+            local key = encounterKey(mount, difficulty)
+            local now = GetTime()
+            -- BOSS_KILL and ENCOUNTER_END describe the same kill. Persist known
+            -- reset limits so a reload or another locked run cannot add an attempt.
+            -- The post-kill raid API already includes this kill.
+            if not active(MountAtlasDB.lastAttempts[key]) and not (recent[key] and now - recent[key] < 30) then
+                recent[key] = now
+                incrementLocal(mount, credited)
+                MountAtlasDB.lastAttempts[key] = resetAt(atlas.lootFrequency(mount))
+                markVisit(mount)
                 changed = true
-            else
-                local key = encounterKey(mount, difficulty)
-                local now = GetTime()
-                -- BOSS_KILL and ENCOUNTER_END describe the same kill. Persist known
-                -- reset limits so a reload or another locked run cannot add an attempt.
-                -- Do not consult the post-kill raid API here: it already includes this kill.
-                if not active(MountAtlasDB.lastAttempts[key]) and not (recent[key] and now - recent[key] < 30) then
-                    recent[key] = now
-                    incrementLocal(mount, credited)
-                    MountAtlasDB.lastAttempts[key] = resetAt(atlas.lootFrequency(mount))
-                    markVisit(mount)
-                    changed = true
-                end
             end
         end
     end
+    if retryStatistics then
+        RequestRaidInfo()
+        queueStatisticRetries()
+    end
     if next(credited) and atlas.recordBrokerAttempt then atlas.recordBrokerAttempt(credited) end
-    if changed then refresh() end
+    if changed or retryStatistics then atlas.queueAttemptRefresh(true) end
 end
 
 local function recordLoot()
     if atlas.shouldCountCreatureLoot and not atlas.shouldCountCreatureLoot() then return end
-    local now = GetServerTime()
-    for guid, expires in pairs(MountAtlasDB.lastLoot) do
-        if not active(expires, now) then MountAtlasDB.lastLoot[guid] = nil end
-    end
     local slots = GetNumLootItems()
-    if not validNumber(slots) then return end
-    local changed, credited = false, {}
+    if not validNumber(slots) or slots == 0 then return end
+    local now = GetServerTime()
+    if not lastLootPrune or now - lastLootPrune >= 60 then
+        for guid, expires in pairs(MountAtlasDB.lastLoot) do
+            if not active(expires, now) then MountAtlasDB.lastLoot[guid] = nil end
+        end
+        lastLootPrune = now
+    end
+    local changed, retryStatistics, credited = false, false, {}
     for slot = 1, slots do
         local sources = { GetLootSourceInfo(slot) }
         for i = 1, #sources, 2 do
             local guid = sources[i]
-            if readable(guid) and type(guid) == "string" then
+            if readable(guid) and type(guid) == "string" and not active(MountAtlasDB.lastLoot[guid], now) then
                 local unitType, npc = guid:match("^(%a+)%-%d+%-%d+%-%d+%-%d+%-(%d+)%-")
                 -- Vehicles can award the same creature loot (for example Felsiege).
                 -- Keep objects, items and player GUIDs out of creature attempts.
-                local targets = (unitType == "Creature" or unitType == "Vehicle") and atlas.lootByNPC[tonumber(npc)]
                 npc = tonumber(npc)
-                if targets and not MountAtlasDB.lastLoot[guid] then
+                local targets = (unitType == "Creature" or unitType == "Vehicle") and atlas.lootByNPC[npc]
+                if targets then
                     MountAtlasDB.lastLoot[guid] = now + 86400
                     local limits = {}
                     for _, mount in ipairs(targets) do
@@ -528,7 +624,7 @@ local function recordLoot()
                         local previous = atlas.lootOpportunityExpires and atlas.lootOpportunityExpires(mount, npc, frequency or "unknown")
                             or MountAtlasDB.lastAttempts[key]
                         if atlas.usesKillAPI(mount) then
-                            queueStatisticRetries()
+                            retryStatistics = true
                         elseif (not atlas.isMountAttemptEligible or atlas.isMountAttemptEligible(mount, npc))
                             and (not expires or not active(previous, now)) then
                             incrementLocal(mount, credited)
@@ -542,8 +638,9 @@ local function recordLoot()
             end
         end
     end
+    if retryStatistics then queueStatisticRetries() end
     if next(credited) and atlas.recordBrokerAttempt then atlas.recordBrokerAttempt(credited) end
-    if changed then refresh() end
+    if changed then atlas.queueAttemptRefresh(true) end
 end
 
 local function onEvent(event, ...)
@@ -580,8 +677,9 @@ local function onEvent(event, ...)
         if inCombat() then observeStatisticGrowth = true end
         local _, _, difficulty, _, _, _, _, map = GetInstanceInfo()
         if validNumber(map) and validNumber(difficulty) then
-            for _, mount in ipairs(atlas.mounts) do
-                if mount.map and mount.map == map and mount.difficulties[difficulty] then markVisit(mount) end
+            local targets = visitTargets[map]
+            if targets then
+                for _, mount in ipairs(targets[difficulty] or {}) do markVisit(mount) end
             end
         end
         RequestRaidInfo()
@@ -603,6 +701,14 @@ local function onEvent(event, ...)
         syncStatistics()
         if atlas.capturePlanSnapshot then atlas.capturePlanSnapshot(lockoutsReady) end
     end
+end
+
+local function indexTarget(index, key, difficulty, mount)
+    local byDifficulty = index[key]
+    if not byDifficulty then byDifficulty = {}; index[key] = byDifficulty end
+    local targets = byDifficulty[difficulty]
+    if not targets then targets = {}; byDifficulty[difficulty] = targets end
+    targets[#targets + 1] = mount
 end
 
 function atlas.initializeTracking()
@@ -628,6 +734,14 @@ function atlas.initializeTracking()
     -- Preserve existing single-difficulty kill markers without assigning them
     -- to every difficulty of a target that may gain more sources later.
     for _, mount in ipairs(atlas.mounts) do
+        if mount.encounter or mount.map then
+            for difficulty, enabled in pairs(mount.difficulties or {}) do
+                if enabled then
+                    if mount.encounter then indexTarget(encounterTargets, mount.encounter, difficulty, mount) end
+                    if mount.map then indexTarget(visitTargets, mount.map, difficulty, mount) end
+                end
+            end
+        end
         if mount.encounter then
             local difficulty = next(mount.difficulties)
             local visit = MountAtlasDB.visits[mount.countKey]

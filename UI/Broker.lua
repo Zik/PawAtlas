@@ -5,6 +5,33 @@ local title = L("PawAtlas")
 local target, targetName
 local popup
 local tooltipLines = {}
+local tooltipMeasure = UIParent:CreateFontString(nil, "ARTWORK", "GameTooltipText")
+tooltipMeasure:Hide()
+local function brokerTooltip(tooltip, heading, lines, controls)
+    local available = UIParent:GetWidth() * UIParent:GetEffectiveScale() / tooltip:GetEffectiveScale() - 40
+    local maximum = math.max(1, math.min(340, available))
+    local function add(text, color)
+        text = ui.safeText(atlas.sourceInlineLinks(text)):gsub("(%d) %%", "%1\194\160%%")
+        tooltipMeasure:SetText(text)
+        local wrap = tooltipMeasure:GetStringWidth() > maximum
+        tooltip:AddLine(text, color[1], color[2], color[3], wrap)
+        if wrap then
+            local name = tooltip:GetName()
+            local line = name and _G[name .. "TextLeft" .. tooltip:NumLines()]
+            if line then line:SetWidth(maximum) end
+        end
+    end
+    add(title, ui.gold)
+    if heading then add(heading, ui.gold) end
+    if #lines > 0 then
+        tooltip:AddLine(" ")
+        for _, line in ipairs(lines) do add(line, ui.paper) end
+    end
+    if controls then
+        tooltip:AddLine(" ")
+        for _, line in ipairs(controls) do add(L(line), ui.paper) end
+    end
+end
 local display = broker:NewDataObject("MountAtlas", {
     type = "data source",
     tocname = "PawAtlas",
@@ -25,14 +52,9 @@ local display = broker:NewDataObject("MountAtlas", {
         end
     end,
     OnTooltipShow = function(tooltip)
-        tooltip:AddLine(ui.safeText(title), 1, .82, .44)
-        if targetName then tooltip:AddLine(ui.safeText(targetName), 1, .82, .44, true) end
-        for _, line in ipairs(tooltipLines) do
-            tooltip:AddLine(ui.safeText(line), 1, 1, 1, true)
-        end
-        tooltip:AddLine(ui.safeText(L("ЛКМ — выбрать цель")), 1, 1, 1)
-        tooltip:AddLine(ui.safeText(L("ПКМ — открыть атлас")), 1, 1, 1)
-        tooltip:AddLine(ui.safeText(L("Shift + ЛКМ — окно слежения")), 1, 1, 1)
+        brokerTooltip(tooltip, targetName, tooltipLines, {
+            "ЛКМ — выбрать цель", "ПКМ — открыть атлас", "Shift + ЛКМ — окно слежения",
+        })
     end,
 })
 if not display then return end
@@ -189,7 +211,7 @@ function atlas.queuePlanBrokerStatsRefresh()
         for profileID, candidates in pairs(pendingAttempts) do applyAttempt(profileID, candidates) end
         pendingAttempts = {}
         target = chooseTarget(settings())
-        targetName = target and atlas.displayName(target.name)
+        targetName = target and atlas.displayMountName(target)
         tooltipLines = {}
         local text
         text, watchTargetBags = targetDisplay(target, tooltipLines)
@@ -227,8 +249,8 @@ end
 local function showRowTooltip(row)
     if not row.item then return end
     GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
-    ui.tooltipTitle(row.name:GetText(), 1, .82, .44, 1, true)
-    for _, line in ipairs(row.details) do ui.tooltipLine(line, 1, 1, 1, true) end
+    GameTooltip:ClearLines()
+    brokerTooltip(GameTooltip, row.name:GetText(), row.details)
     GameTooltip:Show()
 end
 
@@ -237,7 +259,7 @@ local function makePopup()
     local frame = CreateFrame("Frame", "MountAtlasBrokerTargets", UIParent)
     frame:Hide()
     frame:SetWidth(width)
-    frame:SetFrameStrata("DIALOG")
+    frame:SetFrameStrata("FULLSCREEN_DIALOG")
     frame:SetClampedToScreen(true)
     frame:EnableMouse(true)
     local background = frame:CreateTexture(nil, "BACKGROUND")
@@ -269,7 +291,7 @@ local function makePopup()
             icon = select(3, C_MountJournal.GetMountInfoByID(mount.id))
         end
         row.icon:SetTexture(readable(icon) and icon or 132261)
-        row.name:SetText(atlas.displayName(mount.name))
+        row.name:SetText(atlas.displayMountName(mount))
         row.name:SetTextColor(unpack(pinned and ui.gold or ui.paper))
         row.check:SetShown(pinned)
         row.details = {}

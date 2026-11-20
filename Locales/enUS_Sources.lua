@@ -1,24 +1,58 @@
 local _, atlas = ...
 atlas.addTranslations("enUS", {
+    ["Реагенты"] = "Reagents",
+    ["Путешествия во времени"] = "Timewalking",
+    ["Вход"] = "Entrance",
+    ["Вход в пещеру"] = "Cave Entrance",
+    ["Результат рецепта"] = "Recipe output",
     ["Торговая лавка — появлялся в ассортименте. Ассортимент меняется"] = "Trading Post — previously in stock. Stock rotates",
     ["В продаже сейчас"] = "On sale now",
+    ["Нет в ассортименте"] = "Out of rotation",
+    ["История"] = "History",
+    ["Было: %s"] = "Formerly: %s",
+    ["Доступно до: %s"] = "Available until: %s",
+    ["Торговый жетон"] = "Trader's Tender",
+    ["В справочниках отмечен как ещё не выпущенный."] = "Collector databases list this mount as unreleased.",
     ["Заморожено у тебя"] = "Frozen for you",
     ["Награда журнала путешественника"] = "Traveler's Log reward",
     ["Открой Торговую лавку, чтобы проверить ассортимент"] = "Open the Trading Post to check its stock",
     ["Пригласи друга"] = "Recruit A Friend",
+    ["Арена"] = "Arena",
+    ["Сбор предметов"] = "Item collection",
+    ["Код TCG"] = "TCG code",
+    ["Способ не указан"] = "Source unknown",
+    ["Раньше выдавался за задание %s"] = "Formerly awarded for %s",
+    ["Нажми, чтобы открыть прежнее задание"] = "Click to view the former quest",
+    ["Начало цепочки"] = "Start of the questline",
+    ["Предмет для начала цепочки"] = "Questline starter item",
+    ["Финал цепочки: %s"] = "Final quest: %s",
+    ["Выполни задание: %s"] = "Complete the quest: %s",
+    ["Выбери эту награду при сдаче задания: %s"] = "Choose this reward when turning in the quest: %s",
+    ["За эту цепочку можно бесплатно получить только один цвет."] = "This questline grants only one free colour.",
+    ["Сокровище"] = "Treasure",
+    ["Получи маунта во время задания: %s"] = "Obtain this mount during the quest: %s",
+    ["Попытки этого персонажа"] = "Attempts on this character",
+    ["Точки на карте"] = "Map locations",
+    ["Внутриигровой магазин"] = "In-Game Shop",
+    ["Открыть карту: %s"] = "Open map: %s",
+    ["Чёрный рынок"] = "Black Market",
+    ["Задание: Рыцарь крови — для паладинов\nЗона: Призрачные земли\n\nЗадание: Слава син’дорай — для остальных классов\nЗона: Призрачные земли"] =
+        "Quest: Blood Knight — for paladins\nZone: Ghostlands\n\nQuest: Victory for the Sin'dorei — for other classes\nZone: Ghostlands",
     ["Подписка на 12 месяцев"] = "12-Month Subscription",
-    ["Торговая лавка. Ассортимент меняется.\nПредмет: |cffffd200|Hitem:212229|h[Поводья сумеречного небесного хищника]|h|r"] =
-        "Trading Post. Stock rotates.\nItem: |cffffd200|Hitem:212229|h[Reins of the Twilight Sky Prowler]|h|r",
+    ["Предмет: |cffffd200|Hitem:212229|h[Поводья сумеречного небесного хищника]|h|r"] =
+        "Item: |cffffd200|Hitem:212229|h[Reins of the Twilight Sky Prowler]|h|r",
     ["Во время шторма используй пять разных рунных ключей в Забытом хранилище острова Сирен, затем заверши задание Трайира.\nПредмет: |cffffd200|Hitem:232639|h[Трайир Очи Сирены]|h|r"] =
         "During the storm, use five different runekeys in the Forgotten Vault on Siren Isle, then complete Thrayir's quest.\nItem: |cffffd200|Hitem:232639|h[Thrayir, Eyes of the Siren]|h|r",
-    ["В Разрушенном троне призови Пухляша у обглоданного мяса. Победи разозлённого медведя и накорми его пятью порциями „Почти свинины“."] =
-        "Summon Chubs by the Chewed Meat in the Broken Throne. Defeat the Angry Amani Warbear and feed it five pieces of Practically Pork.",
-    ["В Разрушенном троне поставь недостающую ритуальную свечу на пустой череп и нажми на свечи в центре круга. Победи появившегося орла."] =
-        "In the Broken Throne, place the Misplaced Ritual Candle on the empty skull and click the candles at the center of the circle. Defeat the eagle that appears.",
+    ["Задание: Месть Коррака\nЗона: Альтеракская долина\nТребуется: заработать 200 искаженных временем знаков на поле боя."] =
+        "Quest: Korrak's Revenge\nZone: Alterac Valley\nRequires: Earn 200 Timewarped Badges in the battleground.",
+    ["В Разрушенном троне призови питомца {item:269836:Пухляш} у обглоданного мяса. Победи разозлённого медведя и накорми его, используя {item:242639:Почти свинина} ×5."] =
+        "Summon {item:269836:Chubs} by the Chewed Meat in the Broken Throne. Defeat the Angry Amani Warbear and feed it {item:242639:Practically Pork} ×5.",
+    ["В Разрушенном троне помести {item:271999:Недостающая ритуальная свеча} на пустой череп и нажми на свечи в центре круга. Победи появившегося орла."] =
+        "In the Broken Throne, place the {item:271999:Misplaced Ritual Candle} on the empty skull and click the candles at the center of the circle. Defeat the eagle that appears.",
     ["В месте проведения ритуалов „Высота Пронзающего Гребня“ обыщи выброшенные на берег водоросли. Они могут выманить морского варана."] =
         "Search Washed Up Kelp in the Daggerspine Point Ritual Site. It can lure out the Void-Touched Snapdragon.",
-    ["Сшей упряжь кожевничеством или закажи её. Выкройка и рваный поводок рыси добываются в финальных тайниках мест проведения ритуалов. Для поводка нужна известность 8."] =
-        "Craft the harness with Leatherworking or place a crafting order. The pattern and Broken Lynx Leash drop from final Ritual Site caches. The leash requires Renown 8.",
+    ["Сшей упряжь кожевничеством или закажи её. {item:272391:Выкройка} и {item:272392:Рваный поводок рыси} добываются в финальных тайниках мест проведения ритуалов. Для поводка нужна известность 8."] =
+        "Craft the harness with Leatherworking or place a crafting order. {item:272391:Pattern} and {item:272392:Broken Lynx Leash} drop from final Ritual Site caches. The leash requires Renown 8.",
     ["Трудный режим: награда на группу, не гарантирована каждому участнику"] = "Hard Mode: a group reward, not guaranteed for every participant",
     ["Объедини 20 капсул. Каждый из четырёх боссов даёт одну в неделю на отряд."] = "Combine 20 pods. Each of the four bosses awards one per Warband each week.",
     ["Собери 150 фрагментов смолы и открой Необычный котел."] = "Collect 150 resin fragments and open the Peculiar Cauldron.",
@@ -37,9 +71,12 @@ atlas.addTranslations("enUS", {
     ["Торговец"] = "Vendor", ["Торговцы"] = "Vendors", ["Продавец"] = "Vendor",
     ["Цена"] = "Cost", ["Стоимость"] = "Cost", ["Фракция"] = "Faction", ["Репутация"] = "Reputation",
     ["Известность"] = "Renown", ["Известность %d"] = "Renown %d", ["Ковенант"] = "Covenant",
+    ["Финальное взаимодействие: %s"] = "Final interaction for: %s",
     ["Достижение"] = "Achievement", ["Категория"] = "Category", ["Квест"] = "Quest",
     ["Задание"] = "Quest", ["Локальное задание"] = "World Quest", ["Задание гарнизона"] = "Garrison Mission",
-    ["Профессия"] = "Profession", ["Навык"] = "Skill", ["Требуется"] = "Requires",
+    ["Профессия"] = "Profession", ["Навык"] = "Skill", ["Требуется"] = "Requires", ["Награда"] = "Reward",
+    ["Выполнено"] = "Completed", ["В процессе"] = "In progress", ["Не выполнено"] = "Incomplete",
+    ["Взаимодействие"] = "Interaction", ["Исследование"] = "Exploration",
     ["Событие"] = "Event", ["Праздник"] = "Holiday", ["Особое событие"] = "World Event",
     ["Акция"] = "Promotion", ["Промоакция"] = "Promotion", ["Магазин"] = "In-Game Shop",
     ["Торговая лавка"] = "Trading Post", ["Старинное"] = "Legacy", ["Режим"] = "Difficulty",
@@ -51,6 +88,8 @@ atlas.addTranslations("enUS", {
     ["Почтение"] = "Revered", ["Превознесение"] = "Exalted",
     ["  (Текущая репутация: —)"] = "  (Current reputation: —)",
     ["  (Текущая репутация: %s)"] = "  (Current reputation: %s)",
+    ["  (Текущая известность: %d)"] = "  (Current renown: %d)",
+    ["  (Текущая известность: —)"] = "  (Current renown: —)",
     ["  (Не хватает: %s)"] = "  (Missing: %s)",
     ["Открой путеводитель после боя."] = "Open the Adventure Guide after combat.",
     ["Путеводитель недоступен."] = "The Adventure Guide is unavailable.",
@@ -70,7 +109,8 @@ atlas.addTranslations("enUS", {
     ["Гарантированная добыча с Затерянного во времени протодракона."] = "Guaranteed drop from the Time-Lost Proto-Drake.",
     ["Гарантированная добыча с Дормуса. Для доступа нужна фигурка верблюда."] = "Guaranteed drop from Dormus. A camel figurine is required to reach him.",
     ["Создай грозовой сосуд и сними щит Алуниры."] = "Create a Storm Vessel and remove Alunira's shield.",
-    ["Предмет исчезает при получении. Отправляйся в Гиблотопь: проглот подбежит к тебе и начнёт цепочку из семи ежедневных заданий."] = "The item disappears on pickup. Head to the Endmire: the gorger will approach you and start a chain of seven daily quests.",
+    ["Отправляйся в Гиблотопь: проглот подбежит к тебе и начнёт цепочку из семи ежедневных заданий."] = "Head to the Endmire: the gorger will approach you and start a chain of seven daily quests.",
+    ["Предмет исчезает при получении."] = "The item disappears on pickup.",
     ["Открой тайник после победы над Советом Перерожденных."] = "Open the cache after defeating the Ascended Council.",
     ["Для призвавшего Хирукона игрока действуют отдельные условия добычи."] = "The player who summons Hirukon has separate loot conditions.",
     ["Источник доступен во время события «Алчный посланник»."] = "This source is available during the Greedy Emissary event.",
@@ -82,13 +122,13 @@ atlas.addTranslations("enUS", {
     ["Накорми Темную Лапу в Кортии 10 вкусными грибами Утробы. Маунт выдаётся после последнего кормления."] = "Feed Darkmaul 10 Tasty Mawshrooms in Korthia. The mount is awarded after the last feeding.",
     ["Верни 10 потерянных яиц острокрыла в гнездо в Кортии. Маунт выдаётся после возврата последнего яйца."] = "Return 10 Lost Razorwing Eggs to the nest in Korthia. The mount is awarded after the last egg.",
     ["Объедини 50 остатков слизи стихий из изначальных бурь в Запретном крае."] = "Combine 50 Leftover Elemental Slime from Primal Storms in the Forbidden Reach.",
-    ["Отдай Ку'ме на острове Великанов 9999 огромных костей динозавра за задание «Гора огромных костей динозавра»."] = "Turn in 9,999 Giant Dinosaur Bones to Ku'ma on the Isle of Giants for A Mountain of Giant Dinosaur Bones.",
+    ["Отдай Ку'ме на острове Великанов 9999 огромных костей динозавра за задание {quest:32617:Гора огромных костей динозавра}."] = "Turn in 9,999 Giant Dinosaur Bones to Ku'ma on the Isle of Giants for {quest:32617:A Mountain of Giant Dinosaur Bones}.",
     ["Достигни максимальной дружбы с Натом Пэглом и купи маунта за 100 счастливых монеток Ната в рыбацкой хижине гарнизона."] = "Become Best Friends with Nat Pagle and buy the mount for 100 Nat's Lucky Coins at your garrison Fishing Shack.",
     ["Достигни уважения у охотников за саблеронами и купи маунта у З'тенги Ходока за 1000 когтей саблерона из племени Черного Клыка."] = "Reach Honored with The Saberstalkers and buy the mount from Z'tenga the Walker for 1,000 Blackfang Claws.",
     ["Достигни превознесения у охотников за саблеронами и купи маунта у З'тенги Ходока за 5000 когтей саблерона из племени Черного Клыка."] = "Reach Exalted with The Saberstalkers and buy the mount from Z'tenga the Walker for 5,000 Blackfang Claws.",
     ["Найди настоящую загадочную фигурку верблюда в Ульдуме, перенесись к Дормусу и победи его до окончания доступа к встрече."] = "Find the real Mysterious Camel Figurine in Uldum, travel to Dormus and defeat him before your access to the encounter expires.",
-    ["В месте проведения ритуалов «Разрушенный трон» ранга 2 или выше найди и получи потерявшегося медвежонка. Призови этого питомца у куч мяса и победи появившуюся боевую медведицу."] = "In a tier 2 or higher Broken Throne Ritual Site, find and collect the Lost Cub. Summon the pet near the meat piles and defeat the Warbear that appears.",
-    ["В «Разрушенном троне» найди потерянную ритуальную свечу, поставь её на пустой череп, активируй ритуал и победи заражённого Бездной проклятого орла."] = "In the Broken Throne, find the Lost Ritual Candle, place it on the empty skull, activate the ritual and defeat the Void-corrupted cursed eagle.",
+    ["В месте проведения ритуалов «Разрушенный трон» ранга 2 или выше получи питомца {item:269836:Пухляш}. Призови его у куч мяса, победи боевую медведицу и накорми её, используя {item:242639:Почти свинина} ×5."] = "In a tier 2 or higher Broken Throne Ritual Site, collect {item:269836:Chubs}. Summon it near the meat piles, defeat the Warbear and feed her {item:242639:Practically Pork} ×5.",
+    ["В «Разрушенном троне» найди {item:271999:Недостающая ритуальная свеча}, помести её на пустой череп, активируй ритуал и победи заражённого Бездной проклятого орла."] = "In the Broken Throne, find the {item:271999:Misplaced Ritual Candle}, place it on the empty skull, activate the ritual and defeat the Void-corrupted cursed eagle.",
 })
 
 -- BEGIN source name translations
@@ -154,6 +194,7 @@ atlas.sourceEnglishNames = {
     ["Глубины Черной горы"] = "Blackrock Depths",
     ["Гниложор"] = "Rotfeaster",
     ["Гнилостная гидра"] = "Overfester Hydra",
+    ["Гнилотоп"] = "Rotmire",
     ["Гниющий гремучник"] = "The Decaying Diamondback",
     ["Головокуска"] = "Skullripper",
     ["Горгронд"] = "Gorgrond",
@@ -442,7 +483,7 @@ atlas.sourceEnglishNames = {
 -- END source name translations
 
 atlas.addTranslations("enUS", {
-    ["Квест: «Легенда об Альн'ашаране»\nМесто: Харандар"] = "Quest: The Legend of Aln'sharan\nLocation: Harandar",
+    ["Квест: «Легенды о небе»\nМесто: Харандар"] = "Quest: Tales of the Sky\nLocation: Harandar",
     ["Классовый транспорт паладина-дренея."] = "Draenei paladin class mount.",
     ["Покупка за 3 древних бронзовых слитка, сохранённых с 4-го сезона Dragonflight."] = "Purchase for 3 Antique Bronze Bullion saved from Dragonflight Season 4.",
     ["Награда за задание с осколком хаоса, полученным до выхода Legion."] = "Quest reward using a Remnant of Chaos obtained before Legion launched.",

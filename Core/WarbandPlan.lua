@@ -338,9 +338,10 @@ function atlas.planTargets(includeJournal, profileID)
             if not ranks[key] then ranks[key] = i end
         end
     end
-    for _, mount in ipairs(atlas.mounts) do
-        local key = tostring(mount.id)
-        if db.plan[key] and not seen[key] then
+    for key, enabled in pairs(db.plan) do
+        local id = tonumber(key)
+        local mount = enabled and id and tostring(id) == key and atlas.mountByID(id)
+        if mount then
             targets[#targets + 1], seen[key] = mount, true
         end
     end
@@ -351,7 +352,9 @@ function atlas.planTargets(includeJournal, profileID)
         if ai ~= bi then return ai < bi end
         local ap, bp = a.place or "", b.place or ""
         if ap ~= bp then return ap < bp end
-        return (a.name or "") < (b.name or "")
+        local an, bn = a.name or "", b.name or ""
+        if an ~= bn then return an < bn end
+        return a.id < b.id
     end)
     return targets, pending
 end
@@ -578,16 +581,19 @@ end
 
 -- This is a snapshot of loot locks, not a promise that a character satisfies
 -- every level, faction, quest, difficulty or summoning requirement.
-local function snapshot(mount, now, questCache)
+local function snapshot(mount, now, questCache, planned)
     if atlas.bossLockout then
-        local state, expires = atlas.bossLockout(mount)
-        if state then return { state = state, expires = expires, updated = now } end
+        local state, expires, difficultyStates = atlas.bossLockout(mount)
+        if state then return { state = state, expires = expires, updated = now, difficultyStates = difficultyStates } end
     end
     local opportunities = currentOpportunities(mount, now, questCache)
     if opportunities then return opportunities end
-    return { state = "unknown", updated = now }
+    if planned then return { state = "unknown", updated = now } end
 end
 
+-- Source eligibility can change when previously missing journal rows arrive.
+-- Character-specific NPC alternatives are still evaluated at capture time.
+local snapshotSources, snapshotRevision
 local lastLockoutsReady = false
 function atlas.capturePlanSnapshot(ready)
     lastLockoutsReady = ready == true
@@ -605,19 +611,28 @@ function atlas.capturePlanSnapshot(ready)
             end
         end
     end)
-    for _, mount in ipairs(atlas.mounts) do
-        local key = tostring(mount.id)
-        -- Keep limited NPC/container snapshots even before adding a target.
-        -- Only cheap metadata is scanned; verified quest IDs are queried once
-        -- per capture, including eggs/cages shared by several mount rewards.
-        if not accountLootSources[mount.id]
-            and (planned[key] or opportunityGroups(mount) or (atlas.isBossLockoutSource and atlas.isBossLockoutSource(mount))) then
-            local nextStatus, previous = snapshot(mount, now, questCache), record.planStatus[key]
-            if nextStatus.opportunities or nextStatus.state ~= "unknown" or type(previous) ~= "table"
-                or not number(previous.expires) or previous.expires <= now then
+    if not snapshotSources or snapshotRevision ~= atlas.journalSourceRevision then
+        snapshotSources, snapshotRevision = {}, atlas.journalSourceRevision
+        for _, mount in ipairs(atlas.mounts) do
+            local frequency = atlas.lootFrequencies and atlas.lootFrequencies[mount.id]
+            if not accountLootSources[mount.id] and (frequency == "daily" or frequency == "weekly"
+                or (atlas.isBossLockoutSource and atlas.isBossLockoutSource(mount))) then
+                snapshotSources[tostring(mount.id)] = mount
+            end
+        end
+    end
+    local function capture(key, mount)
+        if mount and not accountLootSources[mount.id] then
+            local nextStatus, previous = snapshot(mount, now, questCache, planned[key]), record.planStatus[key]
+            if nextStatus and (nextStatus.opportunities or nextStatus.state ~= "unknown" or type(previous) ~= "table"
+                or not number(previous.expires) or previous.expires <= now) then
                 record.planStatus[key] = nextStatus
             end
         end
+    end
+    for key, mount in pairs(snapshotSources) do capture(key, mount) end
+    for key in pairs(planned) do
+        if not snapshotSources[key] then capture(key, atlas.mountByID(tonumber(key))) end
     end
 end
 

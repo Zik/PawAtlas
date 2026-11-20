@@ -6,6 +6,7 @@ function CreateFrame()
     local frame = {
         events = {},
         RegisterEvent = function(self, event) self.events[event] = true end,
+        RegisterUnitEvent = function(self, event) self.events[event] = true end,
         UnregisterEvent = function(self, event) self.events[event] = nil end,
         SetScript = function(self, _, handler) self.onEvent = handler end,
     }
@@ -51,6 +52,9 @@ local atlas = {
     refreshBossLockouts = function() end,
 }
 local refreshes = 0
+local catalogByID = {}
+for _, mount in ipairs(atlas.mounts) do catalogByID[mount.id] = mount end
+function atlas.mountByID(id) return catalogByID[id] end
 function atlas.queuePlanBrokerRefresh() refreshes = refreshes + 1 end
 for _, path in ipairs({ "Libs/LibStub/LibStub.lua", "Libs/AceSerializer-3.0/AceSerializer-3.0.lua",
     "Core/WarbandPlan.lua", "Core/PlanSharing.lua" }) do assert(loadfile(path))("PawAtlas", atlas) end
@@ -220,17 +224,25 @@ for _, legacyName in ipairs({ "Личный план", "Personal plan" }) do
 end
 
 do
-    local originalCreateFrame, originalUI, originalL = CreateFrame, atlas.ui, atlas.L
+    local originalCreateFrame, originalCreateColor, originalUI, originalL = CreateFrame, CreateColor, atlas.ui, atlas.L
     local originalPreview = atlas.previewPlanImport
     local edits, labels, buttons, previewCalls = {}, {}, {}, 0
     local methods = {}
     for _, method in ipairs({ "SetToplevel", "EnableMouse", "Raise", "SetPoint", "ClearAllPoints",
-        "SetMultiLine", "SetAutoFocus", "SetTextColor", "SetMaxLetters", "SetMaxLines", "HighlightText",
-        "SetAlpha", "setActive", "SetVertexColor" }) do methods[method] = function() end end
+        "SetMultiLine", "SetAutoFocus", "SetTextColor", "SetMaxLetters", "SetMaxLines", "SetJustifyH", "SetJustifyV", "HighlightText",
+        "SetAlpha", "setActive", "SetVertexColor", "SetColorTexture", "SetAllPoints", "SetTexture",
+        "SetTexCoord", "AddMaskTexture", "SetDrawLayer", "SetGradient" }) do methods[method] = function() end end
     function methods:GetParent() return self.parent end
     function methods:SetFrameLevel(value) self.level = value end
     function methods:GetFrameLevel() return self.level or 1 end
     function methods:SetScript(event, callback) self.scripts[event] = callback end
+    function methods:HookScript(event, callback)
+        local previous = self.scripts[event]
+        self.scripts[event] = function(...)
+            if previous then previous(...) end
+            callback(...)
+        end
+    end
     function methods:GetScript(event) return self.scripts[event] end
     function methods:SetShown(value)
         if self.shown == value then return end
@@ -261,7 +273,10 @@ do
         if kind == "EditBox" then edits[#edits + 1] = object end
         return object
     end
+    function methods:CreateTexture() return widget("Texture", self) end
+    function methods:CreateMaskTexture() return self:CreateTexture() end
     CreateFrame = function(kind, _, parent) return widget(kind, parent) end
+    CreateColor = function(...) return { ... } end
     atlas.ui = {
         gold = {}, paper = {}, muted = {}, setFont = function() end, fieldSurface = function() end,
         place = function(object, _, x, y, width, height)
@@ -269,9 +284,20 @@ do
             object:SetSize(width, height)
             return object
         end,
-        surface = function()
-            local surface = {}
-            for index = 1, 9 do surface[index] = widget("Texture") end
+        journalDialog = function(parent, _, width, height)
+            local overlay = widget("Frame", parent)
+            overlay:Hide()
+            local panel = widget("Frame", overlay)
+            panel:SetSize(width, height)
+            return overlay, panel
+        end,
+        fill = function(parent) return parent:CreateTexture() end,
+        dropdownSurface = function()
+            local surface = { widget("Texture") }
+            for _, edge in ipairs({ "TOP", "BOTTOM", "LEFT", "RIGHT" }) do
+                surface[edge] = widget("Texture")
+                surface[#surface + 1] = surface[edge]
+            end
             return surface
         end,
         text = function(parent, x, y, _, _, _, text)
@@ -287,6 +313,7 @@ do
             return button
         end,
     }
+    atlas.ui.tab = atlas.ui.action
     atlas.L = function(text, ...) return string.format(text, ...) end
     atlas.previewPlanImport = function(value)
         previewCalls = previewCalls + 1
@@ -297,9 +324,12 @@ do
     local parent = widget("Frame", window)
     local changed, summary = 0
     local dialog = atlas.makePlanSharing(parent, function() changed = changed + 1 end)
-    for _, label in ipairs(labels) do if label.y == 237 then summary = label end end
-    assert(summary and #edits == 4 and #timers == 0)
+    assert(#edits == 4 and #timers == 0)
     local code, input, name = edits[1], edits[2], edits[3]
+    for _, label in ipairs(labels) do
+        if label.text == "" and label.parent == input.parent.parent.parent then summary = label end
+    end
+    assert(summary)
     local function notify() input:GetScript("OnTextChanged")(input, false) end
     local function rename(value)
         name.text = value
@@ -368,7 +398,8 @@ do
     assert(scroll:GetVerticalScroll() == 175 - scroll:GetHeight(), "a caret below the viewport scrolls downward")
     assert((input.heightWrites or 0) == heightWrites, "caret movement must not resize the multiline edit box")
     dialog:Hide()
-    CreateFrame, atlas.ui, atlas.L, atlas.previewPlanImport = originalCreateFrame, originalUI, originalL, originalPreview
+    CreateFrame, CreateColor, atlas.ui, atlas.L, atlas.previewPlanImport =
+        originalCreateFrame, originalCreateColor, originalUI, originalL, originalPreview
 end
 
 for _ = 2, 20 do assert(atlas.importPlan(payload("3"))) end
@@ -473,6 +504,31 @@ do
             end
         end
     end
+    local camel
+    for _, mount in ipairs(testAtlas.rares) do if mount.id == 400 then camel = mount; break end end
+    assert(camel and #camel.npcs == 1 and camel.npcs[1] == 50245, "Dormus remains the camel loot source")
+    local all, manual = testAtlas.mountLocations(camel), testAtlas.mountLocations(camel, nil, true)
+    assert(#all == 51 and #manual == 50, "manual navigation omits Dormus and preserves all figurine points")
+    local dormant, identities = false, {}
+    for _, point in ipairs(all) do
+        if point.npc == 50245 then dormant = point.navigation == false end
+    end
+    assert(dormant and not testAtlas.sourceNavigationAllowed(camel, 50245), "Dormus manual route is explicitly disabled")
+    assert(testAtlas.sourceNavigationAllowed(camel, 50409) and testAtlas.sourceNavigationAllowed(camel, 99999),
+        "only explicit manual navigation restrictions apply")
+    for _, point in ipairs(manual) do
+        assert(point.npc == 50409 and point.map == 249 and testAtlas.hasSourceCoordinates(point), "figurine route retains exact identity and coordinates")
+        identities[point.npc .. ":" .. point.map .. ":" .. point.boss] = true
+    end
+    local identityCount = 0
+    for _ in pairs(identities) do identityCount = identityCount + 1 end
+    assert(identityCount == 1, "50 figurine points remain one named planner source")
+    local waypointCalls = 0
+    environment.TomTom = { AddWaypoint = function() waypointCalls = waypointCalls + 1; return {} end }
+    local inaccessible = { map=69, npc=50245, x=.5, y=.5, navigation=false }
+    assert(testAtlas.addSourceWaypoints({ inaccessible }) == 0, "bulk navigation rejects disabled coordinates")
+    assert(testAtlas.openSource({}, inaccessible) == nil and waypointCalls == 0, "single navigation rejects disabled coordinates")
+    environment.TomTom = nil
     local checked = 0
     faction, completed = "Horde", {}
     for _, mount in ipairs(testAtlas.rares) do
@@ -484,4 +540,65 @@ do
     end
     assert(checked == 10, "all multi-source Midnight fixtures checked")
     print("PawAtlas faction sources passed: both factions, offline legacy snapshots, expiry, navigation and 10 Midnight mounts")
+end
+
+do
+    local now, shared, calls = 1000, false, 0
+    local mount = { id=77, kind="Рейд", encounter=999, map=100, difficulties={ [14]=true,[15]=true } }
+    local characters = { Current={kills={legacy=5}}, Old={planStatus={ ["77"]={state="boss",expires=1500,updated=900} }} }
+    local env = setmetatable({ MountAtlasAccountDB={characters=characters,plan={ ["77"]=true }}, MountAtlasDB={planMigrated=true} }, {__index=_G})
+    env.UnitGUID=function() return "Current" end
+    env.GetServerTime=function() return now end
+    env.GetNumSavedInstances=function() return 0 end
+    env.GetSavedInstanceInfo=function() end
+    env.GetNumSavedWorldBosses=function() return 0 end
+    env.GetSavedWorldBossInfo=function() end
+    env.C_DateAndTime={GetSecondsUntilWeeklyReset=function() return 500 end}
+    env.C_RaidLocks={GetRedirectedDifficultyID=function(map,id) assert(map==100); return shared and 14 or id end,
+        IsEncounterComplete=function(map,encounter,id)
+            assert(map==100 and encounter==999,"lock query keeps exact source identity")
+            calls=calls+1
+            return id==14
+        end}
+    local locks={mounts={mount},worldBossLocks={},lootFrequency=function() return "weekly" end,
+        L=function(value) return value end}
+    setfenv(assert(loadfile("Core/Lockouts.lua")),env)("PawAtlas",locks)
+    setfenv(assert(loadfile("Core/WarbandPlan.lua")),env)("PawAtlas",locks)
+    local rows=locks.bossDifficultyLockouts(mount)
+    assert(#rows==2 and rows[1].state=="unknown" and rows[2].state=="unknown","unloaded raid data remains unknown")
+    locks.capturePlanSnapshot(true)
+    local saved=characters.Current.planStatus["77"]
+    assert(saved.state=="available" and #saved.difficultyStates==2,"aggregate status preserves remaining difficulty")
+    assert(saved.difficultyStates[1].state=="boss" and saved.difficultyStates[2].state=="available","independent mode locks remain separate")
+    assert(calls==2,"snapshot queries each independent lock once")
+    local checks, classify = 0, locks.isBossLockoutSource
+    locks.isBossLockoutSource = function(source)
+        if source.id == 78 then checks = checks + 1 end
+        return classify(source)
+    end
+    locks.mounts[#locks.mounts+1] = { id = 78 }
+    locks.journalSourceRevision = 1
+    locks.capturePlanSnapshot(true)
+    locks.capturePlanSnapshot(true)
+    assert(checks == 1, "a journal update reclassifies sources once and subsequent snapshots skip unrelated mounts")
+    assert(characters.Current.kills.legacy==5 and #characters.Current.planStatus["77"].difficultyStates==2,
+        "repeated capture preserves history and keeps an idempotent snapshot shape")
+    local old=locks.bossDifficultyLockouts(mount,nil,"Old")
+    assert(old[1].state=="unknown" and old[2].state=="unknown","old aggregate snapshots do not invent per-mode history")
+    characters.Saved={planStatus={ ["77"]=saved }}
+    local before=calls
+    local offline=locks.bossDifficultyLockouts(mount,nil,"Saved")
+    assert(offline[1].state=="boss" and offline[2].state=="available" and calls==before,"offline modes use the saved snapshot only")
+    now=1600
+    offline=locks.bossDifficultyLockouts(mount,nil,"Saved")
+    assert(offline[1].state=="unknown" and offline[1].stale and saved.difficultyStates[1].state=="boss",
+        "expired offline locks become unknown without rewriting saved history")
+    now,shared=1000,true
+    rows=locks.bossDifficultyLockouts(mount)
+    assert(#rows==1 and rows[1].shared and not rows[1].independent and #rows[1].difficultyIDs==2,
+        "redirected difficulties share one lock rather than two independent attempts")
+    env.C_RaidLocks.GetRedirectedDifficultyID=nil
+    rows=locks.bossDifficultyLockouts(mount)
+    assert(#rows==2 and rows[1].state=="unknown" and rows[1].independent==nil,"missing redirect API cannot promise independent attempts")
+    print("PawAtlas raid modes passed: independent locks, redirects, old/new snapshots, repeated capture and offline expiry")
 end

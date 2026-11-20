@@ -180,12 +180,86 @@ function atlas.isBossLockoutSource(mount)
     return false
 end
 
+function atlas.bossDifficultyLockouts(mount, selectedView, guid)
+    if accountLootSources[mount.id] or atlas.worldBossLocks[mount.id] or not atlas.isBossLockoutSource(mount) then return {} end
+    local current = UnitGUID and UnitGUID("player")
+    local offline = guid ~= nil and guid ~= current
+    local status
+    if offline then
+        local characters = type(MountAtlasAccountDB) == "table" and MountAtlasAccountDB.characters
+        local record = type(characters) == "table" and characters[guid]
+        status = type(record) == "table" and type(record.planStatus) == "table" and record.planStatus[tostring(mount.id)]
+    end
+    local rows, byKey = {}, {}
+    local fallbackExpiry = not offline and resetAt(atlas.lootFrequency(mount))
+    local views = selectedView and { selectedView } or mount.encounter and { mount } or mount.sourceGroups or {}
+    for _, view in ipairs(views) do
+        local route = raidRoute(mount, view)
+        local isRaid = route and route.isRaid or view.isRaid or view.sourcePlaceKind == "Рейд" or mount.kind == "Рейд"
+        local difficulties = route and route.difficulties or eligibleDifficulties(mount, view)
+        if isRaid and type(difficulties) == "table" then
+            local ids = {}
+            for id, enabled in pairs(difficulties) do if enabled and number(id) and id > 0 then ids[#ids + 1] = id end end
+            table.sort(ids)
+            for _, id in ipairs(ids) do
+                -- Without native redirection data, independent locks cannot be
+                -- established. Keep the verified mode visible with unknown state.
+                local lock = route and C_RaidLocks and C_RaidLocks.GetRedirectedDifficultyID
+                    and lockDifficulty(route.map, id, true) or nil
+                local key = tostring(route and route.map) .. ":" .. tostring(route and route.encounter) .. ":" .. tostring(lock or ("mode:" .. id))
+                local row = byKey[key]
+                if not row then
+                    row = { difficultyID = id, difficultyIDs = {}, lockDifficultyID = lock,
+                        map = route and route.map, encounter = route and route.encounter,
+                        state = "unknown", independent = lock and true or nil, updated = GetServerTime() }
+                    rows[#rows + 1], byKey[key] = row, row
+                    if offline then
+                        for _, saved in ipairs(type(status) == "table" and type(status.difficultyStates) == "table" and status.difficultyStates or {}) do
+                            if lock and saved.map == row.map and saved.encounter == row.encounter and saved.lockDifficultyID == lock then
+                                row.updated = status.updated
+                                if number(saved.expires) and saved.expires > GetServerTime()
+                                    and (saved.state == "boss" or saved.state == "available") then
+                                    row.state, row.expires = saved.state, saved.expires
+                                elseif number(saved.expires) then row.stale = true end
+                            end
+                        end
+                    elseif ready and lock and route and view.trackingCompatible ~= false then
+                        local complete, expires = encounterState(route, lock, fallbackExpiry)
+                        row.expires = expires
+                        if expires and type(complete) == "boolean" then row.state = complete and "boss" or "available" end
+                    end
+                end
+                local seen
+                for _, alias in ipairs(row.difficultyIDs) do if alias == id then seen = true end end
+                if not seen then row.difficultyIDs[#row.difficultyIDs + 1] = id end
+                row.shared = #row.difficultyIDs > 1
+                if row.shared then row.independent = false end
+            end
+        end
+    end
+    table.sort(rows, function(a, b) return a.difficultyID < b.difficultyID end)
+    return rows
+end
+
 function atlas.bossLockout(mount, selectedView)
     if accountLootSources[mount.id] then return end
     local world = atlas.worldBossLocks[mount.id]
     if world then return worldState(world) end
     if not atlas.isBossLockoutSource(mount) then return end
     if not ready then return "unknown" end
+    local modes = atlas.bossDifficultyLockouts(mount, selectedView)
+    if #modes > 0 then
+        local available, unknown, expires
+        for _, row in ipairs(modes) do
+            if row.state == "available" then available = true
+            elseif row.state ~= "boss" then unknown = true end
+            if row.expires then expires = expires and math.min(expires, row.expires) or row.expires
+            else unknown = true end
+        end
+        if available and expires then return "available", expires, modes end
+        if not unknown and expires then return "boss", expires, modes end
+        return "unknown", nil, modes
+    end
     local fallbackExpiry = resetAt(atlas.lootFrequency(mount))
     local expires
     local views = selectedView and { selectedView } or mount.encounter and { mount } or mount.sourceGroups or {}

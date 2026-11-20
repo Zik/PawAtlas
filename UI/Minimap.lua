@@ -67,11 +67,19 @@ function atlas.showMinimapButton()
     settings().hide = false
     updatePosition()
     button:Show()
+    if atlas.refreshMinimapSetting then atlas.refreshMinimapSetting(true) end
 end
 function atlas.hideMinimapButton()
     settings().hide = true
     button:Hide()
+    if atlas.refreshMinimapSetting then atlas.refreshMinimapSetting(false) end
     if GameTooltip:IsOwned(button) then GameTooltip:Hide() end
+end
+function atlas.minimapButtonShown()
+    return not settings().hide
+end
+function atlas.setMinimapButtonShown(shown)
+    if shown then atlas.showMinimapButton() else atlas.hideMinimapButton() end
 end
 button:SetScript("OnClick", function(_, mouseButton)
     if mouseButton ~= "LeftButton" then return end

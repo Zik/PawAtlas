@@ -2,11 +2,14 @@ local _, atlas = ...
 local events = CreateFrame("Frame")
 local stages, bags, pendingUses, itemSpells = {}, {}, {}, {}
 local stagesByMethod, npcStages, specialSpells = {}, {}, {}
-local resolvedItemSpells = {}
-local acquisitionItems, collectionReceipts = {}, {}
+local encounterStages, useStages, mapVisits, gossipStages, archaeologyRaces = {}, {}, {}, {}, {}
+local objectNodes = {}
+local unresolvedItemSpells = {}
+local acquisitionItems, collectionReceipts, prerequisiteOwners = {}, {}, {}
 local mountsByID = {}
 local interactions, archaeology, visits, gossipOpen = {}, {}, {}, {}
 local ready, lootCounted, itemLootUntil, enteredWorld = false, false, 0, false
+local itemLootOpen, itemLootSettled = false, false
 local cast, lastNode, notificationGuard
 local recentEvents = {}
 local pendingMessages = {}
@@ -66,9 +69,11 @@ local function mapID()
 end
 
 local function inZone(definition)
+    local hasZones = definition.zones and next(definition.zones)
+    if not definition.excludedMaps and not hasZones then return true end
     local map = mapID()
     if definition.excludedMaps and contains(definition.excludedMaps, map) then return false end
-    if not definition.zones or not next(definition.zones) then return true end
+    if not hasZones then return true end
     if definition.includeChildMaps and C_Map and C_Map.GetMapInfo then
         local parent = map
         for _ = 1, 8 do
@@ -84,11 +89,15 @@ end
 
 local function eligible(definition)
     if not inZone(definition) then return false end
-    local faction = safe(UnitFactionGroup, "player")
-    if definition.requiresHorde and faction ~= "Horde" then return false end
-    if definition.requiresAlliance and faction ~= "Alliance" then return false end
-    local _, class = safe(UnitClass, "player")
-    if definition.disableForClass and readable(class) and contains(definition.disableForClass, class) then return false end
+    if definition.requiresHorde or definition.requiresAlliance then
+        local faction = safe(UnitFactionGroup, "player")
+        if definition.requiresHorde and faction ~= "Horde" then return false end
+        if definition.requiresAlliance and faction ~= "Alliance" then return false end
+    end
+    if definition.disableForClass then
+        local _, class = safe(UnitClass, "player")
+        if readable(class) and contains(definition.disableForClass, class) then return false end
+    end
     if definition.requiredCovenantID then
         local covenant = C_Covenants and safe(C_Covenants.GetActiveCovenantID)
         if covenant ~= definition.requiredCovenantID then return false end
@@ -137,6 +146,12 @@ local function record()
         if type(character.stageLootGUIDs) ~= "table" then character.stageLootGUIDs = {} end
     end
     return character
+end
+
+local function refreshAttempts(planChanged)
+    if atlas.queueAttemptRefresh then atlas.queueAttemptRefresh(planChanged); return end
+    if planChanged and atlas.refreshPlanSnapshot then atlas.refreshPlanSnapshot() end
+    if atlas.refreshDetails then atlas.refreshDetails() end
 end
 
 function atlas.rawStageAttempts(key)
@@ -205,7 +220,7 @@ local function acquisitionReward(key)
 end
 
 -- Freeze success counts; later farming and imports must not rewrite an award.
-function atlas.rememberAcquisition(key, attempts, item, acquiredAt)
+function atlas.rememberAcquisition(key, attempts, item, acquiredAt, confirmedLoot)
     if not number(attempts) or attempts < 1 then return end
     local reward = acquisitionReward(key)
     if reward and reward.unverifiedEligibility then return end
@@ -214,6 +229,7 @@ function atlas.rememberAcquisition(key, attempts, item, acquiredAt)
     if type(records) ~= "table" then records = {}; MountAtlasAccountDB.acquisitionAttempts = records end
     if not records[key] then records[key] = { attempts = math.floor(attempts), item = item,
         time = number(acquiredAt) and acquiredAt or serverTime(),
+        confirmedLoot = confirmedLoot == true or nil,
         source = reward and reward.rarityIncompatible and "local" or nil } end
     return records[key]
 end
@@ -242,6 +258,9 @@ end
 
 local function stageName(definition, fallback)
     local name = C_Item and safe(C_Item.GetItemInfo, definition.item)
+    if definition.item and atlas.itemDisplayName then
+        return atlas.itemDisplayName(definition, name) or atlas.itemReferenceName(definition.item)
+    end
     if type(name) == "string" and name ~= "" then return name end
     return (atlas.dataName and atlas.dataName(definition) or definition.name) or fallback
 end
@@ -276,7 +295,7 @@ local function progress(definition, fallback)
         and safe(C_Item.GetItemCount, definition.item, true, false, true, true) or nil
     return { item = definition.item, name = stageName(definition, fallback), englishName = definition.englishName, required = definition.required,
         collected = number(collected) and collected or nil, collection = collection,
-        attempts = count, perAttempt = perAttempt, cumulative = cumulative, method = definition.method,
+        attempts = count, perAttempt = perAttempt, cumulative = cumulative, method = definition.method, event = definition.event,
         rateEstimated = definition.rateEstimated == true,
         contentsPerOpening = probability(definition.contentsRate, 0) }
 end
@@ -384,10 +403,19 @@ function atlas.rewardChanceEligible(mount, vendorRoute)
 end
 
 function atlas.rewardAttemptProgress(mount)
-    local definition = atlas.attemptStages and atlas.attemptStages[mount.id]
-    definition = definition and definition.reward
-    if not definition or not atlas.rewardChanceEligible(mount)
-        or usesExistingCounter(mount, definition) or not supported(definition) then return end
+    local stagesForMount = atlas.attemptStages and atlas.attemptStages[mount.id]
+    local definition = stagesForMount and stagesForMount.reward
+    if not definition or not atlas.rewardChanceEligible(mount) then return end
+    local container = atlas.mountRewardContainerRewards and atlas.mountRewardContainerRewards[mount.id]
+    if container then
+        local item = stagesForMount.item
+        if not item or not item.rate or not supported(item) then return end
+        local attempts = total(item.key)
+        local perAttempt, cumulative = probability(item.rate * container.contentsRate, attempts or 0)
+        return { item = definition.item, method = item.method, attempts = attempts, perAttempt = perAttempt,
+            cumulative = attempts and cumulative or nil, rateEstimated = true }
+    end
+    if usesExistingCounter(mount, definition) or not supported(definition) then return end
     if definition.method == "COLLECTION" then return end
     return progress(definition, mount.name)
 end
@@ -427,20 +455,29 @@ end
 
 local function finalizePendingAcquisitions(inventoryUpdated)
     for key, pending in pairs(pendingAcquisitions) do
-        local held = C_Item and safe(C_Item.GetItemCount, pending.item, true, false, true, true)
-        local count = pending.minimumAttempts and total(key)
-        local counted = not pending.minimumAttempts or (number(count) and count >= pending.minimumAttempts)
-        if pending.expires <= now() then pendingAcquisitions[key] = nil
-        elseif counted and (not pending.required or (number(held) and held >= pending.required)) then
-            if pending.minimumAttempts then pending.attempts = count end
-            atlas.rememberAcquisition(key, pending.attempts, pending.item, pending.time)
+        if pending.expires <= now() then
             pendingAcquisitions[key] = nil
-        elseif counted and inventoryUpdated and number(held) then
-            -- This loot's inventory update settled below the goal. Do not let
-            -- a later unrelated bag change turn its first shard into success.
-            pendingAcquisitions[key] = nil
+        elseif not pending.waitForLootCount then
+            local count = pending.minimumAttempts and total(key)
+            local counted = not pending.minimumAttempts or (number(count) and count >= pending.minimumAttempts)
+            if counted then
+                local held = pending.required and C_Item and safe(C_Item.GetItemCount, pending.item, true, false, true, true)
+                if not pending.required or (number(held) and held >= pending.required) then
+                    atlas.rememberAcquisition(key, pending.minimumAttempts and count or pending.attempts,
+                        pending.item, pending.time, pending.confirmedLoot)
+                    pendingAcquisitions[key] = nil
+                elseif inventoryUpdated and number(held) then
+                    -- A later unrelated bag change cannot turn this shard into success.
+                    pendingAcquisitions[key] = nil
+                end
+            end
         end
     end
+end
+
+local function itemCount(id)
+    local count = C_Item and safe(C_Item.GetItemCount, id, false, false, false, false)
+    return number(count) and math.floor(count) or nil
 end
 
 local function waitingForContainer(key)
@@ -448,13 +485,17 @@ local function waitingForContainer(key)
     -- Freeze the successful total only after that pending use is recorded.
     local entry = stages[key]
     if not entry then return false end
-    for _, variant in ipairs(entry.definition.variants or { entry.definition }) do
+    local time = now()
+    local checkInventory = not itemLootSettled and itemLootUntil > time
+    for _, variant in ipairs(entry.variants) do
         if (variant.method or entry.definition.method) == "USE" then
             for _, item in ipairs(variant.items or {}) do
                 local pending = pendingUses[item]
-                local held = C_Item and safe(C_Item.GetItemCount, item, false, false, false, false)
-                if (pending and pending > now()) or (itemLootUntil > now()
-                    and number(bags[item]) and number(held) and held < bags[item]) then return true end
+                if pending and pending > time then return true end
+                if checkInventory and number(bags[item]) and bags[item] > 0 then
+                    local held = itemCount(item)
+                    if held and held < bags[item] then return true end
+                end
             end
         end
     end
@@ -479,9 +520,22 @@ local function ownLootPattern(template)
 end
 
 local ownLootSingle, ownLootMultiple = ownLootPattern(LOOT_ITEM_SELF), ownLootPattern(LOOT_ITEM_SELF_MULTIPLE)
+local otherReceipts, lootPrefixes = {}, {}
+local matchWithoutPrefix = false
+for _, key in ipairs({ "LOOT_ITEM_SELF", "LOOT_ITEM_SELF_MULTIPLE", "LOOT_ITEM_CREATED_SELF",
+    "LOOT_ITEM_CREATED_SELF_MULTIPLE", "LOOT_ITEM_PUSHED_SELF", "LOOT_ITEM_PUSHED_SELF_MULTIPLE" }) do
+    local template = _G[key]
+    if type(template) == "string" then
+        local prefix = template:match("^(.-)%%")
+        if not prefix or prefix == "" then matchWithoutPrefix = true
+        else lootPrefixes[prefix] = #prefix end
+        if key ~= "LOOT_ITEM_SELF" and key ~= "LOOT_ITEM_SELF_MULTIPLE" then
+            otherReceipts[#otherReceipts + 1] = ownLootPattern(template)
+        end
+    end
+end
 
-local function recordCollectionReceipt(item, message, lineID)
-    if not collectionReceipts[item] or not number(lineID) or lineID <= 0 then return end
+local function ownLootReceipt(message)
     -- Regular self-loot confirms receipt. Crafted and pushed item messages
     -- also cover other inventory changes and do not seed collection history.
     local normalized, links = message:gsub("|c%x%x%x%x%x%x%x%x|Hitem:.-|h.-|h|r", "\001", 1)
@@ -489,49 +543,81 @@ local function recordCollectionReceipt(item, message, lineID)
     if links == 0 then normalized = message:gsub("|Hitem:.-|h.-|h", "\001", 1) end
     local quantity = ownLootMultiple and tonumber(normalized:match(ownLootMultiple))
     if not quantity and ownLootSingle and normalized:match(ownLootSingle) then quantity = 1 end
-    if not number(quantity) or quantity < 1 then return end
+    if number(quantity) and quantity >= 1 then return quantity, true end
+    for _, pattern in ipairs(otherReceipts) do
+        if normalized:match(pattern) then return nil, true end
+    end
+end
+
+local function firstLootReceipt(lineID)
+    if not number(lineID) or lineID <= 0 then return false end
     local time, key = now(), "collection:" .. lineID
     if (recentEvents[key] or 0) > time then return end
-    local character = record()
-    if not character then return end
     if time - lastCollectionPrune >= 60 then
         for id, expires in pairs(recentEvents) do if expires <= time then recentEvents[id] = nil end end
         lastCollectionPrune = time
     end
     recentEvents[key] = time + 60
+    return true
+end
+
+local function recordCollectionReceipt(item, quantity)
+    local character = record()
+    if not character then return end
     if type(character.collectionItems) ~= "table" then character.collectionItems = {} end
     local previous = character.collectionItems[item]
     character.collectionItems[item] = (number(previous) and math.floor(previous) or 0) + quantity
-    if atlas.refreshDetails then atlas.refreshDetails() end
+    refreshAttempts(false)
+end
+
+local function uncollected(id)
+    if not C_MountJournal or not C_MountJournal.GetMountInfoByID then return true end
+    local owned = safe(function() return select(11, C_MountJournal.GetMountInfoByID(id)) end)
+    return owned == false
 end
 
 local function onItemReceived(message, lineID)
     if not readable(message) or type(message) ~= "string" then return end
+    local selfPrefix = false
+    for prefix, length in pairs(lootPrefixes) do
+        if message:sub(1, length) == prefix then selfPrefix = true; break end
+    end
+    if not selfPrefix and not matchWithoutPrefix then return end
     local item = tonumber(message:match("|Hitem:(%d+)"))
     if not item then return end
-    recordCollectionReceipt(item, message, lineID)
-    local selfLoot = false
-    for _, name in ipairs({ "LOOT_ITEM_SELF", "LOOT_ITEM_SELF_MULTIPLE", "LOOT_ITEM_CREATED_SELF",
-        "LOOT_ITEM_CREATED_SELF_MULTIPLE", "LOOT_ITEM_PUSHED_SELF", "LOOT_ITEM_PUSHED_SELF_MULTIPLE" }) do
-        local template = _G[name]
-        local prefix = type(template) == "string" and template:match("^(.-)%%")
-        if prefix and prefix ~= "" and message:sub(1, #prefix) == prefix then selfLoot = true; break end
-    end
-    if not selfLoot then return end
     local owners = acquisitionItems[item]
-    if not owners then
-        if atlas.notifyMountItemLoot then atlas.notifyMountItemLoot(item) end
-        return
+    local prerequisites = prerequisiteOwners[item]
+    local collection = collectionReceipts[item]
+    local quantity, selfLoot
+    if not selfPrefix or owners or prerequisites or collection then quantity, selfLoot = ownLootReceipt(message) end
+    if not selfLoot and not selfPrefix then return end
+    local recipients
+    if selfLoot and (collection or prerequisites) and firstLootReceipt(lineID) then
+        if quantity and collection then recordCollectionReceipt(item, quantity) end
+        for id in pairs(prerequisites or {}) do
+            if uncollected(id) then
+                recipients = recipients or {}
+                recipients[#recipients + 1] = id
+            end
+        end
     end
     local generation = sessionGeneration
-    for key, owner in pairs(owners) do
+    if not owners then
+        if atlas.notifyMountItemLoot then atlas.notifyMountItemLoot(item) end
+        if not recipients then return end
+    end
+    for key, owner in pairs(owners or {}) do
         local waiting = waitingForContainer(key)
-        if (owner.required or waiting) and not atlas.acquisitionAttempts(key) then
+        if not owner.required and not waiting and not pendingAcquisitions[key] then
+            -- Inventory and collection events can run before the delayed count.
+            pendingAcquisitions[key] = { item = item, waitForLootCount = true,
+                confirmedLoot = quantity ~= nil, expires = now() + 20 }
+        elseif (owner.required or waiting) and not atlas.acquisitionAttempts(key) then
             local count = owner.mount and atlas.kills(owner.mount) or total(key)
             if number(count) and (count > 0 or waiting) then
                 pendingAcquisitions[key] = { item = item, required = owner.required, attempts = count,
                     minimumAttempts = waiting and count + 1 or nil,
-                    time = serverTime(), expires = now() + 20 }
+                    confirmedLoot = quantity ~= nil, time = serverTime(), expires = now() + 20 }
             end
         end
     end
@@ -539,18 +625,25 @@ local function onItemReceived(message, lineID)
     C_Timer.After(.1, function()
         if generation ~= sessionGeneration then return end
         for key, owner in pairs(acquisitionItems[item] or {}) do
-            if not owner.required and not pendingAcquisitions[key] then
+            local pending = pendingAcquisitions[key]
+            if pending and pending.waitForLootCount and pending.item == item then
                 local count = owner.mount and atlas.kills(owner.mount) or total(key)
-                atlas.rememberAcquisition(key, count, item)
+                atlas.rememberAcquisition(key, count, item, nil, pending.confirmedLoot)
+                pendingAcquisitions[key] = nil
             end
         end
         finalizePendingAcquisitions(false)
+        if recipients then atlas.notifyPrerequisiteLoot(item, message, quantity ~= nil, recipients) end
     end)
-    if atlas.notifyMountItemLoot then atlas.notifyMountItemLoot(item, true) end
+    if owners and atlas.notifyMountItemLoot then atlas.notifyMountItemLoot(item, true) end
 end
 
 function atlas.defaultChatMessageFormat()
     return atlas.L("PawAtlas: {название} — попытка {попытки} · вероятность за попытки: {вероятность}")
+end
+
+function atlas.defaultMountCollectionMessageFormat()
+    return atlas.L("PawAtlas: {название} получен! Попытка №{попытки}.")
 end
 
 local function attemptItemIcon(item)
@@ -566,11 +659,7 @@ local function attemptItemIcon(item)
     return ""
 end
 
-function atlas.formatAttemptMessage(name, attempts, cumulative, perAttempt, item, templateOverride)
-    local settings = type(MountAtlasAccountDB) == "table" and MountAtlasAccountDB.settings
-    local template = templateOverride ~= nil and templateOverride or (settings and settings.chatMessageFormat)
-    local default = atlas.defaultChatMessageFormat()
-    if type(template) ~= "string" or template == "" then template = default end
+local function chatProbability(cumulative, perAttempt)
     local probabilityText = "—"
     if number(cumulative) then
         if cumulative > 0 and cumulative < .00005 then probabilityText = atlas.L("<0,01%")
@@ -581,11 +670,61 @@ function atlas.formatAttemptMessage(name, attempts, cumulative, perAttempt, item
             probabilityText = probabilityText .. "%"
         end
     end
-    if not number(cumulative) and template == default then template = atlas.L("PawAtlas: {название} — попытка {попытки}") end
-    local itemName, count = attemptItemIcon(item) .. tostring(name or "—"), tostring(attempts or 0)
+    return probabilityText
+end
+
+local function fillChatTokens(template, itemName, count, probabilityText)
     local values = { ["название"] = itemName, ["попытки"] = count, ["вероятность"] = probabilityText,
         mount = itemName, attempts = count, probability = probabilityText }
     return (template:gsub("{([^{}]+)}", function(token) return values[token] or "{" .. token .. "}" end):gsub("[\r\n]", " "))
+end
+
+function atlas.formatAttemptMessage(name, attempts, cumulative, perAttempt, item, templateOverride)
+    local settings = type(MountAtlasAccountDB) == "table" and MountAtlasAccountDB.settings
+    local template = templateOverride ~= nil and templateOverride or (settings and settings.chatMessageFormat)
+    local default = atlas.defaultChatMessageFormat()
+    if type(template) ~= "string" or template == "" then template = default end
+    if not number(cumulative) and template == default then template = atlas.L("PawAtlas: {название} — попытка {попытки}") end
+    local itemName, count = attemptItemIcon(item) .. tostring(name or "—"), tostring(attempts or 0)
+    return fillChatTokens(template, itemName, count, chatProbability(cumulative, perAttempt))
+end
+
+function atlas.formatMountCollectionMessage(name, attempts, cumulative, perAttempt, templateOverride)
+    local settings = type(MountAtlasAccountDB) == "table" and MountAtlasAccountDB.settings
+    local template = templateOverride ~= nil and templateOverride or (settings and settings.mountCollectionMessageFormat)
+    local default = atlas.defaultMountCollectionMessageFormat()
+    if type(template) ~= "string" or not template:find("%S") then template = default end
+    local known = number(attempts) and attempts >= 1 and attempts == math.floor(attempts)
+    if not known and template == default then template = atlas.L("PawAtlas: {название} получен!") end
+    return fillChatTokens(template, tostring(name or "—"), known and tostring(attempts) or "—",
+        chatProbability(cumulative, perAttempt))
+end
+
+function atlas.notifyMountCollected(id, name)
+    local settings = type(MountAtlasAccountDB) == "table" and MountAtlasAccountDB.settings
+    if settings and settings.mountCollectionChat == false then return end
+    if not name or not DEFAULT_CHAT_FRAME or not DEFAULT_CHAT_FRAME.AddMessage then return end
+    local key = "mount:" .. id
+    local recorded = atlas.acquisitionAttempts(key)
+    if not recorded or recorded.confirmedLoot ~= true then return end
+    -- Only use a frozen receipt of the actual teaching item. A toast can also
+    -- freeze an egg or a lifetime counter, which cannot identify this award.
+    local item = recorded.item
+    if prerequisiteOwners[item] and prerequisiteOwners[item][id] then return end
+    local native = number(item) and C_MountJournal and safe(C_MountJournal.GetMountFromItem, item)
+    local confirmed = native == id
+    if not confirmed and (not number(native) or native == 0) and number(item) then
+        for _, reward in ipairs((atlas.mountRewardItems or {})[id] or {}) do
+            if reward.item == item then confirmed = true; break end
+        end
+    end
+    if not confirmed then return end
+    local definition = acquisitionReward(key)
+    local perAttempt, cumulative
+    if definition and definition.item == recorded.item and definition.method ~= "COLLECTION" then
+        perAttempt, cumulative = probability(definition.rate, recorded.attempts)
+    end
+    DEFAULT_CHAT_FRAME:AddMessage(atlas.formatMountCollectionMessage(name, recorded.attempts, cumulative, perAttempt))
 end
 
 local function output(name, attempts, cumulative, perAttempt, item)
@@ -595,14 +734,40 @@ local function output(name, attempts, cumulative, perAttempt, item)
     DEFAULT_CHAT_FRAME:AddMessage(atlas.formatAttemptMessage(name, attempts, cumulative, perAttempt, item))
 end
 
-local function uncollected(id)
-    if not C_MountJournal or not C_MountJournal.GetMountInfoByID then return true end
-    local owned = safe(function() return select(11, C_MountJournal.GetMountInfoByID(id)) end)
-    return owned == false
+function atlas.notifyPrerequisiteLoot(item, message, fromDrop, recipients)
+    local settings = type(MountAtlasAccountDB) == "table" and MountAtlasAccountDB.settings
+    if (settings and settings.mountCollectionChat == false) or not DEFAULT_CHAT_FRAME or not DEFAULT_CHAT_FRAME.AddMessage then return end
+    local teachingMount = C_MountJournal and safe(C_MountJournal.GetMountFromItem, item)
+    if number(teachingMount) and teachingMount > 0 then return end
+    local count, rate, cumulative, found
+    for _, id in ipairs(recipients) do
+        local mount = mountsByID[id] or { id = id, journalOnly = true }
+        local progress = fromDrop and atlas.itemAttemptProgress(mount)
+        local attempts, perAttempt, probability
+        if progress and progress.item == item and not progress.collection and (progress.attempts or 0) > 0 then
+            attempts, perAttempt, probability = progress.attempts, progress.perAttempt, progress.cumulative
+        end
+        -- A shared item can serve several mounts with different farm histories.
+        if found and (count ~= attempts or rate ~= perAttempt) then
+            count, rate, cumulative = nil, nil, nil
+            break
+        end
+        found, count, rate, cumulative = true, attempts, perAttempt, probability
+    end
+    if not found then return end
+    local link = message:match("(|c%x%x%x%x%x%x%x%x|Hitem:[^|]+|h.-|h|r)")
+        or message:match("(|cn[%w_]+:|Hitem:[^|]+|h.-|h|r)") or message:match("(|Hitem:[^|]+|h.-|h)")
+    if link then
+        DEFAULT_CHAT_FRAME:AddMessage(atlas.formatMountCollectionMessage(attemptItemIcon(item) .. link, count, cumulative, rate))
+    end
 end
 
 local function notifyStage(entry, count, cumulative)
     if MountAtlasAccountDB.settings and MountAtlasAccountDB.settings.chatMessages == false then return end
+    -- A zone corpse is not a complete roll for an inventory goal whose items
+    -- also come from other sources. Keep the counter without announcing it.
+    if number(entry.definition.required) and entry.definition.required > 1
+        and not probability(entry.definition.rate, count or 0) then return end
     for id in pairs(entry.mountIDs) do
         if uncollected(id) then
             local name = stageName(entry.definition, entry.name)
@@ -642,9 +807,10 @@ function atlas.notifyKillStatistic(id)
         notifyStage(stages[id], count or 0, count and cumulative or nil)
         return
     end
-    for _, mount in ipairs(atlas.mounts) do
-        if mount.id == id then atlas.notifyMountAttempt(mount); return end
-    end
+    local mount
+    if atlas.mountByID then mount = atlas.mountByID(id)
+    else mount = mountsByID[id] end
+    if mount then atlas.notifyMountAttempt(mount) end
 end
 
 function atlas.preserveStageDailyLocks(character)
@@ -689,8 +855,8 @@ local function cooldownAvailable(character, definition)
     return false
 end
 
-local function increment(entry, variant, amount, credited)
-    local character = record()
+local function increment(entry, variant, amount, credited, character)
+    character = character or record()
     if not character or not eligible(variant) or not cooldownAvailable(character, entry.definition) then return false end
     local definition = entry.definition
     if variant.firstDaily or definition.firstDaily then
@@ -714,19 +880,13 @@ local function increment(entry, variant, amount, credited)
     return true
 end
 
-local function variants(entry)
-    return entry.definition.variants or { entry.definition }
-end
-
 local function opportunityLocks(entry, npc)
     local locks, open = {}, false
     if not atlas.planStageOpportunityKey then return locks, true end
     local attempts = type(MountAtlasDB) == "table" and MountAtlasDB.lastAttempts
     local time = serverTime()
-    for id in pairs(entry.mountIDs) do
-        local mount = mountsByID[id]
-        local key, frequency
-        if mount then key, frequency = atlas.planStageOpportunityKey(mount, entry.definition, npc) end
+    for _, mount in pairs(entry.mountIDs) do
+        local key, frequency = atlas.planStageOpportunityKey(mount, entry.definition, npc)
         if key then
             local getter = C_DateAndTime and (frequency == "daily" and C_DateAndTime.GetSecondsUntilDailyReset
                 or C_DateAndTime.GetSecondsUntilWeeklyReset)
@@ -742,16 +902,19 @@ local function opportunityLocks(entry, npc)
     return locks, not next(locks) or open
 end
 
-local function apply(method, match, amount, npc)
+local function apply(method, match, amount, id, character)
     local candidates = stagesByMethod[method]
-    if method == "NPC" then candidates = npcStages[npc] end
+    if method == "NPC" then candidates = npcStages[id]
+    elseif method == "ENCOUNTER" then candidates = encounterStages[id]
+    elseif method == "USE" then candidates = useStages[id] end
     if not candidates then return false end
+    local npc = method == "NPC" and id or nil
     local changed, pendingLocks, credited = false, {}, {}
     for _, entry in pairs(candidates) do
-        for _, variant in ipairs(variants(entry)) do
+        for _, variant in ipairs(entry.variants) do
             if (variant.method or entry.definition.method) == method and match(variant, entry.definition) then
                 local locks, available = opportunityLocks(entry, npc)
-                if available and increment(entry, variant, amount, credited) then
+                if available and increment(entry, variant, amount, credited, character) then
                     changed = true
                     for key, expires in pairs(locks) do pendingLocks[key] = expires end
                     break
@@ -768,40 +931,70 @@ local function apply(method, match, amount, npc)
     end
     if changed then
         if atlas.recordBrokerAttempt then atlas.recordBrokerAttempt(credited) end
-        if atlas.refreshPlanSnapshot then atlas.refreshPlanSnapshot() end
-        if atlas.refreshDetails then atlas.refreshDetails() end
+        refreshAttempts(true)
     end
     return changed
 end
 
-local function itemCount(id)
-    local count = C_Item and safe(C_Item.GetItemCount, id, false, false, false, false)
-    return number(count) and math.floor(count) or nil
+local function resolveItemSpell(item)
+    if not unresolvedItemSpells[item] or not C_Item then return end
+    local _, spell = safe(C_Item.GetItemSpell, item)
+    if number(spell) then
+        itemSpells[spell] = item
+        unresolvedItemSpells[item] = nil
+    end
 end
 
-local function resolveItemSpell(item)
-    local spell = resolvedItemSpells[item]
-    if not spell and C_Item then
-        local _, id = safe(C_Item.GetItemSpell, item)
-        if number(id) then
-            spell = id
-            resolvedItemSpells[item] = spell
+local function registerPrerequisite(id, item)
+    if not number(item) or item <= 0 then return end
+    prerequisiteOwners[item] = prerequisiteOwners[item] or {}
+    prerequisiteOwners[item][id] = true
+end
+
+local function indexEntries(index, ids, key, entry)
+    for position, value in pairs(ids or {}) do
+        local id = tonumber(value == true and position or value)
+        if id then
+            local candidates = index[id]
+            if not candidates then candidates = {}; index[id] = candidates end
+            candidates[key] = entry
         end
     end
-    if spell then itemSpells[spell] = item end
 end
 
 local function buildStages()
-    stages, bags, itemSpells, mountsByID, acquisitionItems = {}, {}, {}, {}, {}
-    collectionReceipts = {}
-    stagesByMethod, npcStages, specialSpells, resolvedItemSpells = {}, {}, {}, {}
+    local loadItems = {}
     for _, mount in ipairs(atlas.mounts or {}) do mountsByID[mount.id] = mount end
+    for id, grant in pairs(atlas.guaranteedRewards or {}) do
+        if grant.reagent then registerPrerequisite(id, grant.reagent.item) end
+    end
+    for id, container in pairs(atlas.mountRewardContainerRewards or {}) do
+        registerPrerequisite(id, container.item)
+    end
+    for id, loot in pairs(atlas.lootItems or {}) do
+        if loot.basis == "open" or loot.basis == "cage" or loot.basis == "egg" or loot.basis == "ingredient" then
+            registerPrerequisite(id, loot.item)
+        end
+    end
     for id, definitions in pairs(atlas.attemptStages or {}) do
         local mount = mountsByID[id]
+        local prerequisite = definitions.item
+        if prerequisite and prerequisite.item and not prerequisite.historical then
+            for _, item in ipairs(prerequisite.collectedItems or { prerequisite.item }) do
+                registerPrerequisite(id, item)
+            end
+        end
         for _, item in ipairs(collectionItems(definitions.item) or {}) do collectionReceipts[item] = true end
         for _, role in ipairs({ "item", "reward" }) do
             local definition = definitions[role]
             if definition and definition.unverifiedEligibility then definition = nil end
+            if definition and not definition.historical then
+                for _, variant in ipairs(definition.variants or { definition }) do
+                    if not variant.historical and (variant.method or definition.method) == "USE" then
+                        for _, item in ipairs(variant.items or {}) do registerPrerequisite(id, item) end
+                    end
+                end
+            end
             local existing = (role == "item" and definition and definition.attemptsFromReward)
                 or (role == "reward" and ((definition and definition.historical) or (atlas.killStatistics and atlas.killStatistics[id])
                     or (mount and usesExistingCounter(mount, definition or {}))))
@@ -816,33 +1009,28 @@ local function buildStages()
             end
             if definition and definition.key and not existing then
                 local entry = stages[definition.key] or { definition = definition,
+                    variants = definition.variants or { definition },
                     name = role == "reward" and mount and mount.name or nil, mountIDs = {} }
-                entry.mountIDs[id] = true
+                -- Stage-only mounts can already be tracked before the catalog is opened.
+                entry.mountIDs[id] = mount or { id = id, journalOnly = true }
                 stages[definition.key] = entry
-                if C_Item and C_Item.RequestLoadItemDataByID and definition.item then
-                    pcall(C_Item.RequestLoadItemDataByID, definition.item)
-                end
-                for _, variant in ipairs(definition.variants or { definition }) do
-                    for _, item in ipairs(variant.items or {}) do
-                        bags[item] = itemCount(item) or false
-                        resolveItemSpell(item)
-                    end
-                end
+                if definition.item then loadItems[definition.item] = true end
             end
         end
     end
     for key, entry in pairs(stages) do
-        for _, variant in ipairs(variants(entry)) do
+        local definition = entry.definition
+        if definition.event == "MAP_VISIT" then mapVisits[key] = entry end
+        if definition.event == "GOSSIP" then gossipStages[key] = entry end
+        if definition.method == "ARCH" then archaeologyRaces[definition.raceId] = true end
+        for _, variant in ipairs(entry.variants) do
             local method = variant.method or entry.definition.method
             if method == "NPC" then
-                for index, value in pairs(variant.npcs or {}) do
-                    local npc = tonumber(value == true and index or value)
-                    if npc then
-                        local rewards = npcStages[npc] or {}
-                        npcStages[npc] = rewards
-                        rewards[key] = entry
-                    end
-                end
+                indexEntries(npcStages, variant.npcs, key, entry)
+            elseif method == "ENCOUNTER" then
+                indexEntries(encounterStages, variant.encounters, key, entry)
+            elseif method == "USE" then
+                indexEntries(useStages, variant.items, key, entry)
             elseif method then
                 local candidates = stagesByMethod[method] or {}
                 stagesByMethod[method] = candidates
@@ -852,9 +1040,17 @@ local function buildStages()
                         local spell = tonumber(value == true and index or value)
                         if spell then specialSpells[spell] = true end
                     end
+                    for _, id in ipairs(variant.objects or {}) do objectNodes[id] = true end
                 end
             end
         end
+    end
+    for item in pairs(useStages) do
+        loadItems[item], unresolvedItemSpells[item] = true, true
+        resolveItemSpell(item)
+    end
+    if C_Item and C_Item.RequestLoadItemDataByID then
+        for item in pairs(loadItems) do pcall(C_Item.RequestLoadItemDataByID, item) end
     end
     ready = true
 end
@@ -863,25 +1059,40 @@ local function blocked()
     return next(interactions) ~= nil
 end
 
-local function scanBags()
-    for item, previous in pairs(bags) do
-        local current = itemCount(item)
+local function beginBlockedInteraction(kind)
+    interactions[kind] = true
+    pendingUses, itemLootUntil, itemLootOpen, itemLootSettled = {}, 0, false, false
+end
+
+local function refreshBagBaseline()
+    for item in pairs(useStages) do
+        bags[item] = itemCount(item) or false
+    end
+end
+
+local function scanBags(items, onlyDecreases)
+    local time, allowed = now(), not blocked()
+    local itemLoot = itemLootUntil > time and not itemLootSettled
+    for item in pairs(items) do
+        local previous, pending = bags[item], pendingUses[item]
+        local current
+        if not onlyDecreases or (number(previous) and previous > 0) then current = itemCount(item) end
         if current ~= nil then
-            local pending = pendingUses[item]
-            if ready and not blocked() and number(previous) and current < previous
-                and ((pending and pending > now()) or itemLootUntil > now()) then
-                apply("USE", function(v) return contains(v.items, item) end, previous - current)
+            if allowed and number(previous) and current < previous and ((pending and pending > time) or itemLoot) then
+                apply("USE", function(v) return contains(v.items, item) end, previous - current, item)
                 pendingUses[item] = nil
+                if itemLoot then itemLootSettled = true end
             end
             bags[item] = current
-            resolveItemSpell(item)
+            if current > 0 and (not number(previous) or previous == 0) then resolveItemSpell(item) end
         end
+        if pending and pending <= time then pendingUses[item] = nil end
     end
 end
 
 local function markUse(item)
     if not ready or blocked() or not number(item) then return end
-    if bags[item] ~= nil then pendingUses[item] = now() + 8 end
+    if useStages[item] then pendingUses[item] = now() + 8 end
 end
 
 local function isPool(name)
@@ -919,66 +1130,95 @@ local function lootMatches(definition)
     return false
 end
 
+local function isOpening(kind)
+    return kind == "Opening" or kind == "Opening - No Text"
+end
+
 local function nodeName()
     local node = GameTooltipTextLeft1 and safe(GameTooltipTextLeft1.GetText, GameTooltipTextLeft1)
     if type(node) == "string" and node ~= "" then
         lastNode = { name = node:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""), time = now() }
-        if cast and cast.kind == "Fishing" and isPool(lastNode.name) then cast.pool = true end
+        node = lastNode.name
+        if cast and cast.kind == "Fishing" and isPool(node) then cast.pool = true end
+        return node
     end
+end
+
+local function lootSources(slots)
+    local creatures, objects, knownObject = {}, {}, false
+    for slot = 1, slots do
+        local sources = GetLootSourceInfo and { GetLootSourceInfo(slot) } or {}
+        for i = 1, #sources, 2 do
+            local guid = sources[i]
+            if readable(guid) and type(guid) == "string" then
+                local kind, id = guid:match("^(%a+)%-%d+%-%d+%-%d+%-%d+%-(%d+)%-")
+                id = tonumber(id)
+                if kind == "Creature" or kind == "Vehicle" then
+                    creatures[guid] = id
+                elseif kind == "GameObject" then
+                    objects["node:" .. guid] = id
+                    if objectNodes[id] then knownObject = true end
+                end
+            end
+        end
+    end
+    return creatures, objects, knownObject
+end
+
+local function onNodeLoot(character, objects, knownObject, fromCreature, time)
+    local gathering = cast and cast.expires > now() and cast.kind ~= "Fishing"
+    if not gathering and not knownObject then return false end
+
+    local opening = gathering and isOpening(cast.kind)
+    local hasObject, seen = next(objects) ~= nil, character.stageLootGUIDs
+    if not lootCounted and (knownObject or (opening and not fromCreature and cast.node)) then
+        lootCounted = apply("SPECIAL", function(v)
+            if not v.nodes then return false end
+            if knownObject then
+                -- A loot source ID identifies the chest even when its tooltip
+                -- or opening-cast event is missing.
+                for key, id in pairs(objects) do
+                    if contains(v.objects, id) and (not number(seen[key]) or seen[key] <= time) then
+                        return lootMatches(v)
+                    end
+                end
+                return false
+            end
+            if hasObject and v.objects then return false end
+            for key in pairs(objects) do
+                if number(seen[key]) and seen[key] > time then return false end
+            end
+            return nodeMatches(v.nodes, cast.node) and lootMatches(v)
+        end, nil, nil, character)
+    end
+    -- A node already counted by name can gain its GUID in LOOT_OPENED.
+    if lootCounted then
+        for key in pairs(objects) do
+            if not number(seen[key]) or seen[key] <= time then seen[key] = time + 86400 end
+        end
+    end
+    return gathering -- Skinning/mining/opening is not another NPC or zone kill.
 end
 
 local function onLoot()
     if not ready or blocked() then return end
     local slots = safe(GetNumLootItems)
     if not number(slots) then return end
+    local creatures, objects, knownObject = lootSources(slots)
     local nativeFishing = safe(IsFishingLoot)
-    local fishing = nativeFishing or (nativeFishing == nil and cast and cast.kind == "Fishing" and cast.expires > now())
-    -- A fishing state is only a fallback when the client has no native signal.
-    -- Looting a creature after casting a line cannot be counted as a catch.
-    if fishing and nativeFishing == nil and GetLootSourceInfo then
-        for slot = 1, slots do
-            local sources = { GetLootSourceInfo(slot) }
-            for i = 1, #sources, 2 do
-                if readable(sources[i]) and type(sources[i]) == "string"
-                    and (sources[i]:match("^Creature%-") or sources[i]:match("^Vehicle%-")) then fishing = false end
-            end
+    -- Never use a stale fishing cast to reinterpret a known loot source.
+    local fallbackFishing = nativeFishing == nil and cast and cast.kind == "Fishing" and cast.expires > now()
+        and not next(creatures) and not knownObject
+    if nativeFishing or fallbackFishing then
+        if not lootCounted then
+            lootCounted = true
+            local pool = cast and cast.pool
+            apply("FISHING", function(v) return not v.requiresPool or pool == true end)
+            cast = nil
         end
-    end
-    if fishing and not lootCounted then
-        lootCounted = true
-        local pool = cast and cast.pool
-        apply("FISHING", function(v) return not v.requiresPool or pool == true end)
-        cast = nil
         return
     end
-    if cast and cast.expires > now() and cast.kind ~= "Fishing" then
-        local character, objects = record(), {}
-        for slot = 1, slots do
-            local sources = GetLootSourceInfo and { GetLootSourceInfo(slot) } or {}
-            for i = 1, #sources, 2 do
-                local guid = sources[i]
-                if readable(guid) and type(guid) == "string" and guid:match("^GameObject%-") then
-                    local key = "node:" .. guid
-                    local expires = character and character.stageLootGUIDs[key]
-                    if number(expires) and expires > serverTime() then return end
-                    objects[key] = true
-                end
-            end
-        end
-        if not lootCounted then
-            local changed = apply("SPECIAL", function(v)
-                return v.nodes and nodeMatches(v.nodes, cast.node) and lootMatches(v)
-            end)
-            -- Required loot/currency may arrive only with LOOT_OPENED.
-            -- Seal this window only after an eligible attempt was recorded.
-            if changed then lootCounted = true end
-        end
-        -- A node already counted by name can gain its GUID in LOOT_OPENED.
-        if lootCounted and character then
-            for key in pairs(objects) do character.stageLootGUIDs[key] = serverTime() + 86400 end
-        end
-        return -- Skinning/mining/opening is not another NPC or zone kill.
-    end
+
     local character = record()
     if not character then return end
     local time = serverTime()
@@ -988,45 +1228,33 @@ local function onLoot()
         end
         lastLootPrune = time
     end
-    local seenGUIDs = {}
-    for slot = 1, slots do
-        local sources = GetLootSourceInfo and { GetLootSourceInfo(slot) } or {}
-        for i = 1, #sources, 2 do
-            local guid = sources[i]
-            if readable(guid) and type(guid) == "string" and not seenGUIDs[guid] and not character.stageLootGUIDs[guid] then
-                seenGUIDs[guid] = true
-                local unitType, npc = guid:match("^(%a+)%-%d+%-%d+%-%d+%-%d+%-(%d+)%-")
-                if unitType == "Creature" or unitType == "Vehicle" then
-                    local target = safe(UnitGUID, "target")
-                    local minor = target == guid and safe(UnitClassification, "target") == "minus"
-                    if not minor then
-                        npc = tonumber(npc)
-                        local changed = apply("NPC", function(v) return contains(v.npcs, npc) end, nil, npc)
-                        local zoneChanged = apply("ZONE", function() return true end)
-                        if changed or zoneChanged then character.stageLootGUIDs[guid] = time + 86400 end
-                    end
-                end
+    if onNodeLoot(character, objects, knownObject, next(creatures) ~= nil, time) then return end
+    local target = next(creatures) and safe(UnitGUID, "target")
+    for guid, npc in pairs(creatures) do
+        local expires = character.stageLootGUIDs[guid]
+        if not number(expires) or expires <= time then
+            local minor = target == guid and safe(UnitClassification, "target") == "minus"
+            if not minor then
+                local changed = apply("NPC", function(v) return contains(v.npcs, npc) end, nil, npc, character)
+                local zoneChanged = apply("ZONE", function() return true end, nil, nil, character)
+                if changed or zoneChanged then character.stageLootGUIDs[guid] = time + 86400 end
             end
         end
     end
 end
 
 local function onEncounter(encounter, difficulty)
-    if not number(encounter) or not number(difficulty) then return end
+    if not number(encounter) or not number(difficulty) or not encounterStages[encounter] then return end
     local key = "encounter:" .. encounter .. ":" .. difficulty
     if (recentEvents[key] or 0) > now() then return end
     recentEvents[key] = now() + 30
     apply("ENCOUNTER", function(v)
         return contains(v.encounters, encounter) and (not v.difficulties or contains(v.difficulties, difficulty))
-    end)
+    end, nil, encounter)
 end
 
 local function scanArchaeology(countAttempts)
-    local races = {}
-    for _, entry in pairs(stages) do
-        if entry.definition.method == "ARCH" then races[entry.definition.raceId] = true end
-    end
-    for race in pairs(races) do
+    for race in pairs(archaeologyRaces) do
         local _, _, _, fragments
         if GetArchaeologyRaceInfoByID then _, _, _, fragments = safe(GetArchaeologyRaceInfoByID, race)
         else _, _, _, fragments = safe(GetArchaeologyRaceInfo, race, true) end
@@ -1042,22 +1270,20 @@ end
 local function onZone(initial)
     local map = mapID()
     if not number(map) then return end
-    for key, entry in pairs(stages) do
+    for key, entry in pairs(mapVisits) do
         local definition = entry.definition
-        if definition.event == "MAP_VISIT" then
-            if contains(definition.zones, map) then
-                if not visits[key] then visits[key] = now() end
-            elseif visits[key] then
-                local started = visits[key]
-                visits[key] = nil
-                if not initial and now() - started >= (definition.minimumSeconds or 60) then
-                    -- Eligibility was established inside the map. The exit event
-                    -- necessarily arrives after the current map changed.
-                    local exitDefinition = {}
-                    for field, value in pairs(definition) do exitDefinition[field] = value end
-                    exitDefinition.zones = nil
-                    if increment(entry, exitDefinition) and atlas.refreshDetails then atlas.refreshDetails() end
-                end
+        if contains(definition.zones, map) then
+            if not visits[key] then visits[key] = now() end
+        elseif visits[key] then
+            local started = visits[key]
+            visits[key] = nil
+            if not initial and now() - started >= (definition.minimumSeconds or 60) then
+                -- Eligibility was established inside the map. The exit event
+                -- necessarily arrives after the current map changed.
+                local exitDefinition = {}
+                for field, value in pairs(definition) do exitDefinition[field] = value end
+                exitDefinition.zones = nil
+                if increment(entry, exitDefinition) then refreshAttempts(false) end
             end
         end
     end
@@ -1067,18 +1293,14 @@ local function onGossip()
     local text = C_GossipInfo and safe(C_GossipInfo.GetText)
     local guid = safe(UnitGUID, "npc")
     local npc = type(guid) == "string" and tonumber(guid:match("^Creature%-%d+%-%d+%-%d+%-%d+%-(%d+)%-"))
-    for key, entry in pairs(stages) do
+    for key, entry in pairs(gossipStages) do
         local definition = entry.definition
-        if definition.event == "GOSSIP" then
-            local phrase = definition.gossipText
-            local translated = atlas.attemptNodeNames and atlas.attemptNodeNames[phrase]
-            local matched = contains(definition.gossipNPCs, npc) or (type(text) == "string" and type(phrase) == "string"
-                and (text:find(phrase, 1, true) or (translated and text:find(translated, 1, true))))
-            if matched and gossipOpen[key] then
-                if increment(entry, definition) and atlas.refreshDetails then atlas.refreshDetails() end
-            end
-            gossipOpen[key] = matched and true or nil
-        end
+        local phrase = definition.gossipText
+        local translated = atlas.attemptNodeNames and atlas.attemptNodeNames[phrase]
+        local matched = contains(definition.gossipNPCs, npc) or (type(text) == "string" and type(phrase) == "string"
+            and (text:find(phrase, 1, true) or (translated and text:find(translated, 1, true))))
+        if matched and gossipOpen[key] and increment(entry, definition) then refreshAttempts(false) end
+        gossipOpen[key] = matched and true or nil
     end
 end
 
@@ -1102,10 +1324,16 @@ local function onCast(unit, guid, spell, finished)
     local kind = atlas.attemptSpells and atlas.attemptSpells[spell]
     if not kind and (spell == 131474 or spell == 7620 or spell == 158743) then kind = "Fishing" end
     if kind then
-        nodeName()
-        local node = lastNode and now() - lastNode.time <= 5 and lastNode.name
-        cast = { kind = kind, expires = now() + (kind == "Fishing" and 35 or 8), node = node,
-            pool = isPool(node) }
+        -- Keep the target sampled for this cast even after its tooltip disappears.
+        if cast and cast.spell == spell and readable(guid) and type(guid) == "string"
+            and guid ~= "" and cast.guid == guid then
+            cast.expires = now() + (kind == "Fishing" and 35 or 8)
+        else
+            local node = nodeName()
+            if not node and not isOpening(kind) and lastNode and now() - lastNode.time <= 5 then node = lastNode.name end
+            cast = { kind = kind, spell = spell, guid = readable(guid) and guid or nil,
+                expires = now() + (kind == "Fishing" and 35 or 8), node = node, pool = isPool(node) }
+        end
     elseif not finished then
         cast = nil
     end
@@ -1124,17 +1352,20 @@ function atlas.resetAttemptStageSession()
     sessionGeneration = sessionGeneration + 1
     pendingMessages, pendingUses, visits, gossipOpen = {}, {}, {}, {}
     pendingAcquisitions = {}
-    cast, lastNode, itemLootUntil = nil, nil, 0
-    for item in pairs(bags) do bags[item] = itemCount(item) or false end
+    cast, lastNode, lootCounted = nil, nil, false
+    itemLootUntil, itemLootOpen, itemLootSettled = 0, false, false
+    refreshBagBaseline()
     scanArchaeology(false)
 end
 
 function atlas.initializeAttemptStages()
+    if ready then return end
     local characters = type(MountAtlasAccountDB) == "table" and MountAtlasAccountDB.characters
     for _, character in pairs(type(characters) == "table" and characters or {}) do
         atlas.preserveStageDailyLocks(character)
     end
     buildStages()
+    refreshBagBaseline()
     scanArchaeology(false)
     if hooksecurefunc then
         if C_Container and C_Container.UseContainerItem then
@@ -1165,22 +1396,28 @@ end
 
 events:SetScript("OnEvent", function(_, event, ...)
     if event == "PLAYER_ENTERING_WORLD" then
-        buildStages()
+        refreshBagBaseline()
         scanArchaeology(false)
-        cast, pendingUses, interactions, lootCounted = nil, {}, {}, false
+        cast, lastNode, pendingUses, interactions, lootCounted = nil, nil, {}, {}, false
+        itemLootUntil, itemLootOpen, itemLootSettled = 0, false, false
         onZone(not enteredWorld)
         enteredWorld = true
     elseif event == "LOOT_READY" then onLoot()
     elseif event == "LOOT_OPENED" then
         local _, fromItem = ...
-        if readable(fromItem) and fromItem then itemLootUntil = now() + 3 end
-        onLoot()
+        itemLootOpen = readable(fromItem) and fromItem == true and not blocked()
+        if itemLootOpen then itemLootUntil, itemLootSettled = now() + 3, false
+        else onLoot() end
     elseif event == "LOOT_CLOSED" then
-        scanBags()
+        -- A bag update may have already confirmed the open. Only an unresolved
+        -- item window or an explicit tracked use needs a follow-up read here.
+        if itemLootOpen and not itemLootSettled then scanBags(useStages, true)
+        elseif next(pendingUses) then scanBags(pendingUses, true) end
+        itemLootOpen = false
         finalizePendingAcquisitions(false)
         lootCounted, cast, lastNode = false, nil, nil
     elseif event == "BAG_UPDATE_DELAYED" then
-        scanBags()
+        scanBags(useStages)
         finalizePendingAcquisitions(true)
     elseif event == "CHAT_MSG_LOOT" then onItemReceived((...), select(11, ...))
     elseif event == "SHOW_LOOT_TOAST" then
@@ -1194,13 +1431,20 @@ events:SetScript("OnEvent", function(_, event, ...)
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
         local unit, guid, spell = ...; onCast(unit, guid, spell, true)
     elseif event == "UNIT_SPELLCAST_FAILED" or event == "UNIT_SPELLCAST_INTERRUPTED" then
-        if ... == "player" then cast = nil end
-    elseif event == "TRADE_SKILL_SHOW" then interactions.tradeSkill = true; scanArchaeology(false)
-    elseif event == "TRADE_SKILL_CLOSE" then scanBags(); interactions.tradeSkill = nil
+        if ... == "player" then cast, lastNode = nil, nil end
+    elseif event == "TRADE_SKILL_SHOW" then
+        beginBlockedInteraction("tradeSkill")
+        scanArchaeology(false)
+    elseif event == "TRADE_SKILL_CLOSE" then
+        refreshBagBaseline()
+        interactions.tradeSkill = nil
     elseif event == "PLAYER_INTERACTION_MANAGER_FRAME_SHOW" then
-        local kind = ...; if readable(kind) then interactions[kind] = true end
+        local kind = ...
+        if readable(kind) and kind ~= nil then beginBlockedInteraction(kind) end
     elseif event == "PLAYER_INTERACTION_MANAGER_FRAME_HIDE" then
-        scanBags(); local kind = ...; if readable(kind) then interactions[kind] = nil end
+        refreshBagBaseline()
+        local kind = ...
+        if readable(kind) and kind ~= nil then interactions[kind] = nil end
     elseif event == "RESEARCH_ARTIFACT_COMPLETE" then
         local generation = sessionGeneration
         if C_Timer then
@@ -1230,6 +1474,7 @@ events:SetScript("OnEvent", function(_, event, ...)
     elseif event == "UPDATE_MOUSEOVER_UNIT" then onMouseover()
     elseif event == "ITEM_DATA_LOAD_RESULT" then
         local item, success = ...
+        if number(item) and readable(success) and success then resolveItemSpell(item) end
         for key, message in pairs(pendingMessages) do
             if message.expires <= now() then pendingMessages[key] = nil
             elseif readable(item) and message.entry.definition.item == item and readable(success) and success then
