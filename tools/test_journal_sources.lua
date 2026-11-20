@@ -1700,6 +1700,31 @@ do
     equal(atlas.collection.total, roosterTotal + 1, "the catalog counts one Magic Rooster")
     equal(atlas.collection.collected, roosterCollected, "variant ownership does not change collected totals")
 
+    -- Each unused vendor record is paired with a real, similarly named mount.
+    local vendorCases = {
+        { 7, 459, 106, 23252 }, { 12, 578, 310, 64658 }, { 43, 15780, 57, 17453 },
+        { 123, 28828, 186, 41513 }, { 145, 33630, 40, 10969 },
+    }
+    local beforeVendors = atlas.collection.total
+    for _, pair in ipairs(vendorCases) do
+        add(pair[1], 3, "Vendor: Mount vendor", pair[2])
+        add(pair[3], 3, "Vendor: Mount vendor", pair[4])
+        equal(atlas.resolveJournalMount(pair[1]), nil, "unowned vendor record stays hidden even on direct lookup")
+    end
+    atlas.syncJournal()
+    equal(atlas.collection.total, beforeVendors + #vendorCases, "only released vendor records count toward the total")
+    for _, pair in ipairs(vendorCases) do
+        equal(atlas.collection.byID[pair[1]], nil, "an unused spell adds no uncollected entry")
+        equal(assert(atlas.mountByID(pair[3])).spell, pair[4], "released reward remains selectable")
+    end
+    entries[43].collected = true
+    journalEvent("NEW_MOUNT_ADDED", 43)
+    flush(0)
+    equal(atlas.collection.byID[43], true, "native ownership reveals an exceptional vendor copy")
+    entries[12].spell = 999012
+    atlas.syncJournal()
+    equal(assert(atlas.mountByID(12)).spell, 999012, "a reused ID with a different spell stays visible")
+
     C_Timer, atlas.onJournalChanged = nil, nil
 end
 print("passed: journal caching, acquisition and availability updates, source filters, class alternatives and conditional rewards")

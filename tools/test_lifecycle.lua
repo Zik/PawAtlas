@@ -241,6 +241,7 @@ do
     assert(modeFrame.events.PLAYER_FLAGS_CHANGED,"native player flag event is registered")
     local state=modes.currentCharacterModes()
     equal(state.warModeActive,false,"confirmed disabled war mode")
+    equal(state.warModeDesired,false,"confirmed opt-out stays distinct from unknown")
     equal(state.chromieTimeActive,false,"confirmed inactive Chromie time")
     equal(state.chromieTimeID,nil,"inactive Chromie time has no stale timeline")
     callback(nil,"PLAYER_ENTERING_WORLD")
@@ -258,10 +259,55 @@ do
     assert(modes.toggleWarMode() and toggles==1,"permitted hardware handler invokes native toggle once")
     combat=true
     equal(select(2,modes.toggleWarMode()),"combat","combat blocks toggle")
-    combat,instance=false,true
+    combat,active,desired=false,true,true
+    callback(nil,"PLAYER_REGEN_ENABLED")
+    before=redraws
+    instance,active=true,false
+    callback(nil,"PLAYER_ENTERING_WORLD")
+    equal(redraws,before+1,"entering the instance refreshes the current modes")
+    state=modes.currentCharacterModes()
+    equal(state.warModeDesired,true,"instance entrance preserves the character's War Mode opt-in")
+    equal(state.warModeActive,false,"War Mode is inactive in the instance")
+    equal(state.warModeCanToggle,false,"toggle is blocked in the instance")
+    equal(state.warModeToggleReason,"instance","instance explains why the toggle is blocked")
     equal(select(2,modes.toggleWarMode()),"instance","instance blocks toggle")
+
+    desired=nil
+    state=modes.currentCharacterModes()
+    equal(state.warModeDesired,nil,"unavailable preference does not reuse the previous opt-in")
+    equal(state.warModeToggleReason,"instance","instance remains a known restriction with unavailable preference")
+    equal(select(2,modes.toggleWarMode()),"instance","unavailable preference does not mask the instance")
+
+    before=redraws
+    instance,active,desired=false,true,true
+    callback(nil,"PLAYER_ENTERING_WORLD")
+    equal(redraws,before+1,"leaving the instance refreshes the current modes")
+    state=modes.currentCharacterModes()
+    equal(state.warModeDesired,true,"selected War Mode persists outside the instance")
+    equal(state.warModeActive,true,"active War Mode returns outside the instance")
+    equal(state.warModeCanToggle,true,"toggle permission is checked again outside the instance")
+
+    active,desired=false,true
+    env.issecretvalue=function(value) return value==true end
+    state=modes.currentCharacterModes()
+    equal(state.warModeDesired,nil,"unreadable native preference stays unknown")
+    equal(state.warModeToggleReason,"unknown","unreadable preference cannot grant toggle permission")
+    env.issecretvalue=nil
     instance,canToggle,inArea=false,false,false
     equal(select(2,modes.toggleWarMode()),"area","native location restriction blocks toggle")
+    for _, event in ipairs({ "PLAYER_UPDATE_RESTING", "PLAYER_LEVEL_UP" }) do
+        assert(modeFrame.events[event],"native permission event is registered")
+        canToggle=false
+        callback(nil,"ZONE_CHANGED")
+        before=redraws
+        callback(nil,event)
+        equal(redraws,before+1,"tooltip refreshes without a permission change on "..event)
+        canToggle=true
+        callback(nil,event)
+        equal(redraws,before+2,"native permission change refreshes on "..event)
+    end
+    canToggle,inArea=nil,true
+    equal(select(2,modes.toggleWarMode()),"unknown","unavailable native permission stays unknown")
     equal(toggles,1,"rejected toggles never call native action")
     env.C_PvP,env.C_PlayerInfo={},{}
     state=modes.currentCharacterModes()

@@ -1,9 +1,9 @@
-# PawAtlas 0.3.23
+# PawAtlas 0.3.24
 
 ## RU
 
-Небольшие исправления.
+🐾 Небольшие исправления.
 
 ## EN
 
-Minor fixes.
+🐾 Minor fixes.

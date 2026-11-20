@@ -5366,6 +5366,14 @@ atlas.nonCollectibleMounts = {
     [2969] = 1289395,
     [2999] = 1295958,
 }
+-- MountID = SourceSpellID; exact reviewed records, not general visibility flags.
+atlas.unusedVendorMounts = {
+    [7] = 459,
+    [12] = 578,
+    [43] = 15780,
+    [123] = 28828,
+    [145] = 33630,
+}
 -- MountID = SourceSpellID; release status may change in the live journal.
 atlas.unreleasedMounts = {
     [8] = 468,

@@ -51,6 +51,9 @@ local function excludedByIdentity(id, name, spell, collected)
     -- Acquisition confirms a collectible, but cannot turn a known movement
     -- ability into one. Unreleased/placeholder metadata may become obsolete.
     if collected then return false end
+    -- Unused vendor records can retain a vendor, zone and price in the journal.
+    local vendorSpell = (atlas.unusedVendorMounts or {})[id]
+    if vendorSpell and (not spell or spell == vendorSpell) then return true end
     -- Prefer the current localized name over a stale English [PH] entry.
     return isPlaceholder(name and name ~= "" and name or atlas.englishNames[id] or "")
 end

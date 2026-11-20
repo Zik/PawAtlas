@@ -145,24 +145,14 @@ do
         local color = active == true and ui.gold or ui.muted
         ui.tooltipLine(text, color[1], color[2], color[3], true)
     end
+    function war:GetWarModeDesired()
+        return C_PvP.IsWarModeDesired()
+    end
     local function warTooltip(self)
-        GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        ui.tooltipTitle(PVP_LABEL_WAR_MODE or L("Режим войны"))
-        stateLine(modes.warModeActive)
-        local allowed, reason = atlas.warModeToggleStatus()
-        if not allowed then
-            local message = reason == "combat" and SPELL_FAILED_AFFECTING_COMBAT
-                or reason == "instance" and ERR_NOT_WHILE_IN_INSTANCE
-            if reason == "area" or reason == "restricted" then
-                local faction = UnitFactionGroup("player")
-                message = faction == "Horde" and PVP_WAR_MODE_NOT_NOW_HORDE or PVP_WAR_MODE_NOT_NOW_ALLIANCE
-                if modes.warModeDesired and IsResting and not IsResting() then
-                    message = (faction == "Horde" and PVP_WAR_MODE_NOT_NOW_HORDE_RESTAREA or PVP_WAR_MODE_NOT_NOW_ALLIANCE_RESTAREA) or message
-                end
-            end
-            ui.tooltipLine(message or L("Нет данных"), ui.muted[1], ui.muted[2], ui.muted[3], true)
+        if not WarmodeButtonMixin and C_AddOns and C_AddOns.LoadAddOn then
+            C_AddOns.LoadAddOn("Blizzard_PlayerSpells")
         end
-        GameTooltip:Show()
+        if WarmodeButtonMixin then WarmodeButtonMixin.OnEnter(self) end
     end
     local function chromieTooltip(self)
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
@@ -180,7 +170,7 @@ do
     end
     function atlas.refreshCharacterModes()
         modes = atlas.currentCharacterModes()
-        local active = modes.warModeActive == true
+        local active = modes.warModeDesired == true or (modes.warModeDesired == nil and modes.warModeActive == true)
         ring:SetAtlas(active and "talents-warmode-ring" or "talents-warmode-ring-disabled", false)
         swords:SetAtlas(active and "pvptalents-warmode-swords" or "pvptalents-warmode-swords-disabled", false)
         swords:SetVertexColor(unpack(active and ui.gold or ui.muted))

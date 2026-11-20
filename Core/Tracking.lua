@@ -44,21 +44,25 @@ local function validNumber(value)
     return readable(value) and type(value) == "number" and value >= 0 and value < math.huge
 end
 
-local function modeBoolean(getter)
-    local value = getter and getter()
+local function modeBoolean(getter, ...)
+    local value = getter and getter(...)
     if readable(value) and type(value) == "boolean" then return value end
+end
+
+local function warModeToggleStatus(api, desired)
+    if modeBoolean(IsInInstance) == true then return false, "instance" end
+    if inCombat() or modeBoolean(UnitAffectingCombat, "player") == true then return false, "combat" end
+    if desired == nil or not api.ToggleWarMode then return false, "unknown" end
+    local allowed = modeBoolean(api.CanToggleWarMode, not desired)
+    if allowed == true then return true end
+    if allowed == nil then return false, "unknown" end
+    if modeBoolean(api.CanToggleWarModeInArea) == false then return false, "area" end
+    return false, "restricted"
 end
 
 function atlas.warModeToggleStatus()
     local api = C_PvP
-    if not api or not api.ToggleWarMode or not api.CanToggleWarMode then return false, "unknown" end
-    local desired = modeBoolean(api.IsWarModeDesired)
-    if desired == nil then return false, "unknown" end
-    if inCombat() or modeBoolean(function() return UnitAffectingCombat and UnitAffectingCombat("player") end) == true then return false, "combat" end
-    if IsInInstance and IsInInstance() then return false, "instance" end
-    if modeBoolean(function() return api.CanToggleWarMode(not desired) end) == true then return true end
-    if modeBoolean(api.CanToggleWarModeInArea) == false then return false, "area" end
-    return false, "restricted"
+    return warModeToggleStatus(api, modeBoolean(api and api.IsWarModeDesired))
 end
 
 -- Call only from a hardware click. Native permission checks own the location,
@@ -77,7 +81,7 @@ function atlas.currentCharacterModes()
         warModeDesired = modeBoolean(api and api.IsWarModeDesired),
         chromieTimeActive = modeBoolean(C_PlayerInfo and C_PlayerInfo.IsPlayerInChromieTime),
     }
-    result.warModeCanToggle, result.warModeToggleReason = atlas.warModeToggleStatus()
+    result.warModeCanToggle, result.warModeToggleReason = warModeToggleStatus(api, result.warModeDesired)
     if result.chromieTimeActive == true and UnitChromieTimeID then
         local id = UnitChromieTimeID("player")
         if validNumber(id) and id > 0 then
@@ -95,12 +99,16 @@ end
 local previousModes
 local modeEvents = CreateFrame("Frame")
 for _, event in ipairs({ "PLAYER_ENTERING_WORLD", "WAR_MODE_STATUS_UPDATE", "ZONE_CHANGED", "ZONE_CHANGED_NEW_AREA",
-    "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED" }) do modeEvents:RegisterEvent(event) end
+    "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED", "PLAYER_UPDATE_RESTING", "PLAYER_LEVEL_UP" }) do
+    modeEvents:RegisterEvent(event)
+end
 modeEvents:RegisterUnitEvent("UNIT_PHASE", "player")
 modeEvents:RegisterEvent("PLAYER_FLAGS_CHANGED")
 modeEvents:SetScript("OnEvent", function(_, event, unit)
     if (event == "UNIT_PHASE" or event == "PLAYER_FLAGS_CHANGED") and unit ~= "player" then return end
-    local current, changed = atlas.currentCharacterModes(), previousModes == nil
+    local current = atlas.currentCharacterModes()
+    -- Rest-area and level changes can affect the tooltip even when the toggle stays blocked.
+    local changed = previousModes == nil or event == "PLAYER_UPDATE_RESTING" or event == "PLAYER_LEVEL_UP"
     for _, key in ipairs({ "warModeActive", "warModeDesired", "warModeCanToggle", "warModeToggleReason",
         "chromieTimeActive", "chromieTimeID", "chromieTimeName" }) do
         if previousModes and current[key] ~= previousModes[key] then changed = true end
