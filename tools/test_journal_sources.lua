@@ -184,6 +184,26 @@ for _, id in ipairs({ 2779, 2961 }) do
     add(id, 1, "|cFFFFD200Место проведения ритуалов:|r Разрушенный трон", detail.spell)
 end
 add(1943, 7, "|cFFFFD200Событие:|r 20-я годовщина World of Warcraft?|n", 428013)
+local classicShopRewards = {
+    { 1812, 424009, "Cataclysm Classic", "отдельно", "Sold separately" },
+    { 2476, 1216422, "Mists of Pandaria Classic", "Зараженный ша", "Sha-Infused" },
+    { 2477, 1216430, "Mists of Pandaria Classic", "Зараженный ша", "Sha-Infused" },
+    { 2719, 1255246, "Burning Crusade Classic", "комплекты Запределья", "Outland" },
+    { 2732, 1256677, "Burning Crusade Classic", "комплекты Запределья", "Outland" },
+}
+for _, row in ipairs(classicShopRewards) do
+    local heading = row[1] == 2719 and "Событие:" or "Промоакция:"
+    add(row[1], 8, "|cFFFFD200" .. heading .. "|r " .. row[3], row[2])
+end
+local function checkClassicShopRewards(english)
+    for _, row in ipairs(classicShopRewards) do
+        local mount = assert(atlas.mountByID(row[1]))
+        local route = atlas.classifyMountSource(mount)
+        equal(route.key, "purchase", "Classic shop rewards belong to the purchase filter")
+        equal(route.subtype, "Внутриигровой магазин", "the card identifies the shop")
+        assert(atlas.decorateSource(mount):find(row[english and 5 or 4], 1, true), "card should describe the product for " .. row[1])
+    end
+end
 add(1794, 6, "|cFFFFD200Achievement: |rWhodunnit?|n|cFFFFD200Event: |rSecrets of Azeroth", 418078)
 add(17, 1, "|cFFFFD200Класс: |rчернокнижник", 5784)
 add(84, 1, "|cFFFFD200Paladin|r", 23214)
@@ -409,6 +429,7 @@ do
     equal(atlas.extraCovenantPurchase(mount).npc, 174937, "the chest also has a separate Galos offer")
 end
 checkEggAndCachePlaces("Остров Великанов", "Назжатар")
+checkClassicShopRewards(false)
 for id, questID in pairs(drakeQuests) do
     local mount = assert(atlas.mountByID(id))
     equal(mount.kind, "Квест", "the mount reward comes from its confirmed quest")
@@ -1290,6 +1311,10 @@ for _, id in ipairs(eggAndCacheMounts) do
     entries[id].source = atlas.journalSourceDetails[id].replacesSource[2]:gsub("\n", "|n")
     atlas.mountByID(id).indexed = false
 end
+for _, row in ipairs(classicShopRewards) do
+    entries[row[1]].source = "|cFFFFD200Promotion:|r " .. row[3]
+    atlas.mountByID(row[1]).indexed = false
+end
 for id in pairs(drakeQuests) do
     entries[id].source = atlas.questMountRewards[id].journalDetail.replacesSource[2]
     atlas.mountByID(id).indexed = false
@@ -1308,6 +1333,7 @@ entries[1600].source = "Quest: Blood Knight\nZone: Ghostlands\n\nQuest: Victory 
 hawk.indexed = false
 atlas.syncJournal()
 checkEggAndCachePlaces("Isle of Giants", "Nazjatar")
+checkClassicShopRewards(true)
 for id, questID in pairs(drakeQuests) do
     local mount = assert(atlas.mountByID(id))
     equal(mount.kind, "Квест", "the English mount source uses the verified quest too")
@@ -1321,11 +1347,15 @@ assert(quickhoof.journalSourceOverride:find("Seaside Leafy Greens Mix", 1, true)
 equal(hawk.journalSourceOverride, "Quest: Blood Knight — for paladins\nZone: Ghostlands\n\n"
     .. "Quest: Victory for the Sin'dorei — for other classes\nZone: Ghostlands", "EN class alternatives")
 entries[1600].spell = 1
+entries[2719].source = "World Event: A new event"
+atlas.mountByID(2719).indexed = false
 hawk.indexed = false
 entries[631].source = "Garrison Mission: A different mission"
 riverbeast.indexed = false
 atlas.syncJournal()
 equal(hawk.journalSourceOverride, nil, "different source spell keeps native text")
+equal(atlas.classifyMountSource(atlas.mountByID(2719)).key, "event", "a new native event supersedes the shop source")
+equal(atlas.mountByID(2719).journalSourceOverride, nil, "the old pack description is cleared")
 equal(atlas.sourceGuaranteedReward(riverbeast, {}), nil, "a changed mission does not inherit the guarantee")
 entries[1600].spell, entries[1600].source = 370620, "Quest: New native route\nZone: Ghostlands"
 hawk.indexed = false
@@ -1648,6 +1678,27 @@ do
     entries[2186].source = "Vendor: New source"
     atlas.ensureJournal()
     assert(atlas.mountByID(2186), "a live source can confirm an old unreleased entry")
+
+    local roosterSource = "Vendor: Landro Longshot\nLocation: Booty Bay"
+    local roosterVariants = { [333] = 66122, [334] = 66123, [335] = 66124 }
+    local roosterTotal = atlas.collection.total
+    local roosterCollected = atlas.collection.collected
+    add(328, 9, roosterSource, 65917)
+    local roosterName = entries[328].name
+    for mountID, spellID in pairs(roosterVariants) do
+        add(mountID, 9, roosterSource, spellID)
+        entries[mountID].name = roosterName
+        entries[mountID].collected = true
+        equal(atlas.resolveJournalMount(mountID), nil, "Magic Rooster variant cannot be opened by ID")
+    end
+    atlas.syncJournal()
+    equal(assert(atlas.mountByID(328)).spell, 65917, "Magic Rooster Egg's mount is available")
+    for mountID in pairs(roosterVariants) do
+        equal(atlas.mountByID(mountID), nil, "Magic Rooster variant stays out of the catalog")
+        equal(atlas.collection.byID[mountID], nil, "Magic Rooster variant stays out of the collection")
+    end
+    equal(atlas.collection.total, roosterTotal + 1, "the catalog counts one Magic Rooster")
+    equal(atlas.collection.collected, roosterCollected, "variant ownership does not change collected totals")
 
     C_Timer, atlas.onJournalChanged = nil, nil
 end

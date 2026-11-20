@@ -881,6 +881,22 @@ for mountID in pairs(atlas.periodicQuestChains) do atlas.questFrequencies[mountI
 
 -- Reviewed acquisition types and details for incomplete journal entries.
 local shopSource = { "Внутриигровой магазин", "In-Game Shop" }
+-- https://worldofwarcraft.blizzard.com/en-us/news/24242435
+local outlandPacks = {
+    native = { "Событие: Burning Crusade Classic", "Промоакция: Burning Crusade Classic", "Promotion: Burning Crusade Classic" },
+    source = "Входит в героический и эпический комплекты Запределья.",
+    englishSource = "Included in the Outland Heroic Pack and the Outland Epic Pack.",
+}
+-- https://worldofwarcraft.blizzard.com/en-us/news/24177508
+local pandariaPacks = {
+    native = { "Промоакция: Mists of Pandaria Classic", "Promotion: Mists of Pandaria Classic" },
+    source = "Входит в «Зараженный ша героический комплект» и «Зараженный ша эпический комплект».",
+    englishSource = "Included in the Sha-Infused Heroic Pack and the Sha-Infused Epic Pack.",
+}
+local function classicPackReward(spell, packs)
+    return { spell = spell, replacesKind = "Акция", alternateKind = "Событие", kind = "Магазин",
+        replacesSource = packs.native, source = packs.source, englishSource = packs.englishSource }
+end
 local alteracAchievement = {
     'Достижение: "И все дружно до Альтерака..."\nКатегория: Альтеракская долина',
     'Достижение: "А вот раньше на Альтераке..."\nКатегория: Альтеракская долина',
@@ -1014,6 +1030,10 @@ atlas.journalSourceDetails = {
     [1698] = { spell = 400733, replacesKind = "Магазин", kind = "Акция",
         replacesSource = { "Пригласи друга", "Recruit-a-Friend", "Внутриигровой магазин", "In-Game Shop" },
         source = "Пригласи друга" },
+    -- https://shop.battle.net/product/world-of-warcraft-mount-runebound-firelord
+    [1812] = { spell = 424009, replacesKind = "Акция", kind = "Магазин",
+        replacesSource = { "Промоакция: Cataclysm Classic", "Promotion: Cataclysm Classic" },
+        source = "Продаётся отдельно в магазине Battle.net.", englishSource = "Sold separately in the Battle.net Shop." },
     -- ATT: item211089 is awarded after attaching parts to the frame (quest90136).
     -- https://github.com/ATTWoWAddon/AllTheThings/blob/b2d15612a1319d450ffe844ee6b9ef708aa9d2c9/.contrib/.db/standard/06%20-%20Expansion%20Features/11%20-%20The%20War%20Within/Revisited%20Horrific%20Visions.lua
     -- https://news.blizzard.com/en-us/article/24179881/the-making-of-ratts-revenge-deciphering-incognitro-the-indecipherable-felcycle
@@ -1034,9 +1054,10 @@ atlas.journalSourceDetails = {
     [2322] = { spell = 471562, replacesKind = "Журнал", kind = "Квест",
         replacesSource = { "Зона: остров Сирен", "Zone: Siren Isle" },
         source = "Во время шторма используй пять разных рунных ключей в Забытом хранилище острова Сирен, затем заверши задание Трайира.\nПредмет: |cffffd200|Hitem:232639|h[Трайир Очи Сирены]|h|r" },
-    -- Blizzard 24242435: the Modern mount is included in the Outland packs.
-    [2719] = { spell = 1255246, replacesKind = "Событие", kind = "Акция",
-        replacesSource = { "Событие: Burning Crusade Classic" } },
+    [2476] = classicPackReward(1216422, pandariaPacks),
+    [2477] = classicPackReward(1216430, pandariaPacks),
+    [2719] = classicPackReward(1255246, outlandPacks),
+    [2732] = classicPackReward(1256677, outlandPacks),
     -- https://www.wowhead.com/news/how-to-obtain-the-echo-of-alnsharan-mount-in-midnight-380704
     [2749] = { spell = 1260356, quests = { 90467 }, replacesKind = "Добыча", kind = "Квест",
         source = "Квест: «Легенды о небе»\nМесто: Харандар" },
