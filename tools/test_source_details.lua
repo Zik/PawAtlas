@@ -1020,4 +1020,39 @@ do
     atlas.mountCraftFallbackSlots, atlas.craftReagentInfo = savedSlots, savedInfo
     C_Item, C_TradeSkillUI = savedItem, savedTradeSkill
 end
-print("passed: achievement counterparts, source links, waypoint identity, world map routing, class labels, renown, NPC portrait identity, quest givers and protoform recipes")
+do
+    local mount = { id = 1834, spell = 427041, kind = "Квест" }
+    local direct = assert(atlas.directQuestReward(mount, {}))
+    assert(direct.quests[1].id == 77762 and direct.quests[1].item == 210774)
+    local item = assert(atlas.questRewardItem(mount, direct))
+    assert(item.item == 210774 and item.quality == 4 and item.icon)
+    assert(item.name == "Поводья охряного ящера из Сна" and item.englishName == "Reins of the Ochre Dreamtalon")
+    assert(not atlas.questRewardItem(mount, atlas.directQuestReward(mount, { separateSource = true })))
+    assert(not atlas.questRewardItem({ id = mount.id, spell = mount.spell + 1 }, direct))
+
+    local gearglider = { id = 1482, spell = 353264, kind = "Квест" }
+    local geargliderReward = assert(atlas.directQuestReward(gearglider, {}))
+    local geargliderItem = assert(atlas.questRewardItem(gearglider, geargliderReward, geargliderReward.journalDetail.source))
+    assert(geargliderItem.item == 186639 and geargliderItem.quality == 4)
+    assert(geargliderItem.icon == "Interface\\Icons\\inv_brokermount_light")
+    assert(geargliderItem.name == "Техноглайдер попечителя картеля Зи"
+        and geargliderItem.englishName == "Xy Trustee's Gearglider")
+    assert(atlas.questRewardItem(gearglider, geargliderReward, geargliderReward.journalDetail.englishSource))
+    has(geargliderReward.journalDetail.source, "{journal:1302:Манагорн Омега}")
+    has(geargliderReward.journalDetail.englishSource, "{journal:1302:Manaforge Omega}")
+    assert(not atlas.questRewardItem(gearglider, geargliderReward, "|Hitem:186639:0|h[Reward]|h"))
+
+    local beforeFaction, faction = UnitFactionGroup, nil
+    function UnitFactionGroup() return faction end
+    local branches = { spell = mount.spell, quests = {
+        { id = 1, item = 210774, faction = "Alliance" }, { id = 2, item = 100, faction = "Horde" },
+    } }
+    assert(not atlas.questRewardItem(mount, branches), "different rewards do not pick an arbitrary branch")
+    faction = "Alliance"
+    assert(atlas.questRewardItem(mount, branches).item == 210774)
+    faction = "Horde"
+    assert(atlas.questRewardItem(mount, branches).item == 100)
+    assert(not atlas.questRewardItem(mount, { spell = mount.spell, quests = { branches.quests[1] } }))
+    UnitFactionGroup = beforeFaction
+end
+print("passed: achievement counterparts, source links, waypoint identity, world map routing, class labels, renown, NPC portrait identity, quest givers, quest reward items and protoform recipes")

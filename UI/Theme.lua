@@ -41,6 +41,27 @@ function ui.tooltipLine(text, ...)
     GameTooltip:AddLine(ui.safeText(ui.unavailableText(text)), ...)
 end
 
+function ui.tooltipOwnerIn(frame)
+    local tooltip = GameTooltip
+    if not tooltip or (tooltip.IsForbidden and tooltip:IsForbidden()) then return end
+    local owner = tooltip:GetOwner()
+    local region = owner
+    while not (issecretvalue and issecretvalue(region)) and region do
+        if region.IsForbidden and region:IsForbidden() then return end
+        if region == frame then
+            local shown = tooltip:IsShown()
+            if not (issecretvalue and issecretvalue(shown)) and shown then return owner end
+            return
+        end
+        region = region.GetParent and region:GetParent()
+    end
+end
+
+function ui.hideTooltipIn(frame, keepOwner)
+    local owner = ui.tooltipOwnerIn(frame)
+    if owner and owner ~= keepOwner then GameTooltip:Hide() end
+end
+
 function ui.coloredMountName(mount)
     return atlas.qualityText(atlas.displayMountName(mount), atlas.mountDisplayQuality(mount.id))
 end
@@ -135,22 +156,26 @@ function ui.compactSourceBody(source, route)
     return source
 end
 
-function ui.containerNameMatches(value, item)
+local function sourceFieldText(value)
+    return value and value:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):match("^%s*(.-)%s*$")
+end
+function ui.sourceItemMatches(value, item)
     if not item or not value or value == "" then return false end
-    local name = value:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
-    local linked = name:match("^|Hitem:(%d+)[^|]*|h.-|h$")
+    local name = sourceFieldText(value)
+    local linked = name:match("^|Hitem:(%d+)[^|]*|h[^|]*|h$")
     if linked then return tonumber(linked) == item.item end
     name = atlas.searchKey(name)
-    return name == atlas.searchKey(item.name) or name == atlas.searchKey(item.englishName)
+    return name ~= "" and (item.name and name == atlas.searchKey(item.name)
+        or item.englishName and name == atlas.searchKey(item.englishName))
 end
 
-local containerLabels = { ["Источник"] = true, ["Добыча"] = true, ["Предмет"] = true,
+local itemSourceLabels = { ["Источник"] = true, ["Добыча"] = true, ["Предмет"] = true,
     Source = true, Drop = true, Item = true }
-function ui.containerSourceBody(body, item)
+function ui.withoutDisplayedItem(body, item)
     local preserved = {}
     for line in (body .. "\n"):gmatch("(.-)\n") do
-        local label, value = line:match("^([^:]+):%s*(.+)$")
-        if not ui.containerNameMatches(containerLabels[label] and value or line, item) then
+        local label, value = sourceFieldText(line):match("^([^:]+):%s*(.+)$")
+        if not ui.sourceItemMatches(itemSourceLabels[label] and value or line, item) then
             preserved[#preserved + 1] = line
         end
     end
@@ -161,9 +186,6 @@ local lootTargetLabels = { ["Источник"] = true, ["Добыча"] = true,
     Source = true, Drop = true, Treasure = true }
 local lootPlaceLabels = { ["Место"] = true, ["Зона"] = true, ["Область"] = true,
     ["Локация"] = true, Location = true, Zone = true, Area = true }
-local function sourceFieldText(value)
-    return value and value:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):match("^%s*(.-)%s*$")
-end
 local function passiveValue(value)
     value = sourceFieldText(value)
     if not value or value == "" or value == "—" or value:find("|", 1, true) then return end
@@ -219,7 +241,7 @@ function ui.sourceAddress(source, place)
         end
     end
 end
-function ui.deduplicateSourceFields(body, place, covenant, addressSource)
+function ui.deduplicateSourceFields(body, place, covenant, addressSource, placeMap)
     local preserved = {}
     local removed
     for line in (body .. "\n"):gmatch("(.-)\n") do
@@ -227,6 +249,11 @@ function ui.deduplicateSourceFields(body, place, covenant, addressSource)
         label = sourceFieldText(label)
         local duplicate = lootPlaceLabels[label] and (ui.sameDisplayedPlace(value, place)
             or addressSource and passiveValue(value) == addressSource)
+        if label == "Источник" or label == "Добыча" or label == "Source" or label == "Drop" then
+            local name = singlePlace(value)
+            duplicate = name and (ui.sameDisplayedPlace(name, place)
+                or placeMap and atlas.matchesDropMapName(placeMap, name))
+        end
         if covenant and (label == "Ковенант" or label == "Covenant") then
             value = sourceFieldText(value)
             local sigil = "|T" .. covenant.texture .. ":16:16:0:0|t "
@@ -281,7 +308,8 @@ function ui.structuredLootBody(body, targetName, placeName, points, isRare)
     end
     local preserved = {}
     for line in (body .. "\n"):gmatch("(.-)\n") do
-        local label, value = line:match("^([^:]+):%s*(.+)$")
+        local label, value = line:match("^%s*([^:]+):%s*(.+)$")
+        label = sourceFieldText(label)
         local names = lootTargetLabels[label] and targets or lootPlaceLabels[label] and places
         local zoneCaption = isRare and targetName and targetName ~= "" and points and points[1]
             and lootTargetLabels[label] and coveredRareZone(value, placeName)
@@ -1090,7 +1118,7 @@ function ui.action(parent, x, y, w, h, label, icon, callback, field)
     return button
 end
 
-function ui.tab(parent, x, y, w, h, label, icon, callback, glowScale)
+function ui.tab(parent, x, y, w, h, label, icon, callback, glowScale, centerCaption)
     local tab = ui.place(CreateFrame("Button", nil, parent), parent, x, y, w, h)
     local glow = tab:CreateTexture(nil, "BACKGROUND")
     glow:SetPoint("BOTTOM", tab, "BOTTOM", 0, -5)
@@ -1104,21 +1132,36 @@ function ui.tab(parent, x, y, w, h, label, icon, callback, glowScale)
         if not icon then tab.caption:SetJustifyH("CENTER") end
     end
     if icon then tab.glyph = ui.icon(tab, 0, 0, 18, icon) end
-    function tab:setTabWidth(width)
-        self:SetWidth(width)
+    local function layoutContents(width)
+        local inset = math.max(4, math.floor((width - 102) / 2))
+        local glyphLeft = label and inset or (width - 18) / 2
+        local captionLeft = icon and inset + 24 or 3
+        local captionWidth = width - captionLeft - 3
+        if centerCaption and tab.caption then
+            local glyphSpace = icon and 24 or 0
+            captionWidth = math.min(width - 2 * (glyphSpace + 3), math.ceil(tab.caption:GetUnboundedStringWidth()))
+            captionLeft = (width - captionWidth) / 2
+            glyphLeft = captionLeft - glyphSpace
+        end
         edge:SetWidth(width - 6)
         glow:SetWidth(width * .75)
-        local inset = math.max(4, math.floor((width - 102) / 2))
-        if self.glyph then
-            self.glyph:ClearAllPoints()
-            self.glyph:SetPoint("LEFT", self, "LEFT", label and inset or (width - 18) / 2, 0)
+        if tab.glyph then
+            tab.glyph:ClearAllPoints()
+            tab.glyph:SetPoint("LEFT", tab, "LEFT", glyphLeft, 0)
         end
-        if self.caption then
-            local left = icon and inset + 24 or 3
-            self.caption:ClearAllPoints()
-            self.caption:SetPoint("LEFT", self, "LEFT", left, 0)
-            self.caption:SetWidth(width - left - 3)
+        if tab.caption then
+            tab.caption:ClearAllPoints()
+            tab.caption:SetPoint("LEFT", tab, "LEFT", captionLeft, 0)
+            tab.caption:SetWidth(captionWidth)
         end
+    end
+    function tab:setTabWidth(width)
+        self:SetWidth(width)
+        layoutContents(width)
+    end
+    if centerCaption and tab.caption then
+        tab.caption:SetWordWrap(false)
+        hooksecurefunc(tab.caption, "SetText", function() layoutContents(tab:GetWidth()) end)
     end
     tab:setTabWidth(w)
     local active, hovered = false, false

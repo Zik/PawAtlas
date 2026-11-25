@@ -7,11 +7,11 @@
 ## 🐾 Your mount-hunting companion
 
 - 🔎 **Catalog** — search by mount, boss, or location. Filter by expansion or any of ten acquisition methods.
-- 🗺️ **Mount cards** — switch routes and cycle through waypoints. See vendor prices and requirements, or check quest and achievement progress.
+- 🗺️ **Mount cards** — switch routes and waypoints, check vendor prices and requirements, and see quest and achievement progress. A clock shows the estimated respawn time for rares with a known interval.
 - 🎲 **Attempts & chances** — see drop chances, count attempts, and track items as you collect them. Import your farming history from Rarity.
 - 📋 **Warband planner** — create goal lists, check each character’s lockouts, and share plans with friends.
-- 🧭 **Expedition mode** — follow your goals in a compact tracker and set waypoints with WoW or TomTom.
-- 🤝 **Collection sharing** — a chat link opens your mounts in the catalog with search and filters.
+- 🧭 **Expedition mode** — track your goals in a standalone window and set WoW or TomTom waypoints. The same list opens from the broker bar. Both windows share the lock and background opacity settings.
+- 🤝 **Collection comparison** — open a player's chat link to see which of their mounts you own and which you're missing.
 - 🔔 **Settings** — loot notifications, event reminders, fonts, tooltips, and window scale.
 
 ## 📸 Take a look
@@ -42,7 +42,10 @@
 | Open the atlas | `/paw`, `/pawatlas`, or PawAtlas in the minimap addon menu |
 | Import Rarity attempts | Settings → Integrations |
 | Enable the tracker | Settings → Expedition mode |
+| Hide or show a character in the Warband planner | Settings → Statistics → eye icon next to the character |
 | Choose holiday and world boss reminders | Settings → Events. Hover over an event to see its mounts |
+| Rename a plan you created or imported | Select it in the planner, open the plan list, and choose Rename |
+| Reorder plans | Drag a plan up or down in the list. “Personal plan” always comes first |
 | Share a plan or import one from a code | Share icon in the planner |
 | Share your collection | Open chat (including WIM whispers), then Shift + left-click the collection count |
 | Use the broker counter | Left-click: target · Right-click: atlas · Shift + left-click: tracker |

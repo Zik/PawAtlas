@@ -32,10 +32,20 @@ end
 
 local function reviewedVendorConditions(offer)
     local english = atlas.getLocale() == "enUS"
-    local price = offer.priceItem and ("%d %s"):format(offer.amount,
+    local price
+    if offer.itemCosts then
+        local parts = {}
+        for _, cost in ipairs(offer.itemCosts) do
+            local name = english and cost.englishName or cost.name
+            parts[#parts + 1] = ("%d {item:%d:%s}"):format(cost.amount, cost.item, name)
+        end
+        price = table.concat(parts, " + ")
+    else
+        price = offer.priceItem and ("%d %s"):format(offer.amount,
             atlas.sourceItemReference(offer.priceItem, english and offer.englishCurrencyName or offer.currencyName))
-        or offer.gold and ("%d|TInterface\\MoneyFrame\\UI-GoldIcon.blp:0|t"):format(offer.gold)
-        or ("%d |Hcurrency:%d|h[%s]|h"):format(offer.amount, offer.currency, english and offer.englishCurrencyName or offer.currencyName)
+            or offer.gold and ("%d|TInterface\\MoneyFrame\\UI-GoldIcon.blp:0|t"):format(offer.gold)
+            or ("%d |Hcurrency:%d|h[%s]|h"):format(offer.amount, offer.currency, english and offer.englishCurrencyName or offer.currencyName)
+    end
     if offer.offerings then
         price = price .. (" + %d |Hcurrency:1885|h[%s]|h"):format(offer.offerings,
             english and "Grateful Offering" or "Благодарственное подношение")
@@ -186,9 +196,10 @@ local function vendorName(value)
     return faction and name:match("^%s*(.-)%s*$") or value, faction
 end
 
--- The mount journal names both dragon turtle vendors without faction headings.
+-- The mount journal omits faction headings for these dragon turtle and talbuk vendors.
 -- https://www.wowhead.com/item=87797/reins-of-the-brown-dragon-turtle
-local vendorFaction = { [66022] = "Horde", [65068] = "Alliance" }
+-- https://news.blizzard.com/en-us/article/23523203/burning-crusade-mounts-pets-and-more
+local vendorFaction = { [20240] = "Alliance", [20241] = "Horde", [65068] = "Alliance", [66022] = "Horde" }
 
 local function addVendorWaypoints(mount, group)
     if group.waypoints or group.x then return end
@@ -663,6 +674,8 @@ function atlas.vendorSources(mount)
                     group.npc, group.map, group.x, group.y = merchant.npc, merchant.map, merchant.x, merchant.y
                     group.faction = merchant.faction or group.faction
                     group.formerQuest = reviewed.formerQuest
+                    group.redemption = merchant.redemption or group.redemption
+                    if merchant.redemption == "barter" then group.barterOffer = merchant end
                 end
             end
         end
@@ -677,7 +690,8 @@ function atlas.vendorSources(mount)
     for _, group in ipairs(groups) do
         -- A live quote belongs to one location and can vary with the character.
         terms[group] = group.conditions
-        group.conditions = atlas.merchantPriceSource(mount, group.conditions, group.name, group ~= quoteGroup)
+        group.conditions = atlas.merchantPriceSource(mount, group.conditions, group.name,
+            group ~= quoteGroup or group.redemption == "barter")
         group.priceResolved = true
         if renown and renown.spell == mount.spell then
             for _, seller in ipairs(renown.sellers) do

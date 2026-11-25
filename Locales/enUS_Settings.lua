@@ -64,6 +64,8 @@ atlas.addTranslations("enUS", {
     ["Сервер"] = "Realm",
     ["Уровень"] = "Level",
     ["Учтено персонажей: %d"] = "Characters tracked: %d",
+    ["Показать в отряде"] = "Show in Warband",
+    ["Скрыть из отряда"] = "Hide from Warband",
     ["Убрать персонажа из учтённых?"] = "Remove this tracked character?",
     ["При следующем входе с включённым аддоном персонаж появится снова"] = "The character will be added again when you next log in with the addon enabled",
     ["Убрать"] = "Remove",

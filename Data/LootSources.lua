@@ -1,5 +1,32 @@
 local _, atlas = ...
 
+-- Retail salvage vendors and prices: https://www.wowhead.com/npc=161091 and
+-- https://www.wowhead.com/npc=161067. Their assortment rotates weekly.
+-- The vendor uses the CurrencyTypes entry: https://www.wowhead.com/currency=1710
+atlas.islandSalvage = {
+    currency = 1710, currencyName = "Дублон мореплавателя", englishCurrencyName = "Seafarer's Dubloon",
+    merchants = {
+        { npc = 161091, name = "Капитан Ночной Вестник", englishName = "Captain Nightrunner",
+          place = "Боралус", englishPlace = "Boralus", faction = "Alliance", map = 1161, x = 0.662, y = 0.322 },
+        { npc = 161067, name = "Капитан Китт", englishName = "Captain Kitt",
+          place = "Дазар'алор", englishPlace = "Dazar'alor", faction = "Horde", map = 1165, x = 0.444, y = 0.942 },
+    },
+    containers = {
+        [173949] = { name = "Утиль из Оков Ужаса", englishName = "Dread Chain Salvage", amount = 175, rotating = true },
+        [173950] = { name = "Утиль с острова Отчаяния", englishName = "Crestfall Salvage", amount = 175, rotating = true },
+        [173988] = { name = "Утиль из Тихой Сени", englishName = "Havenswood Salvage", amount = 175, rotating = true },
+        [173989] = { name = "Утиль из Йорундалля", englishName = "Jorundall Salvage", amount = 175, rotating = true },
+        [173990] = { name = "Утиль с Раскаленного острова", englishName = "Molten Cay Salvage", amount = 120, rotating = true },
+        [173991] = { name = "Утиль из Гниющей трясины", englishName = "Rotting Mire Salvage", amount = 175, rotating = true },
+        [173992] = { name = "Утиль из Паучьей лощины", englishName = "Skittering Hollow Salvage", amount = 175, rotating = true },
+        [173993] = { name = "Утиль из Цветущей Зимы", englishName = "Snowblossom Salvage", amount = 175, rotating = true },
+        [173994] = { name = "Утиль из руин Ун'гол", englishName = "Un'gol Ruins Salvage", amount = 120, rotating = true },
+        [173996] = { name = "Утиль из Зеленых дебрей", englishName = "Verdant Wilds Salvage", amount = 120, rotating = true },
+        [173997] = { name = "Утиль с Шепчущего рифа", englishName = "Whispering Reef Salvage", amount = 120, rotating = true },
+    },
+    mounts = atlas.islandSalvageMounts,
+}
+
 -- Spawn and loot conditions for the NPC, independent of its possible coordinates.
 -- https://www.wowhead.com/news/how-to-farm-for-the-beledars-spawn-mount-in-the-war-within-346104
 -- https://www.wowhead.com/item=224553/beledars-attunement
@@ -359,7 +386,7 @@ atlas.guaranteedRewards = {
     -- https://github.com/aSnejbjerg/Rarity-Collectors-edition/blob/default/DB/Mounts/MistsOfPandaria.lua
     [537] = {
         rate = 1, item = 94290, personal = true, method = "quest",
-        reagent = { item = 94288, required = 9999 },
+        reagent = { item = 94288, required = 9999, hideLootMessage = true },
         condition = "Отдай Ку'ме на острове Великанов 9999 огромных костей динозавра за задание {quest:32617:Гора огромных костей динозавра}.",
     },
     -- Vendor rewards also require reputation, not merely the listed currency.
@@ -1874,6 +1901,18 @@ atlas.legacySources = {
 
 -- BEGIN acquisition route metadata
 -- Reviewed alternatives supplement the journal without assigning rates to direct rewards.
+-- The gift item's use teaches the other faction; it is distinct from the directly learned reward.
+atlas.factionMountGifts = {
+    -- https://www.wowhead.com/ru/item=207057
+    [1776] = { spell = 414316, item = 207057, faction = "Alliance", basis = "teaching", quality = 4,
+        icon = "Interface\\Icons\\ability_mount_whitedirewolf",
+        name = "Дар белого боевого волка", englishName = "Gift of the White War Wolf" },
+    -- https://www.wowhead.com/ru/item=207083
+    [1777] = { spell = 414323, item = 207083, faction = "Horde", basis = "teaching", quality = 4,
+        icon = "Interface\\Icons\\inv_misc_elitegryphon",
+        name = "Дар прожорливого черного грифона", englishName = "Gift of the Ravenous Black Gryphon" },
+}
+
 -- Raid quantities are group loot, not the probability that one player receives a mount.
 -- Historical event drops must not count as active acquisition routes.
 atlas.rewardDropRoutes = {

@@ -1,37 +1,11 @@
 local _, atlas = ...
 local serializer = LibStub("AceSerializer-3.0")
 local formatTag, formatVersion = "PawAtlasPlan", 1
-local maxBytes, maxTargets, maxName = 32768, 500, 48
+local maxBytes, maxTargets = 32768, 500
+local cleanName = atlas.cleanPlanName
 
 local function readable(value)
     return not (issecretvalue and issecretvalue(value))
-end
-
-local function cleanName(value)
-    if not readable(value) or type(value) ~= "string" or #value > maxName * 4
-        or value:find("[%c|<>]") then return end
-    value = value:match("^ *(.-) *$")
-    local index, length = 1, 0
-    while index <= #value do
-        local byte = value:byte(index)
-        local width, code, minimum = 1, byte, 0
-        if byte >= 0xC2 and byte <= 0xDF then width, code, minimum = 2, byte - 0xC0, 0x80
-        elseif byte >= 0xE0 and byte <= 0xEF then width, code, minimum = 3, byte - 0xE0, 0x800
-        elseif byte >= 0xF0 and byte <= 0xF4 then width, code, minimum = 4, byte - 0xF0, 0x10000
-        elseif byte >= 0x80 then return end
-        for offset = 1, width - 1 do
-            local continuation = value:byte(index + offset)
-            if not continuation or continuation < 0x80 or continuation > 0xBF then return end
-            code = code * 64 + continuation - 0x80
-        end
-        if code < minimum or code > 0x10FFFF or (code >= 0xD800 and code <= 0xDFFF)
-            or (code >= 0x80 and code <= 0x9F) or code == 0x061C or code == 0xFEFF
-            or (code >= 0x200B and code <= 0x200F) or (code >= 0x2028 and code <= 0x202E)
-            or (code >= 0x2060 and code <= 0x206F) then return end
-        index, length = index + width, length + 1
-        if length > maxName then return end
-    end
-    return value
 end
 
 local function parse(text)

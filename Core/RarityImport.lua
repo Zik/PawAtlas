@@ -52,6 +52,52 @@ local function importedEntries()
     return db and type(db.entries) == "table" and db.entries or nil
 end
 
+local function isIslandMount(id)
+    return atlas.islandSalvageMounts and atlas.islandSalvageMounts[id] ~= nil
+end
+
+local function legacyIslandHistory(entry)
+    -- Only the incoming Rarity snapshot is available independently of PawAtlas.
+    return type(entry) == "table" and number(entry.source) or 0
+end
+
+local function islandImport(db, id)
+    if not db then return nil, 0 end
+    local history = type(db.islandHistory) == "table" and db.islandHistory[id]
+    if type(history) == "table" and number(history.source) and type(history.baseline) == "table" then
+        return history, number(history.source)
+    end
+    local entries = type(db.entries) == "table" and db.entries or {}
+    return nil, math.max(number(history) or 0, legacyIslandHistory(entries[id]), legacyIslandHistory(entries["mount:" .. id]))
+end
+
+local function islandTotal(raw, source, delta, overlap)
+    return math.max(raw, source + math.max(0, delta - overlap))
+end
+
+function atlas.initializeIslandImports()
+    local db = importData()
+    if not db then return end
+    local history = type(db.islandHistory) == "table" and db.islandHistory or {}
+    for id in pairs(atlas.islandSalvageMounts or {}) do
+        local entry, source = islandImport(db, id)
+        if not entry and source > 0 then
+            -- Legacy snapshots provide no reliable split between imported and local attempts.
+            local _, _, baseline = atlas.localIslandAttempts({ id = id }, nil, true)
+            history[id] = { source = source, baseline = baseline }
+        end
+    end
+    if next(history) then db.islandHistory = history end
+end
+
+function atlas.withImportedIslandAttempts(mount, rawTotal)
+    if not isIslandMount(mount.id) then return rawTotal end
+    local entry, source = islandImport(importData(), mount.id)
+    if not entry then return math.max(rawTotal or atlas.localIslandAttempts(mount), source) end
+    local raw, delta = atlas.localIslandAttempts(mount, entry.baseline)
+    return islandTotal(raw, source, delta, number(entry.overlap) or 0)
+end
+
 local function collectionID(definition)
     if not definition or not identifier(definition.required) then return end
     return idList(definition.collectedItems or definition.item)
@@ -70,7 +116,7 @@ local function incompatibleCounter(key)
     local id = type(key) == "number" and key or type(key) == "string" and tonumber(key:match("^mount:(%d+)$"))
     local definitions = id and atlas.attemptStages and atlas.attemptStages[id]
     local reward = definitions and definitions.reward
-    return reward and (reward.rarityIncompatible or reward.unverifiedEligibility), id, reward
+    return isIslandMount(id) or reward and (reward.rarityIncompatible or reward.unverifiedEligibility), id, reward
 end
 
 local function reviewedEncounter(reward)
@@ -119,6 +165,17 @@ function atlas.removeImportedCharacterDelta(guid)
     for _, entry in pairs(collections) do
         if type(entry) == "table" and type(entry.baseline) == "table" then entry.baseline[guid] = nil end
     end
+    local islands = db and type(db.islandHistory) == "table" and db.islandHistory or {}
+    for id, entry in pairs(islands) do
+        if isIslandMount(id) and type(entry) == "table" and type(entry.baseline) == "table" then
+            entry.baseline[guid] = nil
+            local overlap = number(entry.overlap) or 0
+            if overlap > 0 then
+                local _, delta = atlas.localIslandAttempts({ id = id }, entry.baseline)
+                entry.overlap = math.min(delta, overlap)
+            end
+        end
+    end
 end
 
 function atlas.rarityImportSummary()
@@ -136,7 +193,11 @@ function atlas.rarityImportSummary()
         end
     end
     for id in pairs(type(db.collections) == "table" and db.collections or {}) do
-        if not seen[id] and atlas.rarityImportedCollection({ id = id }) then count = count + 1 end
+        if not seen[id] and atlas.rarityImportedCollection({ id = id }) then seen[id] = true; count = count + 1 end
+    end
+    for id in pairs(atlas.islandSalvageMounts or {}) do
+        local _, source = islandImport(db, id)
+        if not seen[id] and source > 0 then count = count + 1 end
     end
     return { status = db.status, count = db.count or count, skipped = db.skipped or 0,
         unattributed = db.unattributed or 0, time = db.time,
@@ -271,6 +332,7 @@ end
 
 local function collectCandidates(sources, known, bySpell, byItem, stagesByItem, stageOwners, relatedItems)
     local candidates, stageCandidates, foundAttempts, collections = {}, {}, {}, {}
+    local islandHistory = {}
     local skipped, skipReasons, skipEntries = 0, {}, {}
     for _, source in ipairs(sources) do
         local incoming = type(source) == "table" and number(source.attempts)
@@ -295,8 +357,12 @@ local function collectCandidates(sources, known, bySpell, byItem, stagesByItem, 
             local estimate = incoming and encounters and source.type == "MOUNT"
                 and source.method == "ENCOUNTER" and itemID == reward.item
                 and idList(source.encounters) == encounters
+            -- Rarity increments the same attempt total on ISLAND_COMPLETED and salvage use.
+            local mixedIsland = incoming and mount and isIslandMount(mount.id) and reward
+                and source.type == "MOUNT" and source.method == "USE" and itemID == reward.item
             local reason
             if not mount then reason = relatedItems[itemID] and "unit_mismatch" or "unmapped"
+            elseif mixedIsland then islandHistory[mount.id] = math.max(islandHistory[mount.id] or 0, incoming)
             elseif reward and reward.unverifiedEligibility then
                 if not estimate then reason = "unverified" end
             elseif incompatibleCounter(mount.id) then reason = "incompatible"
@@ -307,7 +373,7 @@ local function collectCandidates(sources, known, bySpell, byItem, stagesByItem, 
             elseif loot and loot.basis ~= "drop" and not matchesRewardCounter(source, reward) then reason = "unit_mismatch"
             elseif not incoming and not award then reason = "multiple_items" end
             local accepted = not reason
-            if accepted then
+            if accepted and not mixedIsland then
                 if collection then
                     -- These counts measure items held, including a historical maximum
                     -- for aggregate collections. A collection completion is not a drop.
@@ -351,7 +417,7 @@ local function collectCandidates(sources, known, bySpell, byItem, stagesByItem, 
             end
         end
     end
-    return candidates, stageCandidates, foundAttempts, collections, skipped, skipReasons, skipEntries
+    return candidates, stageCandidates, foundAttempts, collections, islandHistory, skipped, skipReasons, skipEntries
 end
 
 local function collectSources(groups)
@@ -373,11 +439,11 @@ local function prepareImport(checkpoint)
     local groups = type(profile) == "table" and rawget(profile, "groups")
     if type(groups) ~= "table"
         or (type(rawget(groups, "mounts")) ~= "table" and type(rawget(groups, "items")) ~= "table") then return end
-    local candidates, stages, awards, collections, skipped, reasons, details =
+    local candidates, stages, awards, collections, islandHistory, skipped, reasons, details =
         collectCandidates(collectSources(groups), known, bySpell, byItem, stagesByItem, stageOwners, relatedItems)
     return { profile = name, snapshots = collectStatistics(rawget(profile, "accountWideStatistics")),
         known = known, candidates = candidates, stages = stages, stageOwners = stageOwners, awards = awards,
-        collections = collections,
+        collections = collections, islandHistory = islandHistory,
         skipped = skipped, skipReasons = reasons, skipEntries = details }
 end
 
@@ -394,11 +460,30 @@ local function commitImport(plan)
     if type(db) ~= "table" then db = {} end
     local entries = type(db.entries) == "table" and db.entries or {}
     local collections = type(db.collections) == "table" and db.collections or {}
+    local islandHistory = type(db.islandHistory) == "table" and db.islandHistory or {}
     local imported, replacements, unattributed = {}, {}, 0
 
     -- Apply without yielding. The imported floor must include genuine attempts
     -- recorded since the previous import, including during index preparation.
     mergeStatistics(plan.snapshots, plan.known, plan.stageOwners, imported)
+    for id, incoming in pairs(plan.islandHistory) do
+        local entry, source = islandImport(db, id)
+        local raw, delta, baseline = atlas.localIslandAttempts(plan.known[id], entry and entry.baseline, not entry)
+        if not entry then
+            entry = { source = source, baseline = baseline }
+            delta = 0
+        end
+        local overlap = number(entry.overlap) or 0
+        local previous = islandTotal(raw, source, delta, overlap)
+        if incoming > source then
+            -- Rarity can observe the same new expeditions and salvage openings as PawAtlas.
+            entry.overlap = math.min(delta, overlap + incoming - source)
+            entry.source = incoming
+        end
+        islandHistory[id] = entry
+        local total = islandTotal(raw, entry.source, delta, number(entry.overlap) or 0)
+        imported[id] = imported[id] or total > previous
+    end
     for id, incoming in pairs(plan.candidates) do
         local mount = plan.known[id]
         local _, _, reward = incompatibleCounter(id)
@@ -455,7 +540,7 @@ local function commitImport(plan)
     result.skipped, result.unattributed = plan.skipped, unattributed
     result.skipReasons, result.skipEntries = plan.skipReasons, plan.skipEntries
     for key, entry in pairs(replacements) do entries[key] = entry end
-    db.entries, db.collections = entries, collections
+    db.entries, db.collections, db.islandHistory = entries, collections, islandHistory
     db.time, db.profile, db.skipped, db.unattributed = result.time, result.profile, result.skipped, unattributed
     db.updated, db.unchanged = result.updated, result.unchanged
     db.status, db.count = result.status, result.count

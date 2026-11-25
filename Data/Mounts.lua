@@ -1,5 +1,26 @@
 local _, atlas = ...
 
+-- Historical mounts with a verified identity and no acquisition route.
+atlas.uniqueMounts = {
+    -- Amara's account: https://www.reddit.com/r/wow/comments/ju95lk/comment/gcbs7ii/
+    [32] = {
+        spell = 10790, name = "Бенгальский тигр", englishName = "Bengal Tiger",
+        expansion = "Classic", icon = "Interface\\Icons\\Ability_Mount_JungleTiger",
+        state = "unavailable", unique = true, source = "Недоступно для получения",
+        history = "Blizzard подарила этого тигра Амаре в рамках программы Make-A-Wish. Получить его в игре нельзя.",
+        englishHistory = "Blizzard gifted this tiger to Amara through Make-A-Wish. It cannot be obtained in-game.",
+    },
+    -- Historical Blizzard mount ID: https://www.warcraftmounts.com/mounts/fluorescentgreenmechanostrider.php
+    -- Narshe's mount in Retail: https://warcraft.wiki.gg/wiki/Fluorescent_Green_Mechanostrider
+    [61] = {
+        spell = 17458, name = "Флюоресцирующий зеленый механодолгоног", englishName = "Fluorescent Green Mechanostrider",
+        expansion = "Classic", icon = "Interface\\Icons\\Ability_Mount_Mechastrider",
+        state = "unavailable", unique = true, source = "Недоступно для получения",
+        history = "Гейм-мастер по ошибке выдал этого маунта игроку Narshe. Получить его в актуальной версии WoW нельзя.",
+        englishHistory = "A Game Master mistakenly gave this mount to Narshe. It cannot be obtained in Retail.",
+    },
+}
+
 -- Rarity, DB/Mounts/TheBurningCrusade.lua. Odds are per eligible loot attempt.
 atlas.mounts = {
     { id = 183, name = "Пепел Ал’ара", english = "Ashes of Al'ar", boss = "Кель’тас Солнечный Скиталец",

@@ -299,6 +299,39 @@ for _, route in ipairs(vendors) do
     contains(route.conditions, "270|Hitem:49927|")
 end
 
+for _, journal in ipairs({
+    { "enUS", "Vendor", "Zone", "Nagrand, Outland", "Faction", "Cost",
+        "Provisioner Nasela", "Trader Narasu", "The Mag'har - Exalted", "The Kurenai - Exalted" },
+    { "ruRU", "Торговец", "Зона", "Награнд (Запределье)", "Фракция", "Цена",
+        "поставщик Несела", "торговец Нарасу", "маг'хары – превознесение", "куренай – превознесение" },
+}) do
+    local locale, sellerLabel, zoneLabel, zone, repLabel, costLabel, nasela, narasu, maghar, kurenai = unpack(journal)
+    language = locale
+    for _, talbuk in ipairs({
+        { 153, 34896, 100 }, { 154, 34897, 100 }, { 155, 34898, 100 }, { 156, 34899, 100 },
+        { 170, 39315, 70 }, { 172, 39317, 70 }, { 173, 39318, 70 }, { 174, 39319, 70 },
+    }) do
+        local id, spell, price = unpack(talbuk)
+        local cost = costLabel .. ": " .. price .. "|TInterface\\MoneyFrame\\UI-GoldIcon.blp:0|t"
+        local function listingText(seller, reputation)
+            return table.concat({ sellerLabel .. ": " .. seller, zoneLabel .. ": " .. zone,
+                repLabel .. ": " .. reputation, cost }, "\n")
+        end
+        local view = { id = id, spell = spell,
+            journalSourceRaw = listingText(nasela, maghar) .. "\n\n" .. listingText(narasu, kurenai) }
+        local offers = atlas.vendorSources(view)
+        assert(#offers == 2 and not view.faction, "talbuk vendors are faction-specific but the mount is shared")
+        local hordeOffer, allianceOffer = unpack(offers)
+        assert(hordeOffer.npc == 20241 and hordeOffer.faction == "Horde" and hordeOffer.map == 107
+            and hordeOffer.x == .535 and hordeOffer.y == .37)
+        assert(allianceOffer.npc == 20240 and allianceOffer.faction == "Alliance" and allianceOffer.map == 107
+            and allianceOffer.x == .545 and allianceOffer.y == .751)
+        assert(hordeOffer.conditions == repLabel .. ": " .. maghar .. "\n" .. cost)
+        assert(allianceOffer.conditions == repLabel .. ": " .. kurenai .. "\n" .. cost)
+    end
+end
+language = "enUS"
+
 local frayfeather = { id = 2224, spell = 452643, journalSourceRaw = "Vendor: Bobadormu\nZone: Tanaris\n"
     .. "Cost: 5000|Hcurrency:1166|h[Timewarped Badge]|h\n\nVendor: Grannadormu\nZone: Tanaris\n"
     .. "Cost: 5000|Hcurrency:1166|h[Timewarped Badge]|h" }
@@ -313,6 +346,7 @@ end
 local ando = atlas.vendorSources({ id = 2279, spell = 466012,
     journalSourceRaw = "Vendor: Ando the Gat\nZone: Liberation of Undermine" })[1]
 assert(ando.npc == 235621 and not ando.x and not ando.y, "raid vendor identity does not imply a floor waypoint")
+assert(not ando.faction, "a neutral vendor does not receive a faction emblem")
 contains(ando.conditions, "8")
 
 local whiteGoat

@@ -76,6 +76,7 @@ function ui.applyFont(id)
     end
     if atlas.refreshDetails then atlas.refreshDetails() end
     if atlas.queueExpeditionStatsRefresh then atlas.queueExpeditionStatsRefresh() end
+    if MountAtlasBrokerTargets and MountAtlasBrokerTargets:IsShown() then MountAtlasBrokerTargets:refreshRows() end
 end
 function ui.applyFontScale(value)
     local previous = ui.selectedFontScale()

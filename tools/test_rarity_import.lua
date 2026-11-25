@@ -23,6 +23,7 @@ local player, offline = "Player-current", "Player-offline"
 local time, timers = 1000, {}
 local trackingEvents, stageEvent, lootSource = {}, nil, nil
 local availableItems = {}
+function GetTime() return time end
 function GetServerTime() return time end
 function GetRealmName() return "Realm" end
 function UnitName() return "Tester" end
@@ -45,8 +46,10 @@ LOOT_ITEM_PUSHED_SELF = "You receive item: %s."
 local cageSpells = { [611] = 171619, [622] = 171630, [643] = 171837 }
 local reportedSpells = { [304] = 63796, [1507] = 354358, [2176] = 447213 }
 local eggSpells = { [538] = 138641, [539] = 138642, [540] = 138643 }
+local islandSpells = { [993] = 254811, [1169] = 278979, [1175] = 279466, [1176] = 279467, [1178] = 279469,
+    [1209] = 288712, [1211] = 288720, [1212] = 288721, [1213] = 288722 }
 C_MountJournal = { GetMountInfoByID = function(id)
-    return "Mount " .. id, cageSpells[id] or reportedSpells[id] or eggSpells[id] or 100 + id
+    return "Mount " .. id, cageSpells[id] or reportedSpells[id] or eggSpells[id] or islandSpells[id] or 100 + id
 end }
 
 local function nextTimer() table.remove(timers, 1)() end
@@ -101,6 +104,12 @@ end
 for _, id in ipairs({ 488, 624, 765 }) do
     atlas.mounts[#atlas.mounts + 1] = { id = id, journalOnly = true }
     atlas.attemptStages[id] = catalog.attemptStages[id]
+end
+atlas.islandSalvageMounts = catalog.islandSalvageMounts
+for id in pairs(atlas.islandSalvageMounts) do
+    atlas.mounts[#atlas.mounts + 1] = { id = id, journalOnly = true }
+    atlas.attemptStages[id] = catalog.attemptStages[id]
+    atlas.lootItems[id] = catalog.lootItems[id]
 end
 local eggMounts = {}
 for _, id in ipairs({ 538, 539, 540 }) do
@@ -433,7 +442,7 @@ C_MountJournal.GetMountInfoByID = function(id)
     return getMountInfo(id)
 end
 
-local bagCounts = { [128670] = 1, [205368] = 1, [205374] = 1, [54537] = 3 }
+local bagCounts = { [128670] = 1, [205368] = 1, [205374] = 1, [54537] = 3, [173989] = 0 }
 local getItemCount = C_Item.GetItemCount
 C_Item.GetItemCount = function(id, bank, uses, reagentBank, accountBank)
     if not bank and bagCounts[id] then return bagCounts[id] end
@@ -457,6 +466,110 @@ local function openContainer(item)
     stageEvent("BAG_UPDATE_DELAYED")
     stageEvent("LOOT_CLOSED")
     stageEvent("BAG_UPDATE_DELAYED")
+end
+do
+    local entries = MountAtlasAccountDB.rarityImport.entries
+    local key = "mount:1212"
+    -- Rarity's older history counts expedition completions alongside bag openings.
+    entries[key] = { total = 25, deltaByGUID = {}, mountIDs = { 1212 } }
+    local function openings(id)
+        return atlas.rewardAttemptProgress({ id = id, journalOnly = true, journalSourceRaw = "Drop: Island Expeditions" })
+    end
+    equal(openings(1212).attempts, 0, "mixed imported history cannot count as salvage openings")
+    bagCounts[173989] = 1
+    stageEvent("BAG_UPDATE_DELAYED")
+    equal(openings(1212).attempts, 0, "buying salvage does not roll a reward")
+    openContainer(173989)
+    equal(openings(1212).attempts, 1, "a Jorundall opening counts once for the thunderscale")
+    equal(openings(1176).attempts, 1, "the same opening counts once for the chasm-leaper")
+    equal(openings(1212).perAttempt, nil, "a salvage attempt has no published drop rate")
+    equal(openings(1212).cumulative, nil, "there is no cumulative chance without a drop rate")
+    entries[key] = nil
+end
+do
+    local entries = MountAtlasAccountDB.rarityImport.entries
+    local legacyKey = "mount:1212"
+    entries[legacyKey] = { total = 60, source = 25, deltaByGUID = { [player] = 2 }, mountIDs = { 1212 } }
+    entries[1175] = { total = 300, source = 8, deltaByGUID = {} }
+    MountAtlasAccountDB.rarityImport.islandHistory = { [1176] = 30 }
+    MountAtlasAccountDB.characters[player].islandExpeditionCompletions = 4
+    local function attempts(id)
+        return atlas.islandExpeditionProgress({ id = id })
+    end
+    atlas.initializeIslandImports()
+    equal(attempts(1212), 25, "legacy stage snapshot keeps its original Rarity value")
+    equal(attempts(1175), 8, "legacy mount snapshot keeps its original Rarity value")
+    equal(attempts(1176), 30, "a legacy numeric history is not added to previous local attempts")
+    local function openJorundall()
+        bagCounts[173989] = 1
+        stageEvent("BAG_UPDATE_DELAYED")
+        openContainer(173989)
+    end
+    openJorundall()
+    equal(attempts(1212), 26, "a fresh opening increases a migrated stage snapshot immediately")
+    equal(attempts(1176), 31, "a fresh opening increases a migrated numeric history immediately")
+    equal(attempts(1175), 9, "a fresh opening increases a migrated mount snapshot immediately")
+    local sources = {}
+    for id, spell in pairs(islandSpells) do
+        local reward = catalog.attemptStages[id].reward
+        sources[id] = setmetatable({ attempts = 20, found = true, realAttempts = 18 }, {
+            __index = { type = "MOUNT", method = "USE", itemId = reward.item, spellId = spell },
+        })
+    end
+    sources.duplicate = { type = "MOUNT", method = "USE", itemId = 166467, spellId = 288721, attempts = 24 }
+    sources.wrongItem = { type = "MOUNT", method = "USE", itemId = 166466, spellId = 288721, attempts = 100 }
+    Rarity.db.profile.groups = { mounts = sources }
+    local firstIslands = run()
+    equal(firstIslands.count, 9, "all nine Island Expedition mounts can import their Rarity history")
+    equal(firstIslands.updated, 7, "smaller snapshots preserve the previously imported history")
+    equal(firstIslands.skipped, 1, "a mismatched reward item is skipped")
+    for id in pairs(islandSpells) do
+        local expected = id == 1212 and 26 or id == 1176 and 31 or 20
+        local count, cumulative, perAttempt = attempts(id)
+        equal(count, expected, "shared island history for mount " .. id)
+        equal(perAttempt, 0.01, "shared chance follows the mount's Rarity rate")
+        assert(math.abs(cumulative - (1 - 0.99 ^ expected)) < 0.000000001, "chance follows the shared count")
+        equal(atlas.acquisitionAttempts("mount:" .. id), nil, "mixed history cannot supply acquisition attempts")
+    end
+    equal(attempts(1208), nil, "buying a mount for dubloons has no shared count")
+    local replay = run()
+    equal(replay.updated, 0, "the same mixed snapshots do not add attempts")
+    equal(replay.unchanged, 9, "the same mixed snapshots match all nine mounts")
+
+    local previousInstance = GetInstanceInfo
+    local function finishIsland(map)
+        GetInstanceInfo = function() return "Island", "scenario", 0, nil, nil, nil, nil, map end
+        trackingEvents.ISLAND_COMPLETED("ISLAND_COMPLETED", map)
+    end
+    finishIsland(1879)
+    equal(attempts(1212), 27, "a new completion adds to Rarity history for the thunderscale")
+    equal(attempts(1178), 21, "the same completion adds to the hound's history")
+    openJorundall()
+    equal(attempts(1212), 28, "a new eligible salvage opening adds to the same count")
+    equal(attempts(1178), 21, "an unrelated salvage opening does not increase the hound's count")
+    sources[1212].attempts = 27
+    equal(run().updated, 0, "Rarity's matching new events do not count twice")
+    equal(attempts(1212), 28, "a partially overlapping snapshot preserves the extra local attempt")
+    sources[1212].attempts = 32
+    equal(run().updated, 1, "a larger snapshot updates only its mount")
+    equal(attempts(1212), 32, "larger Rarity snapshots reconcile by their maximum possible overlap")
+
+    local removed = "Player-island-alt"
+    MountAtlasAccountDB.characters[removed] = { islandExpeditionCompletions = 2 }
+    equal(attempts(1178), 23, "a second character adds to the shared account total")
+    sources[1178].attempts = 23
+    equal(run().updated, 0, "the imported history can overlap both characters' runs")
+    assert(atlas.removeAccountCharacter(removed))
+    equal(attempts(1178), 23, "removing a character preserves Rarity's account history")
+    finishIsland(1813)
+    GetInstanceInfo = previousInstance
+    equal(attempts(1178), 24, "removing a character does not consume the next known local attempt")
+    equal(attempts(1212), 33, "another completion adds to the updated Rarity snapshot")
+    equal(atlas.islandExpeditionCompletions(), 6, "mixed history does not increase the raw expedition count")
+    equal(atlas.rawStageAttempts(legacyKey), 3, "mixed history does not increase the raw salvage count")
+    assert(atlas.clearRarityImport())
+    equal(attempts(1212), 9, "clearing Rarity retains only local expeditions and eligible openings")
+    equal(attempts(1178), 6, "clearing Rarity retains the hound's local expeditions")
 end
 stageEvent("QUEST_TURNED_IN", 74905)
 checkEventAttempts(1735, 0)

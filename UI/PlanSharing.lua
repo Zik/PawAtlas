@@ -32,7 +32,7 @@ function atlas.makePlanSharing(parent, changed)
     local export = ui.place(CreateFrame("Frame", nil, panel), panel, 0, 0, 560, exportHeight)
     local import = ui.place(CreateFrame("Frame", nil, panel), panel, 0, 0, 560, importHeight)
     local remove = ui.place(CreateFrame("Frame", nil, panel), panel, 0, 0, 420, 174)
-    local create = ui.place(CreateFrame("Frame", nil, panel), panel, 0, 0, 420, 174)
+    local nameForm = ui.place(CreateFrame("Frame", nil, panel), panel, 0, 0, 420, 174)
     local profile, revision, editedName = nil, 0, false
 
     local function makeEdit(owner, x, y, width, height, multiline)
@@ -209,39 +209,46 @@ function atlas.makePlanSharing(parent, changed)
             changed()
         end
     end)
-    ui.text(create, 22, 62, 144, 34, 15, "Название плана", ui.muted)
-    local createName = makeEdit(create, 169, 62, 229, 34)
-    createName:SetAutoFocus(true)
-    createName:SetMaxLetters(48)
-    local createError = ui.text(create, 22, 98, 376, 20, 12, "Не удалось создать план", ui.gold)
-    createError:Hide()
-    local function submitCreate()
-        local value = createName:GetText()
+    ui.text(nameForm, 22, 62, 144, 34, 15, "Название плана", ui.muted)
+    local planName = makeEdit(nameForm, 169, 62, 229, 34)
+    planName:SetMaxLetters(48)
+    local nameError = ui.text(nameForm, 22, 98, 376, 20, 12, "Не удалось создать план", ui.gold)
+    nameError:Hide()
+    local function submitName()
+        if not nameForm:IsVisible() then return end
+        local value = planName:GetText()
         if not value:find("%S") then return end
-        if atlas.createPlan(value) then
+        local saved
+        if profile then
+            if profile.id ~= atlas.activePlanID() then overlay:Hide(); return end
+            saved = atlas.renamePlan(profile.id, value)
+        else
+            saved = atlas.createPlan(value)
+        end
+        if saved then
             overlay:Hide()
             changed()
         else
-            createError:Show()
-            createName:SetFocus()
-            createName:HighlightText()
+            nameError:Show()
+            planName:SetFocus()
+            planName:HighlightText()
         end
     end
-    local confirmCreate = ui.action(create, 234, 120, 164, 32, "Создать план", nil, submitCreate)
-    confirmCreate:setActive(true)
-    createName:SetScript("OnTextChanged", function(self)
+    local confirmName = ui.action(nameForm, 234, 120, 164, 32, "Создать план", nil, submitName)
+    confirmName:setActive(true)
+    planName:SetScript("OnTextChanged", function(self)
         local enabled = self:GetText():find("%S") ~= nil
-        confirmCreate:SetEnabled(enabled)
-        confirmCreate:SetAlpha(enabled and 1 or .5)
-        createError:Hide()
+        confirmName:SetEnabled(enabled)
+        confirmName:SetAlpha(enabled and 1 or .5)
+        nameError:Hide()
     end)
-    createName:SetScript("OnEnterPressed", submitCreate)
+    planName:SetScript("OnEnterPressed", submitName)
     local cancel = ui.action(panel, 22, 228, 142, 32, "Отмена", nil, function() overlay:Hide() end)
     local exportTab, importTab
     local function showMode(mode)
-        code:ClearFocus(); input:ClearFocus(); name:ClearFocus(); createName:ClearFocus()
-        local creating, deleting, exporting = mode == "create", mode == "remove", mode == "export"
-        local compact = creating or deleting
+        code:ClearFocus(); input:ClearFocus(); name:ClearFocus(); planName:ClearFocus()
+        local naming, deleting, exporting = mode == "name", mode == "remove", mode == "export"
+        local compact = naming or deleting
         local width = compact and 420 or 560
         panel:SetSize(width, compact and 174 or (exporting and exportHeight or importHeight))
         heading:ClearAllPoints()
@@ -254,17 +261,26 @@ function atlas.makePlanSharing(parent, changed)
         ui.place(divider, panel, 22, compact and 53 or shareDividerY, width - 44, 1)
         cancel:ClearAllPoints()
         cancel:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 22, compact and 22 or footerInset)
-        heading:SetText(creating and "Создать план" or deleting and "Удалить этот план?" or "Поделиться планом")
+        if naming then
+            heading:SetText(profile and "Переименовать план" or "Создать план")
+            confirmName.caption:SetText(profile and "Переименовать" or "Создать план")
+            nameError:SetText(profile and "Не удалось переименовать план" or "Не удалось создать план")
+        else
+            heading:SetText(deleting and "Удалить этот план?" or "Поделиться планом")
+        end
         export:SetShown(exporting)
         import:SetShown(mode == "import")
         remove:SetShown(deleting)
-        create:SetShown(creating)
+        nameForm:SetShown(naming)
         exportTab:SetShown(not compact)
         importTab:SetShown(not compact)
         exportTab:setActive(mode == "export")
         importTab:setActive(mode == "import")
         if exporting and not exportError:IsShown() then code:SetFocus() end
-        if creating then createName:SetFocus() end
+        if naming then
+            planName:SetFocus()
+            if profile then planName:HighlightText() end
+        end
         if mode == "import" then
             lastInputValue = nil
             input:GetScript("OnTextChanged")(input)
@@ -280,7 +296,7 @@ function atlas.makePlanSharing(parent, changed)
     overlay:SetScript("OnHide", function()
         revision = revision + 1
         lastInputValue = nil
-        code:ClearFocus(); input:ClearFocus(); name:ClearFocus(); createName:ClearFocus()
+        code:ClearFocus(); input:ClearFocus(); name:ClearFocus(); planName:ClearFocus()
         profile = nil
     end)
     function overlay:closeIfStale(activeID)
@@ -297,12 +313,13 @@ function atlas.makePlanSharing(parent, changed)
         self:Show()
         showMode(delete and "remove" or "export")
     end
-    function overlay:openCreate()
-        profile = nil
-        createName:SetText("")
-        createError:Hide()
+    function overlay:openName(selected)
+        if selected and (selected.id == "personal" or selected.id ~= atlas.activePlanID()) then return end
+        profile = selected
+        planName:SetText(selected and selected.name or "")
+        nameError:Hide()
         self:Show()
-        showMode("create")
+        showMode("name")
     end
     return overlay
 end

@@ -8,7 +8,7 @@ local separateHoliday = 900001
 atlas.eventReminderHolidays[separateHoliday] = { name = "A separate event", englishName = "A separate event" }
 table.insert(atlas.eventReminderSources[352].holidays, separateHoliday)
 local callback,timers,messages,requests,loaded,collected={},{},{},{},{},{}
-local entryTimers = {}
+local entryTimers, retryTimers = {}, {}
 local opens,offset,readyRows=0,nil,true
 local function date(day,hour) return {year=2026,month=11,monthDay=day,hour=hour or 0,minute=0} end
 local start,finish=date(1),date(2)
@@ -26,9 +26,10 @@ end
 function CreateFrame() return {RegisterEvent=function() end,SetScript=function(_,_,fn) callback=fn end} end
 C_Timer={After=function(delay,fn)
     if delay == 0 then timers[#timers+1] = fn
-    else
-        assert(delay == 15, "entry reminders wait fifteen seconds")
+    elseif delay == 15 then
         entryTimers[#entryTimers+1] = fn
+    else
+        retryTimers[#retryTimers+1] = { delay = delay, run = fn }
     end
 end}
 local function finishEntryDelay()
@@ -184,3 +185,93 @@ callback(nil,"CALENDAR_UPDATE_EVENT_LIST");flush()
 assert(#messages==9 and messages[9]:find("|Hitem:44083:",1,true),
     "the Horde version is eventually announced to an eligible character")
 print("PawAtlas event reminders passed: opt-in, async cancellation, group settings, holiday aliases and faction gates")
+
+local function coldReward(id)
+    for mountID in pairs(collected) do collected[mountID] = mountID ~= id end
+    local item = atlas.eventReminderSources[id].item
+    loaded[item], requests[item] = nil, 0
+    start, finish, today = date(1), date(2), date(1,12)
+    calendarRows, worldQuestActive = { { id=372, name="Test holiday" } }, id == 1250
+    timers, entryTimers, retryTimers, messages = {}, {}, {}, {}
+    MountAtlasAccountDB = { settings = { eventRemindersEnabled = true } }
+    assert(loadfile("Core/EventReminders.lua"))("PawAtlas", atlas)
+    callback(nil, "PLAYER_ENTERING_WORLD")
+    callback(nil, "CALENDAR_UPDATE_EVENT_LIST")
+    finishEntryDelay()
+    assert(requests[item] == 1 and #messages == 0, "one initial request for the eligible reward")
+    return item
+end
+local function result(item, success)
+    callback(nil, "ITEM_DATA_LOAD_RESULT", item, success)
+    flush()
+end
+local function retryAfter(delay)
+    assert(#retryTimers == 1 and retryTimers[1].delay == delay, "one retry timer at " .. delay .. " seconds")
+    table.remove(retryTimers, 1).run()
+    flush()
+end
+local item = coldReward(202)
+result(item, false)
+result(item, false)
+callback(nil, "CALENDAR_UPDATE_EVENT_LIST")
+callback(nil, "QUEST_LOG_UPDATE")
+flush()
+assert(requests[item] == 1, "duplicate failures and refreshes cannot bypass backoff")
+retryAfter(2)
+assert(requests[item] == 2)
+loaded[item] = true
+result(item, true)
+result(item, true)
+assert(#messages == 1 and #retryTimers == 0, "recovered item sends once")
+
+item = coldReward(202)
+result(item, true) -- The mount mapping is still cold.
+result(item, true)
+retryAfter(2)
+assert(requests[item] == 2 and #retryTimers == 0, "an early success waits for backoff without duplicate timers")
+loaded[item] = true
+result(item, true)
+assert(#messages == 1, "the notification uses the resolved mount mapping")
+
+item = coldReward(226)
+C_Item.IsItemDataCachedByID = function(id) return loaded[id] == true end
+for attempt, delay in ipairs({2, 5, 10}) do
+    result(item, false)
+    retryAfter(delay)
+    assert(requests[item] == attempt + 1)
+end
+result(item, false)
+callback(nil, "CALENDAR_UPDATE_EVENT_LIST"); flush()
+assert(requests[item] == 4 and #retryTimers == 0 and #messages == 0, "limited to three retries per active reward")
+calendarRows = {}; callback(nil, "CALENDAR_UPDATE_EVENT_LIST"); flush()
+calendarRows = { { id=372, name="Next holiday" } }
+start, finish, today = date(8), date(9), date(8,12)
+callback(nil, "CALENDAR_UPDATE_EVENT_LIST"); flush()
+assert(requests[item] == 5, "a later holiday has a fresh retry budget")
+result(item, false)
+loaded[item] = true
+result(item, true)
+retryAfter(2)
+assert(requests[item] == 5 and #messages == 1, "another load during backoff resolves without an extra request")
+
+for _, cancel in ipairs({
+    function() today = finish end,
+    function() collected[202] = true end,
+    function() atlas.setEventRemindersEnabled(false) end,
+    function() atlas.setEventReminderGroupMuted("holiday:372", true) end,
+    function() atlas.setEventReminderMuted("mount:202", true) end,
+}) do
+    item = coldReward(202)
+    result(item, false)
+    cancel()
+    retryAfter(2)
+    loaded[item] = true
+    result(item, true)
+    assert(requests[item] == 1 and #messages == 0, "ineligible rewards cancel retries and ignore late results")
+end
+item = coldReward(1250)
+result(item, false)
+worldQuestActive = false
+retryAfter(2)
+assert(requests[item] == 1 and #messages == 0, "a finished world quest cannot retry")
+print("PawAtlas reminder retries passed: recovery, backoff, limit, late responses, cancellation and new events")

@@ -6,6 +6,24 @@ local function hidePlanTooltip(owner)
     if GameTooltip:IsOwned(owner) then GameTooltip:Hide() end
 end
 
+local function rosterIcon(parent, centerX, size)
+    local icon = parent:CreateTexture(nil, "ARTWORK")
+    icon:SetPoint("CENTER", parent, "LEFT", centerX, 0)
+    icon:SetHeight(size)
+    return icon
+end
+
+local function setRosterIcon(icon, character)
+    local size = icon:GetHeight()
+    if character and character.guid then
+        icon:SetWidth(size)
+        ui.setCharacterClassIcon(icon, character)
+    else
+        icon:SetWidth(size * 23 / 31)
+        icon:SetAtlas("warbands-icon", false)
+    end
+end
+
 local function showExpansionTooltip(tile)
     local expansion = tile.expansion
     if not expansion or not expansion.event then return end
@@ -163,35 +181,142 @@ end
 
 local menuInset = 6
 
+local function dragGrip(row, x, y)
+    local dots = {}
+    for i = 0, 5 do
+        local dot = ui.fill(row, x + i % 2 * 4, y + math.floor(i / 2) * 4, 2, 2, ui.gold)
+        dot:SetDrawLayer("ARTWORK")
+        dots[#dots + 1] = dot
+    end
+    return dots
+end
+
 local function planProfileList(menu, selectProfile)
     local width = menu:GetWidth() - menuInset * 2
+    local step, capacity = 36, 6
     ui.dropdownSurface(menu)
-    local plans = ui.scrollingList(menu, menuInset, menuInset, width, 36, 6)
+    local plans = ui.scrollingList(menu, menuInset, menuInset, width, step, capacity)
+    local overlay = CreateFrame("Frame", nil, plans)
+    overlay:SetAllPoints(plans)
+    overlay:SetFrameLevel(plans:GetFrameLevel() + 8)
+    overlay:EnableMouse(false)
+    local marker = ui.fill(overlay, 2, 0, width - 12, 2, ui.gold)
+    marker:Hide()
+    local drag
+
+    local function updateDrag(_, elapsed)
+        local x, y = GetCursorPosition()
+        local scale = plans:GetEffectiveScale()
+        local left, top = plans:GetLeft(), plans:GetTop()
+        local height = plans:GetHeight()
+        drag.anchor = nil
+        if left and top then x, y = x / scale - left, top - y / scale end
+        if not left or not top or x < 0 or x > width - 8 or y < 0 or y >= height then
+            drag.edge, drag.elapsed = nil, 0
+            marker:Hide()
+            return
+        end
+
+        local edge
+        if y < 12 and plans.offset > 0 then edge = -1 end
+        if y > height - 12 and plans.offset + capacity < #plans.items then edge = 1 end
+        if edge ~= drag.edge then drag.edge, drag.elapsed = edge, 0 end
+        if edge and elapsed then
+            drag.elapsed = drag.elapsed + elapsed
+            if drag.elapsed >= .22 then
+                drag.elapsed = 0
+                plans:scroll(edge)
+            end
+        end
+
+        local slot = math.floor(y / step)
+        local index = plans.offset + slot + 1
+        local anchor = plans.items[index]
+        local after = y - slot * step >= step / 2
+        local neighbor = plans.items[index + (after and 1 or -1)]
+        if not anchor or anchor.id == "personal" or anchor.id == drag.id or (neighbor and neighbor.id == drag.id) then
+            marker:Hide()
+            return
+        end
+
+        drag.anchor, drag.after = anchor.id, after
+        local line = (slot + (after and 1 or 0)) * step - 1
+        if line ~= drag.line then
+            marker:ClearAllPoints()
+            marker:SetPoint("TOPLEFT", overlay, "TOPLEFT", 2, -line)
+            drag.line = line
+        end
+        marker:Show()
+    end
+
+    local function stopDrag()
+        if not drag then return end
+        drag = nil
+        overlay:SetScript("OnUpdate", nil)
+        marker:Hide()
+        for _, row in ipairs(plans.rows) do row:SetAlpha(1) end
+    end
+    menu:HookScript("OnHide", stopDrag)
+
     for _, row in ipairs(plans.rows) do
-        row:SetSize(width, 36)
+        row:SetSize(width - 8, step)
         row:ClearHighlightTexture()
-        row.selection = ui.fill(row, 0, 0, width, 36, { .10, .19, .30, 1 })
+        row.selection = ui.fill(row, 0, 0, width - 8, step, { .10, .19, .30, 1 })
         row.marker = ui.fill(row, 0, 7, 2, 22, ui.gold)
         row.name = ui.text(row, 12, 0, width - 32, 35, 14, "")
         row.name.atlasGameText = true
         row.name:SetMaxLines(1)
         row.name:SetWordWrap(false)
+        row.grip = dragGrip(row, width - 25, 13)
         row:HookScript("OnEnter", function(self)
             self.hovered = true; updateChoiceTint(self)
-            showPlanTooltip(self, self.item and self.item.name)
+            if not drag then showPlanTooltip(self, self.item and self.item.name) end
         end)
         local function leave(self)
             self.hovered = false; updateChoiceTint(self); hidePlanTooltip(self)
         end
         row:HookScript("OnLeave", leave)
         row:HookScript("OnHide", leave)
+        local click = row:GetScript("OnClick")
+        row:RegisterForDrag("LeftButton")
+        row:HookScript("OnMouseDown", function(self) self.draggedProfile = nil end)
+        row:SetScript("OnClick", function(self, ...)
+            if not self.draggedProfile then click(self, ...) end
+        end)
+        row:SetScript("OnDragStart", function(self, mouseButton)
+            if mouseButton ~= "LeftButton" then return end
+            self.draggedProfile = true
+            if drag or not self.draggable or not self.item then return end
+            drag = { id = self.item.id, button = self, elapsed = 0 }
+            hidePlanTooltip(self)
+            self:SetAlpha(.48)
+            updateDrag()
+            overlay:SetScript("OnUpdate", updateDrag)
+        end)
+        row:SetScript("OnDragStop", function(self)
+            if not drag or drag.button ~= self then return end
+            updateDrag()
+            local move = drag
+            stopDrag()
+            if move.anchor and atlas.movePlanProfile(move.id, move.anchor, move.after) then
+                plans.items = atlas.planProfiles()
+                plans:redraw()
+            end
+        end)
     end
     function plans:render(row, profile)
         if row.profileID ~= profile.id then hidePlanTooltip(row) end
         row.profileID = profile.id
         row.name:SetText(profile.name)
-        row.name:SetTextColor(unpack(profile.id == atlas.activePlanID() and ui.gold or ui.paper))
         row.chosen = profile.id == atlas.activePlanID()
+        row.name:SetTextColor(unpack(row.chosen and ui.gold or ui.paper))
+        row.draggable = profile.id ~= "personal" and #self.items > 2
+        row.name:SetWidth(width - (row.draggable and 43 or 32))
+        for _, dot in ipairs(row.grip) do
+            dot:SetShown(row.draggable)
+            dot:SetAlpha(row.chosen and .86 or .62)
+        end
+        row:SetAlpha(drag and drag.id == profile.id and .48 or 1)
         updateChoiceTint(row)
         if GameTooltip:IsShown() and GameTooltip:IsOwned(row) then showPlanTooltip(row, profile.name) end
     end
@@ -201,7 +326,14 @@ local function planProfileList(menu, selectProfile)
     end
     function plans:showProfiles(profiles, bottomSpace)
         self.items = profiles
-        local height = math.min(6, #profiles) * 36
+        if drag then
+            local retained
+            for _, profile in ipairs(profiles) do
+                if profile.id == drag.id then retained = true; break end
+            end
+            if not retained or #profiles <= 2 then stopDrag() end
+        end
+        local height = math.min(capacity, #profiles) * step
         self:SetHeight(height)
         menu:SetHeight(menuInset + height + bottomSpace)
         self:redraw()
@@ -217,9 +349,7 @@ function atlas.makePlanner(parent, openMount, openExpansion)
     ui.text(page, 32, 0, 200, 30, 21, "Планнер")
     local add = ui.action(page, 812, 0, 158, 30, "Добавить цель", "Plus", function() openMount(nil) end)
     add:setActive(true)
-    local note = ui.text(page, 0, 33, 960, 20, 11, "Данные других персонажей — по последнему входу", ui.muted)
-    local saved = type(MountAtlasAccountDB) == "table" and MountAtlasAccountDB.settings
-    local selectedGUID = type(saved) == "table" and type(saved.plannerCharacterGUID) == "string" and saved.plannerCharacterGUID or nil
+    local selectedGUID
     local menu, planMenu, planChanged
     local sources = atlas.makePlannerSources(page)
     local sharing = atlas.makePlanSharing(page, function(keepSharing) planChanged(keepSharing) end)
@@ -239,8 +369,7 @@ function atlas.makePlanner(parent, openMount, openExpansion)
         menu:SetShown(not menu:IsShown())
     end)
     picker:SetFrameLevel(page:GetFrameLevel() + 13)
-    local pickerIcon = ui.icon(picker, 9, 5, 18, "Unknown")
-    pickerIcon:Hide()
+    local pickerIcon = rosterIcon(picker, 18, 18)
     local pickerName = ui.text(picker, 36, 0, characterWidth - 70, fieldHeight, 13, "Весь отряд")
     pickerName:SetMaxLines(1)
     pickerName:SetWordWrap(false)
@@ -280,7 +409,10 @@ function atlas.makePlanner(parent, openMount, openExpansion)
     share:HookScript("OnLeave", hidePlanTooltip)
     share:HookScript("OnHide", hidePlanTooltip)
     local create = ui.action(planMenu, 8, 0, planWidth - 16, 30, "Создать план", nil, function()
-        planMenu:Hide(); sources:Hide(); sharing:openCreate()
+        planMenu:Hide(); sources:Hide(); sharing:openName()
+    end)
+    local rename = ui.action(planMenu, 8, 0, planWidth - 16, 30, "Переименовать", nil, function()
+        planMenu:Hide(); sources:Hide(); sharing:openName(activeProfile)
     end)
     local delete = ui.action(planMenu, 8, 0, planWidth - 16, 30, "Удалить план", nil, function()
         planMenu:Hide(); sources:Hide(); sharing:open(activeProfile, true)
@@ -295,16 +427,19 @@ function atlas.makePlanner(parent, openMount, openExpansion)
         end
         planName:SetText(activeProfile.name)
         if not planMenu:IsShown() then return end
-        local imported = activeProfile.id ~= "personal"
-        local listBottom = menuInset + plans:showProfiles(profiles, imported and 80 or 46)
+        local custom = activeProfile.id ~= "personal"
+        local listBottom = menuInset + plans:showProfiles(profiles, custom and 114 or 46)
         planDivider:ClearAllPoints()
         ui.place(planDivider, planMenu, 9, listBottom + 5, planWidth - 18, 1)
         create:ClearAllPoints()
         ui.place(create, planMenu, 8, listBottom + 10, planWidth - 16, 30)
-        delete:SetShown(imported)
-        if imported then
+        rename:SetShown(custom)
+        delete:SetShown(custom)
+        if custom then
+            rename:ClearAllPoints()
+            ui.place(rename, planMenu, 8, listBottom + 44, planWidth - 16, 30)
             delete:ClearAllPoints()
-            ui.place(delete, planMenu, 8, listBottom + 44, planWidth - 16, 30)
+            ui.place(delete, planMenu, 8, listBottom + 78, planWidth - 16, 30)
         end
     end
     planMenu:SetScript("OnShow", function()
@@ -318,6 +453,7 @@ function atlas.makePlanner(parent, openMount, openExpansion)
     planMenu:Hide()
     local function refreshCharacterChoices()
         local settings = MountAtlasAccountDB.settings
+        selectedGUID = type(settings) == "table" and type(settings.plannerCharacterGUID) == "string" and settings.plannerCharacterGUID or nil
         local pins = type(settings) == "table" and settings.plannerPinnedCharacters
         local choices, unpinned, selected = { { label = "Весь отряд" } }, {}, nil
         for _, character in ipairs(atlas.accountCharacters()) do
@@ -329,17 +465,12 @@ function atlas.makePlanner(parent, openMount, openExpansion)
             if selectedGUID == character.guid then selected = entry end
         end
         for _, entry in ipairs(unpinned) do choices[#choices + 1] = entry end
-        if not selected then
-            local previousGUID = selectedGUID
+        if selectedGUID and not selected then
             selectedGUID = nil
-            if type(settings) == "table" then settings.plannerCharacterGUID = nil end
-            if previousGUID and atlas.queueExpeditionStatsRefresh then atlas.queueExpeditionStatsRefresh() end
+            atlas.selectPlanCharacter(nil)
         end
         pickerName:SetText(selected and selected.name or "Весь отряд")
-        pickerIcon:SetShown(selected ~= nil)
-        ui.setCharacterClassIcon(pickerIcon, selected)
-        pickerName:ClearAllPoints()
-        ui.place(pickerName, picker, selected and 36 or 12, 0, selected and characterWidth - 70 or characterWidth - 46, fieldHeight)
+        setRosterIcon(pickerIcon, selected)
         picker.characterLabel = selected and selected.label or L("Весь отряд")
         characterList.items = choices
     end
@@ -362,7 +493,7 @@ function atlas.makePlanner(parent, openMount, openExpansion)
         row:ClearHighlightTexture()
         row.selection = ui.fill(row, 0, 0, characterListWidth, 42, { .10, .19, .30, 1 })
         row.marker = ui.fill(row, 0, 9, 2, 24, ui.gold)
-        row.icon = ui.icon(row, 10, 9, 24, "Unknown")
+        row.icon = rosterIcon(row, 22, 24)
         row.name = ui.text(row, 44, 2, characterListWidth - 96, 21, 14, "")
         row.realm = ui.text(row, 44, 23, characterListWidth - 96, 17, 12, "", ui.muted)
         row.name.atlasGameText, row.realm.atlasGameText = true, true
@@ -431,11 +562,10 @@ function atlas.makePlanner(parent, openMount, openExpansion)
         row.name:SetText(character.name or character.label)
         row.realm:SetText(character.realm or "")
         row.name:ClearAllPoints()
-        ui.place(row.name, row, character.guid and 44 or 12, character.guid and 2 or 0,
-            character.guid and characterListWidth - 96 or characterListWidth - 42, character.guid and 21 or 41)
+        ui.place(row.name, row, 44, character.guid and 2 or 0,
+            character.guid and characterListWidth - 96 or characterListWidth - 56, character.guid and 21 or 41)
         row.name:SetTextColor(unpack(ui.characterClassColor(character)))
-        row.icon:SetShown(character.guid ~= nil)
-        ui.setCharacterClassIcon(row.icon, character)
+        setRosterIcon(row.icon, character)
         row.chosen = character.guid == selectedGUID
         updateChoiceTint(row)
         if GameTooltip:IsShown() and GameTooltip:IsOwned(row) then showPlanTooltip(row, character.label) end
@@ -447,10 +577,7 @@ function atlas.makePlanner(parent, openMount, openExpansion)
         if pin.hovered and pin:IsMouseOver() then showPinTooltip(pin) end
     end
     function characterList:onClick(character)
-        selectedGUID = character.guid
-        if type(MountAtlasAccountDB.settings) ~= "table" then MountAtlasAccountDB.settings = {} end
-        MountAtlasAccountDB.settings.plannerCharacterGUID = selectedGUID
-        if atlas.queueExpeditionStatsRefresh then atlas.queueExpeditionStatsRefresh() end
+        atlas.selectPlanCharacter(character.guid)
         menu:Hide()
         page:update()
     end
@@ -498,7 +625,7 @@ function atlas.makePlanner(parent, openMount, openExpansion)
     end)
     local board = expansionBoard(page, openExpansion)
     local rowStep, rowWidth, capacity = 48, 962, 8
-    local list = ui.scrollingList(page, 0, 56, 970, rowStep, capacity)
+    local list = ui.scrollingList(page, 0, 38, 970, rowStep, capacity)
     ui.fill(list, 0, 0, rowWidth, 1, ui.rule):SetAlpha(.65)
     local overlay = CreateFrame("Frame", nil, list)
     overlay:SetAllPoints(list)
@@ -647,12 +774,7 @@ function atlas.makePlanner(parent, openMount, openExpansion)
         accentLight:SetVertexColor(1, .76, .30, .72)
         accentLight:SetRotation(math.pi / 2)
         row.icon = ui.itemIcon(row, 15, 6, 36)
-        row.grip = {}
-        for i = 0, 5 do
-            local dot = ui.fill(row, 57 + i % 2 * 4, 19 + math.floor(i / 2) * 4, 2, 2, ui.gold)
-            dot:SetDrawLayer("ARTWORK")
-            row.grip[#row.grip + 1] = dot
-        end
+        row.grip = dragGrip(row, 57, 19)
         function row:showHover(owner)
             self.hoverOwner = owner
             local hovered = owner ~= nil
@@ -941,7 +1063,6 @@ function atlas.makePlanner(parent, openMount, openExpansion)
         characterList:SetHeight(listHeight)
         menu:SetHeight(listHeight + menuInset * 2)
         characterList:redraw()
-        note:SetShown(#targets > 0)
         board:SetShown(#targets == 0)
         if #targets == 0 then board:update() end
         list:SetShown(#targets > 0)

@@ -11,6 +11,121 @@ atlas.sourceAddressParts = {
     { parent = "Арденвельд", englishParent = "Ardenweald", child = "Чащоба Туманной Завесы", englishChild = "Mistveil Tangle" },
 }
 
+-- https://www.wowhead.com/quest=92082/someone-like-me
+-- https://www.wowhead.com/npc=245344/zoturu
+atlas.questMountRewards[1482] = { spell = 353264,
+    quests = { { id = 92082, name = "Родственные души", englishName = "Someone Like Me", item = 186639, givers = { 245344 },
+        rewardItem = { item = 186639, name = "Техноглайдер попечителя картеля Зи", englishName = "Xy Trustee's Gearglider",
+            icon = "Interface\\Icons\\inv_brokermount_light", quality = 4 },
+    } },
+    progressQuests = { 92080, 92079, 92081 }, -- Ba, Zo and Om dead drops
+    journalDetail = { spell = 353264, kind = "Квест", replacesKind = "Добыча",
+        replacesSource = { "Источник: [ДАННЫЕ ИЗЪЯТЫ]", "Source: [REDACTED]" },
+        source = "Найди тайники трёх картелей в рейде „{journal:1302:Манагорн Омега}“, затем выполни задание"
+            .. "\nЗадание: {quest:92082:Родственные души}",
+        englishSource = "Find the three cartel dead drops in the {journal:1302:Manaforge Omega} raid, then complete the quest."
+            .. "\nQuest: {quest:92082:Someone Like Me}",
+    },
+}
+-- Both rewards are turned in to the same Zo'turu outside the raid.
+atlas.questGiverWaypoints[92082] = atlas.questGiverWaypoints[91487]
+
+-- One-time prerequisites of the exact reward quests, keyed by the final quest ID.
+-- ATT Retail sourceQuests, bab4c3ddab11ddec2143d3c589b29c51c9e0c4a2, and Wowhead quest series.
+-- https://github.com/ATTWoWAddon/AllTheThings/tree/bab4c3ddab11ddec2143d3c589b29c51c9e0c4a2/db/Standard/Categories
+do
+    local netherwing = { 10804, 10811, 10814, 10836, 10837, 10854, 10858, 10866, 10870,
+        11012, 11013, 11014, 11053, 11084, 11092, 11107 }
+    local cloudSerpent = { 30134, 30135, 30136, 30137, 30138, { 30139, 30140, 30141 }, 30142 }
+    local dreadInfiltrators = { 46103 }
+    local ghostlands = { 63519, 63522, 63487, 63488, 63489 }
+    local progress = {
+        [11109] = netherwing, [11110] = netherwing, [11111] = netherwing,
+        [11112] = netherwing, [11113] = netherwing, [11114] = netherwing,
+        [24915] = { 24545, 24743, 24547, 24749, 24756, 24757, 24548, 24549, 24914 },
+        [25371] = { 25477 },
+        -- The egg colours share the Pandaria intro, independently of reputation and flight training.
+        [30188] = cloudSerpent, [31810] = cloudSerpent, [31811] = cloudSerpent,
+        [31277] = { 31266 },
+        [32399] = { 32412, 32413, 32398 },
+        [32455] = { 32336, 32337, 32338, 32400, 32401 },
+        -- The dedicated class mount sequences follow the class and Broken Shore campaigns.
+        [45354] = { 45844, 45845, 45846, 45847 },
+        [45372] = { 44719, 45417, 45420 },
+        [45770] = { 46069, { 46070, 94847 }, 46071, { 46083, 91618 }, 46074 },
+        [45789] = { 45788 },
+        [46089] = dreadInfiltrators, [46178] = dreadInfiltrators,
+        [46207] = { 46208 },
+        [46243] = { 46237, { 46238, 94850 }, 46239, 46240, 46241, 46242 },
+        [46334] = { 46333 },
+        [46337] = { 46336 },
+        [46350] = { 46353, 46341, 46342, 46343, 46344, 46346, 46347, 46348, 46349 },
+        [46792] = { 46791 },
+        [55622] = { 55608, 54086, 54929, 55373, 55697, 54922, 56168, 54083, 56175, 55696, 55753 },
+        -- Chapter quests directly leading to each covenant reward.
+        [58159] = { 61475, 61479, 58104, 58157, 58158 },
+        [58181] = { 58176, 58177, 58179, 58180, 58178, 58182, 58183 },
+        [58407] = { 60183, 57729, 57646, 58406 },
+        [58440] = { 60673 },
+        [59020] = { 61756, 61757, 61758, 61759, 61760, 61761, 62391, 58833 },
+        [59555] = { 60268, 60269, 60270, 60271, 60272 },
+        [60108] = { 60190, 60191, 60192, 60193, 60194 },
+        [61697] = { 58937, 58938, 58939, 58857, 58995, 58997, 61135 },
+        [63490] = ghostlands, [65653] = ghostlands,
+        [65564] = { 63494, 63498, 63501, 63502, 65563 },
+        -- https://github.com/Breeni/BtWQuestsDragonflight/tree/mainline
+        [66027] = { 65844, 65845, 65846, 65848, 65847, 65849, 66210, 65850, 65911 },
+        [66040] = { 66029, 66037, 66660, 66038, 66039 },
+        [68795] = { 65998, 65999, 66000, 66001, 66114 },
+        [70220] = { 66242, 66256, 66257, 66258, 66259, 66327, 70244, 66329, 66328, 66344 },
+        [72512] = { 65901, 65907, 65770, 65761, 65711, 66676 },
+        -- Otto's dance and barrel are recorded as hidden completion flags.
+        [72738] = { 72676, 72808 },
+        [73199] = { 73197, 73198 },
+        [74563] = { 74538, 74539, 74540, 74542, 74557 },
+        [75598] = { 74787 },
+        [76318] = { 76317 },
+        [76465] = { 76460, 76461, 77195, 76462, 77197, 76463, 77198, 76464 },
+        [78189] = { { 78177, 78178 }, 78180, 78181, 78182, 78183, 78184, 78185, 78186, 78187, 78188 },
+        [83722] = { 83627, 83719, 83720, 83721, 84246 },
+        [84025] = { 84020, 84021, 84023, 84024 },
+        [85213] = { 85155, 85184, 85185, 85186, 85196, 85212 },
+        -- Each placed runekey is a distinct hidden flag. The Snapdragon feeding daily resets.
+        [85811] = { 85799, 85800, 85801, 85802, 85803 },
+        [86485] = { 86482, 86483, 86484 },
+        [86902] = { 86842, 86843, 86844, 92136 },
+        [88769] = { 88928, 88929, 88930, 88919, 88942 },
+        [88976] = { 88974 },
+        [90867] = { 90861, 90862 },
+        [92899] = { 92895 },
+    }
+    for _, reward in pairs(atlas.questMountRewards) do
+        local shared = progress[reward.quests[1].id]
+        for _, quest in ipairs(reward.quests) do
+            local steps = progress[quest.id]
+            if steps then quest.progressQuests = steps end
+            if steps ~= shared then shared = nil end
+        end
+        if shared then reward.progressQuests = shared end
+    end
+end
+
+
+-- https://www.wowhead.com/quest=77677/some-water
+-- The growth timers between these quests are not additional steps.
+atlas.questMountRewards[1834].prerequisites = {
+    { id = 77677, name = "Воды!..", englishName = "Some Water...", givers = { 209292 } },
+    { id = 78398, name = "Порция минералов", englishName = "A Dash of Minerals..." },
+    { id = 77697, name = "Правильное питание", englishName = "The Right Food..." },
+    { id = 77711, name = "Щепотка магии", englishName = "And a Pinch of Magic" },
+}
+atlas.questGiverNames[209292] = { name = "Росток", englishName = "Sprout" }
+atlas.questGiverWaypoints[77677] = { { map = 2200, x = .4868, y = .6790, npc = 209292 } }
+-- https://www.wowhead.com/item=210774/reins-of-the-ochre-dreamtalon
+atlas.questMountRewards[1834].quests[1].rewardItem = { item = 210774,
+    name = "Поводья охряного ящера из Сна", englishName = "Reins of the Ochre Dreamtalon",
+    icon = "Interface\\Icons\\inv_sabretoothraptormount_green", quality = 4 }
+
 -- Retail covenant sanctum upgrade reward groups, checked against ATT
 -- bab4c3ddab11ddec2143d3c589b29c51c9e0c4a2 and Blizzard UiMap IDs.
 atlas.covenantVariantSources = {
@@ -112,6 +227,18 @@ end
 
 -- Retail offers whose journal text omits the location or still names an old route.
 atlas.reviewedVendorOffers = {
+    -- https://www.wowhead.com/news/how-to-obtain-the-temperamental-skyclaw-secret-mount-in-dragonflight-330267
+    -- https://raw.githubusercontent.com/ATTWoWAddon/AllTheThings/bab4c3ddab11ddec2143d3c589b29c51c9e0c4a2/db/Standard/Categories/Zones.lua
+    [1674] = { spell = 385738, item = 201454, npc = 190892, map = 2024, x = .190, y = .240,
+        name = "Зон'воги", englishName = "Zon'Wogi", place = "Лазурный Простор", englishPlace = "The Azure Span",
+        redemption = "barter", rewardIcon = "Interface\\Icons\\inv_foxwyvernmountred", itemCosts = {
+            { item = 201422, amount = 20, name = "Быстрозамороженное мясо", englishName = "Flash Frozen Meat" },
+            { item = 201420, amount = 20, name = "Фирменное блюдо Гнолана", englishName = "Gnolan's House Special" },
+            { item = 201421, amount = 20, name = "Клыкаррские джерки", englishName = "Tuskarr Jerky" },
+        },
+        condition = "Собери по 20 штук каждого угощения и передай их Зон'воги. Угощения можно купить на аукционе",
+        englishCondition = "Collect 20 of each treat and turn them in to Zon'Wogi. You can buy the treats at the Auction House.",
+        native = { "Торговец: Зон'воги\nЗона: Лазурный Простор", "Vendor: Zon'Wogi\nZone: The Azure Span" } },
     -- Blizzard 24257260 and ATT Holidays: the event journal gives the token price without naming the vendors.
     [1941] = { spell = 427777, item = 210973, priceItem = 49927, amount = 270,
         currencyName = "Знак любви", englishCurrencyName = "Love Token",
@@ -940,7 +1067,28 @@ local function primalEggSource(spell)
         englishSource = english .. "\nZone: Isle of Giants\nDinosaurs on the island can drop the {item:94295:Primal Egg}. It takes three days to hatch." }
 end
 
+-- https://www.wowhead.com/guide/garrisons/garrison-invasions
+-- The faction quests award the gold bag. Gold's weekly loot flag is shared by the two quest IDs.
+local invasionGoldQuests = {
+    Alliance = { id = 37307, weeklyFlag = 37640, name = "Золотая победа", englishName = "Gold Victory" },
+    Horde = { id = 35788, weeklyFlag = 37640, name = "Золотая победа", englishName = "Gold Victory" },
+}
+local function invasionSpoils(spell)
+    return { spell = spell, kind = "Добыча", replacesKind = "Добыча",
+        replacesSource = { "Источник: забытые припасы налетчика", "Drop: Invader's Forgotten Treasure" },
+        weeklyRewardQuests = invasionGoldQuests,
+        source = "Золото — {item:116980:Забытые припасы налетчика}"
+            .. "\nПлатина — {item:122163:Сундук трофеев поверженного завоевателя}",
+        englishSource = "Gold — {item:116980:Invader's Forgotten Treasure}"
+            .. "\nPlatinum — {item:122163:Routed Invader's Crate of Spoils}",
+    }
+end
+
 atlas.journalSourceDetails = {
+    [616] = invasionSpoils(171624),
+    [626] = invasionSpoils(171635),
+    [642] = invasionSpoils(171836),
+    [649] = invasionSpoils(171843),
     [221] = { spell = 48778, replacesKind = "Торговец", kind = "Класс",
         replacesSource = { "Trainer: Death Knight" } },
     -- https://www.wowhead.com/spell=73630/summon-great-exarchs-elekk
@@ -952,6 +1100,7 @@ atlas.journalSourceDetails = {
     -- https://www.wowhead.com/guide/reins-of-the-long-forgotten-hippogryph-mount
     [802] = sourceRequirement(215159, {
         name = "Эфемерный кристалл", englishName = "Ephemeral Crystal", place = "Азсуна", englishPlace = "Azsuna",
+        respawn = { min = 120, max = 480, condition = "Время до появления следующего набора из пяти кристаллов." },
         condition = "Первым активируй пять разных эфемерных кристаллов за восемь часов с момента первого и не погибни.",
         englishCondition = "Be the first to activate five different Ephemeral Crystals within eight hours of the first without dying.",
         guarantee = { condition = "Поводья получает тот, кто первым активирует пять кристаллов в срок и не погибнет.",
@@ -1013,6 +1162,16 @@ atlas.journalSourceDetails = {
             englishCondition = "Blanchy gives you the reins for {item:179271:Dredhollow Apple} ×3 after the first five daily offerings." },
         reward = { item = 182614, name = "Поводья Савраски", englishName = "Blanchy's Reins" },
     }, { "NPC: мертвая Савраска\nЗона: Ревендрет", "NPC: Dead Blanchy\nZone: Revendreth" }),
+    -- https://news.blizzard.com/en-us/article/23891317/dragonflight-mounts-pets-and-more-await-in-the-dragon-isles
+    [1469] = sourceRequirement(350219, {
+        kind = "Взаимодействие", replacesKind = "Добыча", npc = 199010,
+        name = "Усиленная улитка", englishName = "Empowered Snail", place = "Берега Пробуждения", englishPlace = "The Waking Shores",
+        condition = "Добудь {item:201883:Пустой магмовый панцирь} и принеси его улитке в лаве.",
+        englishCondition = "Obtain an {item:201883:Empty Magma Shell} and bring it to the snail in the lava.",
+        guarantee = { condition = "Панцирь может выпасть с лавового глотателя. Заверши взаимодействие с усиленной улиткой, чтобы получить маунта.",
+            englishCondition = "A Lavaslurper can drop the shell. Complete the interaction with the Empowered Snail to receive the mount." },
+        reward = { item = 192777, name = "Магмапанцирь", englishName = "Magmashell" },
+    }, { "Предмет: пустой магмовый панцирь\nЗона: Берега Пробуждения", "Item: Empty Magma Shell\nZone: The Waking Shores" }),
     -- Alternate final rewards: quest63490 for paladins, quest65653 for other classes.
     -- https://worldofwarcraft.blizzard.com/en-gb/news/23801631
     [1600] = { spell = 370620, quests = { 63490, 65653 }, replacesKind = "Квест", kind = "Квест", replacesSource = {
@@ -1030,6 +1189,17 @@ atlas.journalSourceDetails = {
     [1698] = { spell = 400733, replacesKind = "Магазин", kind = "Акция",
         replacesSource = { "Пригласи друга", "Recruit-a-Friend", "Внутриигровой магазин", "In-Game Shop" },
         source = "Пригласи друга" },
+    -- https://warcraft-secrets.com/guides/naxxramas-ancient-secrets
+    [1774] = { spell = 413922, kind = "Добыча", replacesKind = "Добыча",
+        replacesSource = { "Открытие: Отвага\nЗона: Наксрамас", "Discovery: Valiance\nLocation: Naxxramas" },
+        source = "Зона: Наксрамас\nОткрой тайны Наксрамаса и войди в рейд на 10 игроков."
+            .. "\nКупи у Закетта {item:208068:Гнилая вкуснятина} за 30 × {item:206576:Жетон сделки со смертью} и предложи её Отваге."
+            .. "\nКристаллом повиновения возьми под контроль ученика и подведи его к коню."
+            .. "\nВернись верхом к Разувию, отпусти ученика и победи обоих. Забери поводья у Разувия.",
+        englishSource = "Zone: Naxxramas\nUnlock the secrets of Naxxramas and enter the 10-player raid."
+            .. "\nBuy a {item:208068:Rotten Delicious} from Zackett for 30 × {item:206576:Death's Bargaining Chip} and offer it to Valiance."
+            .. "\nUse an Obedience Crystal to control a Death Knight Understudy and lead it to the horse."
+            .. "\nRide back to Razuvious, release the understudy and defeat them both. Loot the reins from Razuvious." },
     -- https://shop.battle.net/product/world-of-warcraft-mount-runebound-firelord
     [1812] = { spell = 424009, replacesKind = "Акция", kind = "Магазин",
         replacesSource = { "Промоакция: Cataclysm Classic", "Promotion: Cataclysm Classic" },

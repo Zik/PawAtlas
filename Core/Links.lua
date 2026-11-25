@@ -202,6 +202,41 @@ local function sourceLabel(text)
     return label:match("^%[(.*)%]$") or label
 end
 
+local function nativeJournalInstanceID(payload)
+    return positiveID(payload:match("^journal:0:(%d+):%d+$") or payload:match("^journal:0:(%d+)$"))
+end
+
+function atlas.sourceJournalInstanceID(payload)
+    return nativeJournalInstanceID(payload) or positiveID(payload:match("^pawatlasjournal:(%d+)$"))
+end
+
+local function journalInstanceReference(id, fallback)
+    local label = fallback
+    if EJ_GetInstanceInfo then
+        local name, _, _, _, _, _, _, reference = EJ_GetInstanceInfo(id)
+        local payload = type(reference) == "string" and reference:match("|H([^|]+)|h")
+        if payload and nativeJournalInstanceID(payload) == id then return reference end
+        if type(name) == "string" and name ~= "" then label = name end
+    end
+
+    local linkTypes = Enum and Enum.JournalLinkTypes
+    if not linkTypes or not linkTypes.Instance or not C_EncounterJournal or not C_EncounterJournal.GetEncounterJournalLink
+        or type(label) ~= "string" or label == "" or label:find("[|\r\n]") then return end
+    local reference = C_EncounterJournal.GetEncounterJournalLink(linkTypes.Instance, id, label, 0)
+    local payload = type(reference) == "string" and reference:match("|H([^|]+)|h")
+    if payload and nativeJournalInstanceID(payload) == id then return reference end
+end
+
+function atlas.sourceJournalInstanceLink(id, label)
+    id = positiveID(id)
+    if not id or type(label) ~= "string" or label == "" or label:find("[|\r\n]") then return end
+    local reference = journalInstanceReference(id, label)
+    if reference then
+        return (reference:gsub("(|h).-|h", function(start) return start .. label .. "|h" end, 1))
+    end
+    return ("|cff66bbff|Hpawatlasjournal:%d|h%s|h|r"):format(id, label)
+end
+
 local function questReference(link, id, displayedText)
     local label = sourceLabel(displayedText or link:match("|h(.-)|h"))
     return atlas.sourceQuestReference(id, label) or link:match("(|Hquest:[^|]+|h.-|h)")
@@ -298,6 +333,11 @@ function atlas.openSourceReference(link, owner, displayedText)
     local missionID = positiveID(payload:match("^pawatlasmission:(%d+)$"))
     if questID then return openQuestReference(link, questID, owner, displayedText) end
     pendingQuestPreview = nil
+    local instanceID = atlas.sourceJournalInstanceID(payload)
+    if instanceID and atlas.openPlace then
+        local err = atlas.openPlace({ journalInstance = instanceID })
+        return not err, err
+    end
     local reference
     if itemID then
         local textPayload = type(displayedText) == "string" and displayedText:match("|H([^|]+)|h")
@@ -328,6 +368,10 @@ function atlas.linkSource(link, owner, displayedText)
     atlas.cancelPendingLink()
     if type(link) ~= "string" then return false end
     local payload = link:match("|H([^|]+)|h") or link
+    local instanceID = atlas.sourceJournalInstanceID(payload)
+    if instanceID then
+        return insertLink(journalInstanceReference(instanceID, sourceLabel(displayedText or link:match("|h(.-)|h"))))
+    end
     local kind, id = payload:match("^(%a+):(%d+)")
     id = positiveID(id)
     if not id then return false end

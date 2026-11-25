@@ -197,12 +197,14 @@ function atlas.makePlannerSources(parent)
     function roster:render(row, character)
         if row.characterGUID ~= character.guid and GameTooltip:IsOwned(row) then GameTooltip:Hide() end
         row.characterGUID = character.guid
-        row.name:SetText(character.name .. " · " .. character.realm)
-        row.name:SetTextColor(unpack(ui.characterClassColor(character)))
-        ui.setCharacterClassIcon(row.icon, character)
         local state = stateFor(focused, character)
+        local used = complete(state)
+        row.name:SetText(character.name .. " · " .. character.realm)
+        row.name:SetTextColor(unpack(used and ui.muted or ui.characterClassColor(character)))
+        ui.setCharacterClassIcon(row.icon, character)
+        row.icon:SetDesaturated(used)
         row.state:SetText(labels[state] or labels.unknown)
-        row.state:SetTextColor(unpack(complete(state) and ui.mint or state == "available" and ui.paper or ui.muted))
+        row.state:SetTextColor(unpack(state == "boss" and ui.mint or state == "available" and ui.paper or ui.muted))
         if GameTooltip:IsShown() and GameTooltip:IsOwned(row) then showCharacterTooltip(row) end
     end
     for _, row in ipairs(list.rows) do
@@ -248,6 +250,7 @@ function atlas.makePlannerSources(parent)
     end
     function overlay:refresh()
         if not mount then return end
+        if selectedGUID and atlas.isWarbandCharacterHidden(selectedGUID) then selectedGUID = nil end
         current = UnitGUID("player")
         currentStates = indexProgress(mount, current)
         characters, snapshots = {}, {}
@@ -329,10 +332,10 @@ function atlas.makePlannerSources(parent)
     function overlay:open(target, guid)
         mount, selectedGUID, focused = target, guid, nil
         list.offset, roster.offset = 0, 0
-        GameTooltip:Hide()
+        ui.hideTooltipIn(parent)
         self:refresh()
         self:Show()
     end
-    overlay:SetScript("OnHide", function() GameTooltip:Hide() end)
+    overlay:SetScript("OnHide", ui.hideTooltipIn)
     return overlay
 end

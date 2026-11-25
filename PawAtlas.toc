@@ -9,7 +9,7 @@
 ## Category: Collections
 ## Category-ruRU: Коллекции отряда
 ## IconTexture: Interface\AddOns\PawAtlas\Media\Brand\MountAtlasHeader.tga
-## Version: 0.3.24
+## Version: 0.3.25
 ## SavedVariablesPerCharacter: MountAtlasDB
 ## SavedVariables: MountAtlasAccountDB
 Libs/LibStub/LibStub.lua
@@ -28,6 +28,7 @@ Locales/enUS_Sources.lua
 Locales/enUS_UI.lua
 Locales/enUS_Settings.lua
 Data/Rares.lua
+Data/Respawns.lua
 Data/JournalData.lua
 Data/Expansions.lua
 Data/QuestSources.lua

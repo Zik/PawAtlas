@@ -1,10 +1,11 @@
 local _, atlas = ...
 local ui, L = atlas.ui, atlas.L
-local width, headerHeight, rowHeight, maxRows = 336, 47, 44, 5
+local width, headerHeight, rowHeight, maxRows = 420, 47, 44, 5
 local emptyHeight, inset, textX, statsWidth = 34, 14, 46, 102
 local rowWidth, bottomPadding = width - 2 * inset, 11
 atlas.expeditionTransparencyMax = 100
 local tracker, queued, statsQueued
+local windows = {}
 local events = CreateFrame("Frame")
 local journalEvent = "MOUNT_JOURNAL_SEARCH_UPDATED"
 local bagsEvent = "BAG_UPDATE_DELAYED"
@@ -43,7 +44,7 @@ end
 function atlas.setExpeditionTransparency(value)
     local percent = transparency(value)
     settings(true).expeditionTransparency = percent
-    if tracker then applyTransparency(tracker, percent) end
+    for _, frame in ipairs(windows) do applyTransparency(frame, percent) end
 end
 
 local function applyPosition(frame)
@@ -63,6 +64,7 @@ local function stopMoving(frame)
     frame:StopMovingOrSizing()
     frame:SetUserPlaced(false)
     frame.dragging = nil
+    if frame ~= tracker then return end
     local x, y = frame:GetLeft(), frame:GetTop()
     local screenWidth, screenHeight = UIParent:GetSize()
     if not x or not y or screenWidth <= 0 or screenHeight <= 0 then return end
@@ -73,15 +75,17 @@ local function stopMoving(frame)
     applyPosition(frame)
 end
 
+local function applyPin(frame, pinned)
+    if pinned then stopMoving(frame) end
+    ui.setIcon(frame.lockIcon, pinned and "Lock" or "Unlock")
+    frame.lockIcon:SetDesaturated(true)
+    frame.lockIcon:SetVertexColor(unpack(pinned and ui.gold or ui.muted))
+end
+
 function atlas.setExpeditionPinned(value)
     local pinned = value == true
     settings(true).expeditionPinned = pinned
-    if tracker then
-        if pinned then stopMoving(tracker) end
-        ui.setIcon(tracker.lockIcon, pinned and "Lock" or "Unlock")
-        tracker.lockIcon:SetDesaturated(true)
-        tracker.lockIcon:SetVertexColor(unpack(pinned and ui.gold or ui.muted))
-    end
+    for _, frame in ipairs(windows) do applyPin(frame, pinned) end
     if atlas.refreshExpeditionPinSetting then atlas.refreshExpeditionPinSetting(pinned) end
 end
 
@@ -126,6 +130,13 @@ function atlas.planTargetSummary(mount)
     end
 end
 
+local function chanceColor(probability)
+    for _, tier in ipairs(ui.chances) do
+        if probability * 100 <= tier.limit then return tier.color end
+    end
+    return ui.muted
+end
+
 local function formatStats(stats)
     if not stats then return "", "", ui.muted end
     local attempts = stats.attempts ~= nil and L("Попытки: %s", stats.attempts) or ""
@@ -135,54 +146,54 @@ local function formatStats(stats)
     local cumulative = stats.attempts and stats.attempts > 0 and stats.cumulative
     local probability = cumulative or stats.perAttempt
     if probability == nil then return attempts, "", ui.muted end
-    local color = ui.muted
-    for _, tier in ipairs(ui.chances) do
-        if probability * 100 <= tier.limit then color = tier.color; break end
-    end
-    return attempts, ui.probabilityText(probability, stats.perAttempt == 1), color
+    return attempts, ui.probabilityText(probability, stats.perAttempt == 1), chanceColor(probability)
 end
 
-local function lootCompletion(mount, guid)
+function atlas.planLootCompletion(mount, guid)
     if not mount.kind or (mount.journalOnly and not mount.indexed) then return end
-    local accountState = atlas.accountLootLockout(mount)
+    local accountState, _, accountExpires = atlas.accountLootLockout(mount)
     if accountState then
-        if accountState == "attempt" then return L("Попытка использована"), true end
+        if accountState == "attempt" then return L("Попытка использована"), true, accountExpires end
         return
     end
     if guid then
-        local state, _, _, progress = atlas.planCharacterStatus(mount, guid)
+        local state, _, expires, progress = atlas.planCharacterStatus(mount, guid)
         if progress and progress.totalAttempts > 1 then
             local done, total = progress.completedAttempts, progress.totalAttempts
-            if done > 0 then return L("Выполнено: %d / %d", done, total), done == total end
+            if done > 0 then return L("Выполнено: %d / %d", done, total), done == total, expires end
             return
         end
-        if state == "boss" then return L("Босс убит"), true end
-        if state == "attempt" then return L("Попытка использована"), true end
+        if state == "boss" then return L("Босс убит"), true, expires end
+        if state == "attempt" then return L("Попытка использована"), true, expires end
         return
     end
     local counts = atlas.planSummary(mount)
     local done, total = counts.done, counts.total
     if counts.totalAttempts > counts.total then done, total = counts.completedAttempts, counts.totalAttempts end
     if done > 0 then
-        return L("Выполнено: %d / %d", done, total), done == total and counts.done == counts.total
+        return L("Выполнено: %d / %d", done, total), done == total and counts.done == counts.total, counts.expires
     end
 end
 
+local function tooltipStat(label, value, color)
+    GameTooltip:AddDoubleLine(L(label), ui.safeText(value), ui.muted[1], ui.muted[2], ui.muted[3], unpack(color))
+end
+
 local function showRowTooltip(row)
-    if not row.mount then return end
+    if not row.item then return end
     if not GameTooltip:IsOwned(row) then GameTooltip:SetOwner(row, "ANCHOR_RIGHT") end
-    ui.tooltipTitle(atlas.displayName(row.mount.name))
+    ui.tooltipTitle(ui.coloredMountName(row.item), unpack(ui.paper))
     if row.lootStatus then ui.tooltipLine(row.lootStatus, unpack(row.complete and ui.mint or ui.muted)) end
     local stats = row.stats
     if stats then
         if stats.item then ui.tooltipLine(atlas.displayName(stats.item), unpack(ui.muted)) end
-        if stats.attempts ~= nil then ui.tooltipLine(L("Попытки: %s", stats.attempts)) end
+        if stats.attempts ~= nil then tooltipStat("Попытки", tostring(stats.attempts), ui.paper) end
         if stats.condition then ui.tooltipSourceText(atlas.sourceInlineLinks(stats.condition))
         elseif stats.perAttempt ~= nil then
-            ui.tooltipLine(L("За одну попытку: %s", ui.probabilityText(stats.perAttempt, stats.perAttempt == 1)))
+            tooltipStat("За одну попытку", ui.probabilityText(stats.perAttempt, stats.perAttempt == 1), chanceColor(stats.perAttempt))
         end
         if stats.attempts and stats.attempts > 0 and stats.cumulative ~= nil then
-            ui.tooltipLine(L("Вероятность за все попытки: %s", ui.probabilityText(stats.cumulative, stats.perAttempt == 1)))
+            tooltipStat("Вероятность за все попытки", ui.probabilityText(stats.cumulative, stats.perAttempt == 1), chanceColor(stats.cumulative))
         end
         if stats.collected ~= nil and stats.required and stats.required > 0 then
             ui.tooltipLine(("%d / %d"):format(stats.collected, stats.required), unpack(ui.mint))
@@ -214,7 +225,7 @@ local function fitRowName(label, name)
     until length == 0 or label:GetUnboundedStringWidth() <= width
 end
 
-local function refreshStats()
+local function selectedCharacter()
     local saved = settings()
     local selected = saved and saved.plannerCharacterGUID
     local characters = atlas.accountCharacters()
@@ -224,33 +235,7 @@ local function refreshStats()
             if character.guid == selected then guid = selected; break end
         end
     end
-    local watchBags
-    for _, row in ipairs(tracker.rows) do
-        if row.mount then
-            local stats = atlas.planTargetSummary(row.mount)
-            row.stats = stats
-            watchBags = watchBags or (stats and stats.watchBags)
-            local attempts, value, color = formatStats(stats)
-            local status, complete = lootCompletion(row.mount, guid)
-            row.lootStatus, row.complete = status, complete
-            local hasMetric = value ~= "" or status ~= nil
-            row.name:SetWidth(rowWidth - textX - 20 - (hasMetric and statsWidth or 0))
-            fitRowName(row.name, atlas.displayName(row.mount.name))
-            row.attempts:SetText(attempts)
-            row.value:SetText(value)
-            row.value:SetTextColor(unpack(color))
-            row.status:SetText(status or "")
-            row.status:SetTextColor(unpack(complete and ui.mint or ui.muted))
-            row.icon:SetDesaturated(complete == true)
-            row.check:SetShown(complete == true)
-            row.arrow:SetShown(not hasMetric)
-            if GameTooltip:IsShown() and GameTooltip:IsOwned(row) then showRowTooltip(row) end
-        else
-            row.stats, row.lootStatus, row.complete = nil, nil, nil
-        end
-    end
-    if watchBags then events:RegisterEvent(bagsEvent)
-    else events:UnregisterEvent(bagsEvent) end
+    return guid
 end
 
 function atlas.queueExpeditionStatsRefresh()
@@ -258,17 +243,18 @@ function atlas.queueExpeditionStatsRefresh()
     statsQueued = true
     C_Timer.After(0, function()
         statsQueued = nil
-        if not queued and tracker:IsShown() and atlas.expeditionSettings() then refreshStats() end
+        if not queued and tracker:IsShown() and atlas.expeditionSettings() then tracker:refreshRows() end
     end)
 end
 
-local function makeTracker()
-    local frame = CreateFrame("Frame", "MountAtlasExpeditionTracker", UIParent)
+function atlas.createExpeditionWindow(name, onTargetClick)
+    local frame = CreateFrame("Frame", name, UIParent)
     frame:Hide()
     frame:SetSize(width, headerHeight + emptyHeight + bottomPadding)
     frame:SetFrameStrata("LOW")
     frame:SetClampedToScreen(true)
     frame:SetMovable(true)
+    frame:EnableMouse(true)
     frame.background = CreateFrame("Frame", nil, frame)
     frame.background:SetAllPoints(frame)
     frame.background:SetFrameLevel(frame:GetFrameLevel())
@@ -329,14 +315,17 @@ local function makeTracker()
         self.title:SetText(name)
         if GameTooltip:IsShown() and GameTooltip:IsOwned(grip) then showTitleTooltip() end
     end
-    frame.empty = ui.text(frame, 22, headerHeight, width - 44, emptyHeight, 15, "", ui.muted)
+    frame.empty = ui.text(frame, 22, headerHeight, width - 44, emptyHeight, 15, L("В плане: %d", 0), ui.muted)
     frame.more = ui.text(frame, inset, headerHeight + maxRows * rowHeight, rowWidth, 20, 12, "", ui.muted)
     frame.more:SetJustifyH("RIGHT")
-    frame.rows = {}
-    for index = 1, maxRows do
-        local row = ui.button(frame, inset, headerHeight + (index - 1) * rowHeight, rowWidth, rowHeight, function(self)
-            if not self.mount then return end
-            local feedback = openTarget(self.mount)
+    local list = ui.scrollingList(frame, inset, headerHeight, rowWidth, rowHeight, maxRows, true)
+    local contentWidth = list.rows[1]:GetWidth()
+    frame.list = list
+    for _, row in ipairs(list.rows) do
+        row:SetScript("OnClick", function(self)
+            if not self.item then return end
+            if onTargetClick then onTargetClick(frame, self.item); return end
+            local feedback = openTarget(self.item)
             self.feedback = type(feedback) == "string" and feedback or nil
             if self.feedback then showRowTooltip(self) end
         end)
@@ -345,68 +334,116 @@ local function makeTracker()
         row.check = ui.icon(iconSlot, 22, 22, 14, "ObjectiveComplete")
         row.check:SetDrawLayer("OVERLAY")
         row.check:Hide()
-        row.name = ui.text(row, textX, 3, rowWidth - textX - 20, 20, 15, "", ui.paper)
+        row.name = ui.text(row, textX, 3, contentWidth - textX - 20, 20, 15, "", ui.paper)
         row.name.atlasGameText = true
         row.name:SetMaxLines(1)
         row.name:SetWordWrap(false)
-        row.attempts = ui.text(row, textX, 23, rowWidth - textX - statsWidth - 14, 14, 12, "", ui.muted)
+        row.attempts = ui.text(row, textX, 23, contentWidth - textX - statsWidth - 14, 14, 12, "", ui.muted)
         row.attempts:SetMaxLines(1)
-        row.value = ui.text(row, rowWidth - statsWidth - 8, 3, statsWidth, 23, 17, "", ui.gold)
+        row.value = ui.text(row, contentWidth - statsWidth - 8, 3, statsWidth, 23, 17, "", ui.gold)
         row.value:SetJustifyH("RIGHT")
         row.value:SetMaxLines(1)
-        row.status = ui.text(row, rowWidth - statsWidth - 8, 25, statsWidth, 15, 11, "", ui.muted)
+        row.status = ui.text(row, contentWidth - statsWidth - 8, 25, statsWidth, 15, 11, "", ui.muted)
         row.status:SetJustifyH("RIGHT")
         row.status:SetMaxLines(1)
-        row.arrow = ui.text(row, rowWidth - 17, 0, 14, rowHeight, 14, "›", ui.gold)
+        row.arrow = ui.text(row, contentWidth - 17, 0, 14, rowHeight, 14, "›", ui.gold)
         row:SetScript("OnEnter", showRowTooltip)
         row:SetScript("OnLeave", hideRowTooltip)
         row:SetScript("OnHide", hideRowTooltip)
-        frame.rows[index] = row
     end
-    applyPosition(frame)
+    local resetTimer, refreshAt
+    local function cancelResetTimer()
+        if resetTimer then resetTimer:Cancel() end
+        resetTimer, refreshAt = nil, nil
+    end
+    local function refreshAtReset(expires)
+        if not expires or (refreshAt and refreshAt <= expires) then return end
+        cancelResetTimer()
+        refreshAt = expires
+        resetTimer = C_Timer.NewTimer(math.max(1, expires - GetServerTime()), function()
+            resetTimer, refreshAt = nil, nil
+            if frame:IsShown() then frame:refreshRows() end
+        end)
+    end
+    frame:HookScript("OnHide", cancelResetTimer)
+    function list:render(row, mount)
+        local icon = mount.icon
+        if issecretvalue and issecretvalue(icon) then icon = nil end
+        if not icon and C_MountJournal and C_MountJournal.GetMountInfoByID then
+            icon = select(3, C_MountJournal.GetMountInfoByID(mount.id))
+            if issecretvalue and issecretvalue(icon) then icon = nil end
+        end
+        local stats = atlas.planTargetSummary(mount)
+        local attempts, value, color = formatStats(stats)
+        local status, complete, expires = atlas.planLootCompletion(mount, frame.characterGUID)
+        row.stats, row.lootStatus, row.complete = stats, status, complete
+        local hasMetric = value ~= "" or status ~= nil
+        row.name:SetWidth(contentWidth - textX - 20 - (hasMetric and statsWidth or 0))
+        fitRowName(row.name, atlas.displayMountName(mount))
+        row.name:SetTextColor(unpack(frame.pinnedID == mount.id and ui.gold or ui.paper))
+        row.name:SetAlpha(complete and .7 or 1)
+        row.attempts:SetText(attempts)
+        row.value:SetText(value)
+        row.value:SetTextColor(unpack(color))
+        row.status:SetText(status or "")
+        row.status:SetTextColor(unpack(complete and ui.mint or ui.muted))
+        row.icon:SetTexture(icon or 132261)
+        row.icon:SetDesaturated(complete == true)
+        row.check:SetShown(complete == true)
+        row.arrow:SetShown(not hasMetric)
+        refreshAtReset(expires)
+        if GameTooltip:IsShown() and GameTooltip:IsOwned(row) then showRowTooltip(row) end
+    end
+    function frame:refreshRows()
+        self.characterGUID = selectedCharacter()
+        list:redraw()
+    end
+    function frame:refresh(profileID, mounts, pinnedID)
+        if self.profileID ~= profileID then list:resetScroll() end
+        if self.profileID ~= profileID or list.items ~= mounts then
+            for _, profile in ipairs(atlas.planProfiles()) do
+                if profile.id == profileID then self:setTitle(profile.name); break end
+            end
+        end
+        self.profileID, self.pinnedID = profileID, pinnedID
+        list.items = mounts
+        local visible = math.min(#mounts, maxRows)
+        list:SetHeight(visible * rowHeight)
+        list:SetShown(visible > 0)
+        self.empty:SetShown(visible == 0)
+        self.more:SetShown(#mounts > maxRows)
+        self.more:SetText(("+%d"):format(math.max(0, #mounts - maxRows)))
+        local height = headerHeight + (visible == 0 and emptyHeight or visible * rowHeight)
+            + (#mounts > maxRows and 20 or 0) + bottomPadding
+        if self:GetHeight() ~= height then self:SetHeight(height) end
+        self:refreshRows()
+    end
+    windows[#windows + 1] = frame
+    local _, pinned, percent = atlas.expeditionSettings()
+    applyPin(frame, pinned)
+    applyTransparency(frame, percent)
     return frame
 end
 
 function atlas.refreshExpeditionTracker()
-    local enabled, pinned, percent = atlas.expeditionSettings()
+    local enabled = atlas.expeditionSettings()
     if not enabled then
         events:UnregisterEvent(journalEvent)
         events:UnregisterEvent(bagsEvent)
         if tracker then tracker:Hide() end
         return
     end
-    if not tracker then tracker = makeTracker() end
-    atlas.setExpeditionPinned(pinned)
-    applyTransparency(tracker, percent)
-    local planID = atlas.activePlanID()
-    for _, profile in ipairs(atlas.planProfiles()) do
-        if profile.id == planID then tracker:setTitle(profile.name); break end
+    if not tracker then
+        tracker = atlas.createExpeditionWindow("MountAtlasExpeditionTracker")
+        applyPosition(tracker)
     end
+    local planID = atlas.activePlanID()
     local targets, pendingJournal = atlas.planTargets(true, planID)
     if pendingJournal then events:RegisterEvent(journalEvent)
     else events:UnregisterEvent(journalEvent) end
-    for index, row in ipairs(tracker.rows) do
-        local mount = targets[index]
-        local changed = mount and (not row.mount or row.mount.id ~= mount.id)
-        if changed then row.feedback = nil end
-        row.mount = mount
-        row:SetShown(mount ~= nil)
-        if mount then
-            local icon = mount.icon
-            if not icon and C_MountJournal and C_MountJournal.GetMountInfoByID then
-                icon = select(3, C_MountJournal.GetMountInfoByID(mount.id))
-            end
-            if issecretvalue and issecretvalue(icon) then icon = nil end
-            row.icon:SetTexture(icon or 132261)
-        end
-    end
-    refreshStats()
-    tracker.empty:SetShown(#targets == 0)
-    tracker.empty:SetText(L("В плане: %d", 0))
-    tracker.more:SetShown(#targets > maxRows)
-    tracker.more:SetText(("+%d"):format(math.max(0, #targets - maxRows)))
-    tracker:SetHeight(headerHeight + (#targets == 0 and emptyHeight or math.min(#targets, maxRows) * rowHeight)
-        + (#targets > maxRows and 20 or 0) + bottomPadding)
+    if #targets > 0 then events:RegisterEvent(bagsEvent)
+    else events:UnregisterEvent(bagsEvent) end
+    tracker:refresh(planID, targets)
     tracker:Show()
 end
 
@@ -429,7 +466,12 @@ events:SetScript("OnEvent", function(self, event)
             applyPosition(tracker)
         end
     elseif event == bagsEvent then
-        atlas.queueExpeditionStatsRefresh()
+        for _, row in ipairs(tracker.list.rows) do
+            if row.item and row.stats and row.stats.watchBags then
+                atlas.queueExpeditionStatsRefresh()
+                break
+            end
+        end
     else
         if event == "PLAYER_ENTERING_WORLD" then self:UnregisterEvent(event) end
         atlas.queueExpeditionTrackerRefresh()

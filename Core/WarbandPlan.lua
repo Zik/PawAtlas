@@ -1,11 +1,39 @@
 local _, atlas = ...
 local accountLootSources = atlas.accountLootSources or {}
 local personalPlanID = "personal"
-local maxProfiles = 20
+local maxProfiles, maxName = 20, 48
 
 local function readable(value)
     return not (issecretvalue and issecretvalue(value))
 end
+
+local function cleanPlanName(value)
+    if not readable(value) or type(value) ~= "string" or #value > maxName * 4
+        or value:find("[%c|<>]") then return end
+    value = value:match("^ *(.-) *$")
+    local index, length = 1, 0
+    while index <= #value do
+        local byte = value:byte(index)
+        local width, code, minimum = 1, byte, 0
+        if byte >= 0xC2 and byte <= 0xDF then width, code, minimum = 2, byte - 0xC0, 0x80
+        elseif byte >= 0xE0 and byte <= 0xEF then width, code, minimum = 3, byte - 0xE0, 0x800
+        elseif byte >= 0xF0 and byte <= 0xF4 then width, code, minimum = 4, byte - 0xF0, 0x10000
+        elseif byte >= 0x80 then return end
+        for offset = 1, width - 1 do
+            local continuation = value:byte(index + offset)
+            if not continuation or continuation < 0x80 or continuation > 0xBF then return end
+            code = code * 64 + continuation - 0x80
+        end
+        if code < minimum or code > 0x10FFFF or (code >= 0xD800 and code <= 0xDFFF)
+            or (code >= 0x80 and code <= 0x9F) or code == 0x061C or code == 0xFEFF
+            or (code >= 0x200B and code <= 0x200F) or (code >= 0x2028 and code <= 0x202E)
+            or (code >= 0x2060 and code <= 0x206F) then return end
+        index, length = index + width, length + 1
+        if length > maxName then return end
+    end
+    return value
+end
+atlas.cleanPlanName = cleanPlanName
 
 local function number(value)
     return readable(value) and type(value) == "number" and value >= 0 and value < math.huge
@@ -23,6 +51,17 @@ end
 local function accountForWrite()
     if type(MountAtlasAccountDB) ~= "table" then MountAtlasAccountDB = {} end
     return MountAtlasAccountDB
+end
+
+local awaitingLoginCharacter
+function atlas.selectPlanCharacter(guid)
+    awaitingLoginCharacter = false
+    if atlas.isWarbandCharacterHidden(guid) then guid = nil end
+    local db = accountForWrite()
+    if type(db.settings) ~= "table" then db.settings = {} end
+    db.settings.plannerCharacterGUID = guid
+    if atlas.queueExpeditionStatsRefresh then atlas.queueExpeditionStatsRefresh() end
+    if atlas.queuePlanBrokerStatsRefresh then atlas.queuePlanBrokerStatsRefresh() end
 end
 
 local function database()
@@ -89,6 +128,30 @@ function atlas.planProfiles()
     return result
 end
 
+function atlas.movePlanProfile(id, anchorID, after)
+    if not readable(id) or not readable(anchorID) or type(id) ~= "string" or type(anchorID) ~= "string"
+        or id == personalPlanID or anchorID == personalPlanID or id == anchorID then return false end
+    local store = profileStore(savedAccount())
+    if not store then return false end
+
+    local profiles, order = atlas.planProfiles(), {}
+    local sourceIndex, anchorIndex
+    for i = 2, #profiles do
+        local profileID = profiles[i].id
+        order[#order + 1] = profileID
+        if profileID == id then sourceIndex = #order end
+        if profileID == anchorID then anchorIndex = #order end
+    end
+    if not sourceIndex or not anchorIndex or sourceIndex == anchorIndex + (after and 1 or -1) then return false end
+
+    table.remove(order, sourceIndex)
+    if sourceIndex < anchorIndex then anchorIndex = anchorIndex - 1 end
+    table.insert(order, anchorIndex + (after and 1 or 0), id)
+    store.order = order
+    planChanged()
+    return true
+end
+
 function atlas.activePlanID()
     local db = savedAccount()
     local settings = db and db.settings
@@ -105,6 +168,18 @@ end
 function atlas.selectPlan(id)
     if type(id) ~= "string" or (id ~= personalPlanID and not planRecord(savedAccount(), id)) then return false end
     if id ~= atlas.activePlanID() then setActivePlan(accountForWrite(), id) end
+    return true
+end
+
+function atlas.renamePlan(id, name)
+    local entry = type(id) == "string" and id ~= personalPlanID and planRecord(savedAccount(), id)
+    if not entry then return false, "profile" end
+    name = cleanPlanName(name)
+    if not name or name == "" then return false, "name" end
+    if entry.name ~= name then
+        entry.name = name
+        if id == atlas.activePlanID() then planChanged() end
+    end
     return true
 end
 
@@ -249,10 +324,17 @@ local planEvents = CreateFrame("Frame")
 local retryEvent = "MOUNT_JOURNAL_SEARCH_UPDATED"
 local retryQueued
 planEvents:RegisterEvent("PLAYER_ENTERING_WORLD")
-planEvents:SetScript("OnEvent", function(self, event)
+planEvents:SetScript("OnEvent", function(self, event, isInitialLogin)
     if event == "PLAYER_ENTERING_WORLD" then
         self:UnregisterEvent(event)
         local db = database()
+        if isInitialLogin then
+            local guid = playerGUID()
+            local roster = db.characters
+            if type(roster) ~= "table" or type(roster[guid]) ~= "table" then guid = nil end
+            atlas.selectPlanCharacter(guid)
+            awaitingLoginCharacter = not guid
+        end
         eachPlan(db, function(record)
             for key, enabled in pairs(record.plan) do
                 local id = tonumber(key)
@@ -601,6 +683,7 @@ function atlas.capturePlanSnapshot(ready)
     local db, guid = database(), playerGUID()
     local record = guid and type(db.characters) == "table" and db.characters[guid]
     if type(record) ~= "table" then return end
+    if awaitingLoginCharacter then atlas.selectPlanCharacter(guid) end
     if type(record.planStatus) ~= "table" then record.planStatus = {} end
     local now, questCache = GetServerTime(), {}
     local planned = {}
@@ -713,7 +796,9 @@ function atlas.planSummary(mount)
         return counts
     end
     for _, character in ipairs(atlas.accountCharacters()) do
-        local state, _, _, progress = atlas.planCharacterStatus(mount, character.guid)
+        local state, _, expires, progress = atlas.planCharacterStatus(mount, character.guid)
+        if expires and (state == "boss" or state == "attempt" or state == "partial")
+            and (not counts.expires or expires < counts.expires) then counts.expires = expires end
         counts.total = counts.total + 1
         if state == "boss" or state == "attempt" then counts.done = counts.done + 1
         elseif state == "available" or (progress and progress.availableAttempts > 0) then counts.available = counts.available + 1

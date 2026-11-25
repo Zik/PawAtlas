@@ -35,6 +35,7 @@ assert(loadfile("Locales/enUS_Sources.lua"))("PawAtlas", atlas)
 assert(loadfile("Data/JournalData.lua"))("PawAtlas", atlas)
 assert(loadfile("Data/QuestSources.lua"))("PawAtlas", atlas)
 assert(loadfile("Data/LootSources.lua"))("PawAtlas", atlas)
+assert(loadfile("Data/Respawns.lua"))("PawAtlas", atlas)
 assert(loadfile("Data/Mounts.lua"))("PawAtlas", atlas)
 for _, mountID in ipairs({ 538, 539, 540 }) do
     local container = assert(atlas.mountRewardContainerRewards[mountID], "Primal Raptor source must identify its opening container")
@@ -158,6 +159,12 @@ add(92011, 1, "Exploration: A real source")
 add(92012, 1, "Bring supplies: food and water.\nZone: Open world")
 add(92013, 1, "Drop: {item:269836:Chubs}\nZone: Open world")
 add(1324, 11, "Zone: Vol'dun", 316493)
+add(1469, 1, "|cFFFFD200IПредмет: |rпустой магмовый панцирь|n|cFFFFD200Зона: |rБерега Пробуждения", 350219)
+add(1674, 3, "|cFFFFD200Торговец:|r Зон'воги|n|cFFFFD200Зона:|r Лазурный Простор|n|n", 385738)
+add(1774, 1, "|cFFFFD200Открытие:|r Отвага|n|cFFFFD200Зона:|r Наксрамас", 413922)
+for id, spell in pairs({ [616] = 171624, [626] = 171635, [642] = 171836, [649] = 171843 }) do
+    add(id, 1, "|cFFFFD200Источник:|r забытые припасы налетчика", spell)
+end
 add(802, 11, "Зона: Азсуна", 215159)
 add(1414, 1, "|cFFFFD200NPC:|r мертвая Савраска |n|cFFFFD200Зона:|r Ревендрет|n |n", 339588)
 add(16, 4, "Profession: Fishing in Voidstorm", 3363)
@@ -354,6 +361,7 @@ do
     local lateName, lateSpell = entries[lateID].name, entries[lateID].spell
     entries[staticID] = { name = "Native fallback mount", spell = nativeSpell, category = 1, source = "", collected = false }
     catalog.mounts = { { id = staticID, name = "Curated fallback mount", spell = 990012 } }
+    catalog.uniqueMounts = {} -- This fixture times a scan of exactly three records.
     catalog.collection = nil
     catalog.usesKillAPI, catalog.rawKills = function() return true end, function() return 0 end
     assert(loadfile("Core/JournalIndex.lua"))("PawAtlas", catalog)
@@ -564,13 +572,166 @@ for _, row in ipairs(covenantQuests) do
     language = "ruRU"
 end
 equal(atlas.mountByID(1324).kind, "Исследование", "Elusive Quickhoof API exploration index")
-for _, entry in ipairs({ { 1324, 174860, 10 }, { 802, 138258, 120 }, { 1414, 182614, 1 } }) do
+for _, entry in ipairs({ { 1324, 174860, 10 }, { 802, 138258, 120 }, { 1414, 182614, 1 }, { 1469, 192777, 1 } }) do
     local mount = atlas.mountByID(entry[1])
     local details = assert(mount.sourceRequirements)
     equal(details.reward.item, entry[2], "interaction reward identity")
     assert(details.guarantee.condition ~= "" and details.guarantee.englishCondition ~= "", "verified guarantee needs explicit conditions")
     equal(#atlas.navigationPoints[entry[1]], entry[3], "navigation points are retained")
     assert(not mount.hasQuest, "interaction requirements do not enter the quest filter")
+end
+do
+    local mount = atlas.mountByID(1469)
+    equal(mount.kind, "Взаимодействие", "Magmashell is obtained from the snail")
+    equal(atlas.navigationPoints[1469][1].npc, mount.sourceRequirements.npc, "the waypoint leads to the interacting NPC")
+    assert(atlas.sourceInlineLinks(mount.sourceRequirements.condition):find("|Hitem:201883", 1, true),
+        "the required shell has its own clickable item ID")
+end
+do
+    local previousFaction, previousLog = UnitFactionGroup, C_QuestLog
+    local faction, gold = "Horde", false
+    UnitFactionGroup = function() return faction end
+    C_QuestLog = { IsQuestFlaggedCompleted = function(id) return id == 38482 or id == 37640 and gold end }
+    for _, id in ipairs({ 616, 626, 642, 649 }) do
+        local mount = atlas.mountByID(id)
+        equal(atlas.classifyMountSource(mount).key, "loot", "the weekly quest grants a bag, not the mount")
+        assert(not mount.hasSourcePanels, "the bag does not get a creature-style target row")
+        local text = atlas.decorateSource(mount)
+        for _, link in ipairs({ "|Hitem:116980", "|Hitem:122163" }) do
+            assert(text:find(link, 1, true), "both invasion containers have native links")
+        end
+        assert(not text:find("|Hquest:", 1, true), "the quest belongs only in its own block")
+        local _, lines = mount.journalSourceOverride:gsub("\n", "")
+        equal(lines, 1, "only Gold and Platinum are listed")
+        local choice = { classification = atlas.classifyMountSource(mount) }
+        for side, questID in pairs({ Horde = 35788, Alliance = 37307 }) do
+            faction = side
+            local quest = assert(atlas.sourceCardQuest(mount, choice))
+            equal(quest.id, questID, "the quest link is for the player's faction")
+            equal(quest.weeklyFlag, 37640, "completion uses the gold weekly flag")
+            gold = true
+            equal(atlas.characterQuestCompleted(quest.weeklyFlag), true, "gold earned this week")
+            gold = false
+            equal(atlas.characterQuestCompleted(quest.weeklyFlag), false, "reset clears the tick independently of platinum")
+        end
+        faction = "Neutral"
+        equal(atlas.sourceCardQuest(mount, choice), nil, "unknown factions cannot show the wrong quest")
+        faction = "Horde"
+        choice.separateSource = true
+        equal(atlas.sourceCardQuest(mount, choice), nil, "another route gets no weekly quest")
+        equal(atlas.attemptStages[id].reward.method, "USE", "opening the bags remains the tracked action")
+    end
+    UnitFactionGroup, C_QuestLog = previousFaction, previousLog
+end
+do
+    local previousLog, previousSecret = C_QuestLog, issecretvalue
+    local id, hidden = atlas.protoformForgeQuest.id, {}
+    local state = false
+    C_QuestLog = { IsQuestFlaggedCompleted = function(questID) if questID == id then return state end end,
+        IsQuestFlaggedCompletedOnAccount = function() return true end }
+    issecretvalue = function(value) return value == hidden end
+    equal(atlas.characterQuestCompleted(id), false, "an alt completing Finding Tahli does not mark it here")
+    state = true
+    equal(atlas.characterQuestCompleted(id), true, "the current character turned in Finding Tahli")
+    state = hidden
+    equal(atlas.characterQuestCompleted(id), nil, "a hidden completion flag has no checkmark")
+    C_QuestLog = nil
+    equal(atlas.characterQuestCompleted(id), nil, "an unavailable quest log has no checkmark")
+    C_QuestLog, issecretvalue = previousLog, previousSecret
+end
+do
+    local previousLog, previousFaction = C_QuestLog, UnitFactionGroup
+    local flags = {}
+    C_QuestLog = { IsQuestFlaggedCompleted = function(id) return flags[id] or false end }
+    UnitFactionGroup = function() return "Alliance" end
+    local reward = atlas.questMountRewards[1834]
+    local steps = atlas.questRewardProgressSteps(reward)
+    local function check(expected, label)
+        local completed, total = atlas.questRewardChainProgress(reward, steps)
+        equal(completed, expected, label)
+        equal(total, 5, "four cultivation quests and the reward, excluding waits")
+    end
+    check(0, "a fresh character has no Ochre Dreamtalon quest credit")
+    flags[77677], flags[78398] = true, true
+    check(2, "the completed cultivation quests advance the bar")
+    flags[77762] = true
+    check(5, "turning in the exact reward quest completes the chain")
+    equal(atlas.questGiverWaypoints[steps[1].id][1].npc, 209292, "the initial quest starts at the sprout")
+    equal(atlas.questRewardProgressSteps({ quests = { { id = 100 } } }), nil, "a single quest has no chain bar")
+    local branches = { quests = { { id = 111, faction = "Alliance" }, { id = 112, faction = "Horde" } },
+        progressQuests = { { 101, 102 }, 103 } }
+    flags[101], flags[102], flags[112] = true, true, true
+    local completed, total = atlas.questRewardChainProgress(branches, atlas.questRewardProgressSteps(branches))
+    equal(completed, 1, "alternative quest IDs count once and the other faction's final quest gives no credit")
+    equal(total, 3, "two required steps and one of two faction rewards")
+    C_QuestLog = nil
+    equal(atlas.questRewardChainProgress(reward, steps), nil, "unavailable data does not produce a zero")
+    C_QuestLog, UnitFactionGroup = previousLog, previousFaction
+end
+do
+    local valiance = atlas.mountByID(1774)
+    local body = atlas.decorateSource(valiance)
+    assert(body:find("|Hitem:208068", 1, true) and body:find("30 × [^\n]-|Hitem:206576")
+        and body:find("10 игроков", 1, true) and body:find("Разувию", 1, true),
+        "Valiance explains the apple, raid size and final encounter")
+    equal(atlas.rewardItem(valiance).item, 206585, "the dropped reins and the offered apple are distinct items")
+end
+do
+    local mount = atlas.mountByID(1674)
+    local vendor = assert(atlas.vendorSources(mount))[1]
+    equal(vendor.npc, 190892, "the food is turned in to Zon'Wogi")
+    equal(vendor.map, 2024, "the hand-in is in the Azure Span")
+    local oldItems = C_Item
+    local bags = { [201422] = 20, [201420] = 19, [201421] = 20 }
+    C_Item = { GetItemCount = function(id, includeBank)
+        assert(not includeBank, "the exchange requires the food in the character's bags")
+        return bags[id]
+    end }
+    local function cost()
+        return atlas.decorateSource({ id = mount.id, spell = mount.spell, vendorPriceResolved = true,
+            journalSourceRaw = vendor.conditions })
+    end
+    local text = cost()
+    local guarantee = assert(atlas.sourceGuaranteedReward(mount, { vendor = vendor }))
+    equal(guarantee.item, 201454, "the barter guarantees the Skyclaw reward even before all treats are held")
+    assert(not vendor.conditions:find("58.8", 1, true), "farm coordinates are omitted from the exchange")
+    for id in pairs(bags) do assert(text:find("|Hitem:" .. id, 1, true), "the food has its own native item link") end
+    local check = "ui-questtracker-tracker-check"
+    assert(not text:find(check, 1, true), "19 of one food cannot complete the exchange")
+    bags[201420] = 20
+    local _, marks = cost():gsub(check:gsub("%-", "%%-"), "")
+    equal(marks, 1, "all three stacks show a single completion check")
+    bags[201422] = nil
+    assert(not cost():find(check, 1, true), "an unreadable inventory count cannot complete the exchange")
+    C_Item = oldItems
+end
+do
+    for _, row in ipairs({
+        { 1776, 414316, 207057, "Horde", "Alliance", "Item: Gift of the White War Wolf" },
+        { 1777, 414323, 207083, "Альянс", "Орда", "Источник: дар прожорливого черного грифона" },
+    }) do
+        local vendorFaction = row[1] == 1776 and "Horde" or "Alliance"
+        local source = table.concat({ row[4], "Drop: Time Rifts", "Vendor: Warden Krizzik",
+            "Cost: 3000|Hcurrency:2594|h[Currency]|h", "", row[5], row[6] }, "\n")
+        local mount = { id = row[1], spell = row[2], journalSourceRaw = source }
+        local choices = assert(atlas.factionMountSourceChoices(mount))
+        equal(#choices, 3, "the direct purchase, drop, and cross-faction gift each have their own route")
+        local found = {}
+        for _, choice in ipairs(choices) do
+            if choice.vendor then
+                found.purchase = choice.view.faction == vendorFaction
+                    and choice.vendor.conditions:find("3000", 1, true) and choice.vendor.conditions:find("currency:2594", 1, true)
+            elseif choice.verifiedDrop then
+                found.drop = choice.view.faction == vendorFaction and choice.view.trackingCompatible
+            elseif choice.factionGift then
+                found.gift = choice.view.faction ~= vendorFaction and choice.factionGift.item == row[3]
+                    and choice.factionGift.quality == 4 and choice.view.trackingCompatible == false
+            end
+        end
+        assert(found.purchase and found.drop and found.gift, "each route has the correct faction, price, or gift item")
+        mount.spell = 1
+        assert(not atlas.factionMountSourceChoices(mount), "a different spell cannot inherit a faction gift")
+    end
 end
 equal(atlas.mountByID(1414).kind, "Взаимодействие", "Blanchy is an interaction")
 equal(atlas.navigationPoints[802][120].map, 632, "crystals in a subzone keep their own map")
@@ -584,6 +745,50 @@ assert(#kuriPager == 3 and kuriPager[1] == kuri[1] and kuriPager[2] == kuri[2] a
     "one coordinator groups the stages, removes identical entries, and retains separate actions at a shared point")
 assert(not atlas.mountByID(92011).sourceRequirements, "exploration by itself does not imply a guarantee")
 local classify = atlas.classifyMountSource
+do
+    local priorFaction = UnitFactionGroup
+    local salvage = atlas.islandSalvage
+    equal(salvage.containers[173989].amount, 175, "Jorundall Salvage costs 175 dubloons")
+    equal(salvage.containers[173990].amount, 120, "Molten Cay Salvage costs 120 dubloons")
+    for _, case in ipairs({
+        { "ruRU", "Alliance", "Источник: островные экспедиции", 161091, 1161 },
+        { "enUS", "Horde", "Drop: Island Expeditions", 161067, 1165 },
+    }) do
+        language = case[1]
+        UnitFactionGroup = function() return case[2] end
+        for id, bags in pairs(salvage.mounts) do
+            local stage = atlas.attemptStages[id].reward
+            local mount = { id = id, kind = "Добыча", journalSourceRaw = case[3] }
+            local choices = { { category = "loot", view = mount } }
+            atlas.addIslandSalvageSource(mount, choices)
+            assert(choices[1].islandExpedition and not choices[1].vendor, "the expedition remains a separate loot source")
+            equal(#choices, 2, "only the current faction's salvage vendor is listed")
+            local sale = choices[2]
+            equal(classify(mount, sale).key, "loot", "buying salvage is not a direct mount purchase")
+            equal(sale.vendor.npc, case[4], "the player can visit their own faction's vendor")
+            equal(sale.vendor.map, case[5], "the waypoint is on the vendor's city map")
+            equal(stage.items, bags, "eligible openings and the card share the same bag list")
+            local seen = {}
+            for _, item in ipairs(bags) do
+                assert(not seen[item], "a bag is shown once per mount")
+                seen[item] = true
+                local bag = assert(salvage.containers[item])
+                local name = language == "ruRU" and bag.name or bag.englishName
+                assert(sale.vendor.conditions:find("{item:" .. item .. ":" .. name .. "}", 1, true), "each bag has its own item link")
+                assert(sale.vendor.conditions:find(bag.amount .. " |Hcurrency:1710|h", 1, true), "the price is in Seafarer's Dubloons")
+            end
+        end
+    end
+    for _, id in ipairs({ 1208, 1042 }) do
+        local choices = { { category = "vendor" } }
+        atlas.addIslandSalvageSource({ id = id }, choices)
+        equal(#choices, 1, "direct dubloon purchases do not gain a salvage route")
+    end
+    local otherRoute = { { category = "loot" } }
+    atlas.addIslandSalvageSource({ id = 1212, journalSourceRaw = "Drop: Other activity" }, otherRoute)
+    equal(#otherRoute, 1, "a different journal source does not acquire island salvage")
+    UnitFactionGroup, language = priorFaction, "ruRU"
+end
 for _, id in ipairs({ 312, 982, 1166 }) do
     equal(classify(atlas.mountByID(id)).key, "fishing", "actual teaching item is fished")
 end
@@ -941,10 +1146,29 @@ local closedSource = atlas.mountByID(2781)
 assert(closedSource.unknownSourceNote and classify(closedSource).state == "unknown" and not closedSource.unavailable,
     "empty Amani Hex Bear has an attributed note without a confirmed availability claim")
 local box = { item = 54537, name = "Коробочка в виде сердца", englishName = "Heart-Shaped Box" }
-equal(atlas.ui.containerSourceBody("Источник: коробочка в виде сердца\nПраздник: Любовная лихорадка", box),
+equal(atlas.ui.withoutDisplayedItem("Источник: коробочка в виде сердца\nПраздник: Любовная лихорадка", box),
     "Праздник: Любовная лихорадка", "container name is merged into the action, retaining actual event details")
-equal(atlas.ui.containerSourceBody("Use a Heart-Shaped Box to see other rewards.", box),
+equal(atlas.ui.withoutDisplayedItem("Use a Heart-Shaped Box to see other rewards.", box),
     "Use a Heart-Shaped Box to see other rewards.", "container names in source instructions are preserved")
+do
+    local egg = atlas.lootItems[906]
+    equal(atlas.ui.withoutDisplayedItem("Источник: отмеченное Скверной яйцо", egg), "", "egg shown in the item row")
+    local link = "|Hitem:153190|h[Fel-Spotted Egg]|h"
+    local other = "|Hitem:99999|h[Fel-Spotted Egg]|h"
+    local extra = "Drop: " .. link .. " or " .. other .. "\nItem: " .. other
+    equal(atlas.ui.withoutDisplayedItem("Drop: " .. link .. "\n" .. extra, egg), extra,
+        "only a standalone link to the displayed item is redundant")
+    local mechagon = "Остров Мехагон"
+    local detail = "Источник: король Мехагон\nТребуется: ключ"
+    equal(atlas.ui.deduplicateSourceFields("Источник: Мехагон\n" .. detail, mechagon, nil, nil, 1462), detail,
+        "the rare's island alias does not remove another target or a requirement")
+    equal(atlas.ui.deduplicateSourceFields("Drop: Mechagon", "Mechagon Island", nil, nil, 1462), "",
+        "English rare card recognizes the short name of its active map")
+    equal(atlas.ui.deduplicateSourceFields("Drop: Mechagon", "Tanaan Jungle", nil, nil, 534), "Drop: Mechagon",
+        "another map does not inherit Mechagon Island's alias")
+    equal(atlas.ui.deduplicateSourceFields("Drop: Mechagon (Mythic)", "Mechagon Island", nil, nil, 1462),
+        "Drop: Mechagon (Mythic)", "a difficulty in the source is not a plain map name")
+end
 equal(atlas.ui.compactSourceBody("Награда журнала путешественника\nДоступно до: 30.11.2026",
     { subtype = "Награда журнала путешественника" }), "Доступно до: 30.11.2026",
     "standalone repeated source heading is removed while its dates stay")
@@ -1311,6 +1535,10 @@ for _, id in ipairs(eggAndCacheMounts) do
     entries[id].source = atlas.journalSourceDetails[id].replacesSource[2]:gsub("\n", "|n")
     atlas.mountByID(id).indexed = false
 end
+for _, id in ipairs({ 616, 626, 642, 649 }) do
+    entries[id].source = "|cFFFFD200Drop:|r Invader's Forgotten Treasure"
+    atlas.mountByID(id).indexed = false
+end
 for _, row in ipairs(classicShopRewards) do
     entries[row[1]].source = "|cFFFFD200Promotion:|r " .. row[3]
     atlas.mountByID(row[1]).indexed = false
@@ -1327,11 +1555,25 @@ felcycle.indexed = false
 entries[1943].source = "|cFFFFD200World Event:|r WoW's 20th Anniversary?|n"
 blackMalice.indexed = false
 entries[3133].source = "|cFFFFD200Promotion|r"
+entries[1774].source = "|cFFFFD200Discovery:|r Valiance|n|cFFFFD200Location:|r Naxxramas"
+atlas.mountByID(1774).indexed = false
 closedSource.indexed = false
 entries[2781].source = "Quest: A confirmed new route"
 entries[1600].source = "Quest: Blood Knight\nZone: Ghostlands\n\nQuest: Victory for the Sin'dorei\nZone: Ghostlands"
 hawk.indexed = false
 atlas.syncJournal()
+for _, id in ipairs({ 616, 626, 642, 649 }) do
+    local body = atlas.decorateSource(atlas.mountByID(id))
+    assert(body:find("Gold", 1, true) and body:find("Platinum", 1, true) and not body:find("|Hquest:", 1, true)
+        and body:find("|Hitem:116980", 1, true) and body:find("|Hitem:122163", 1, true),
+        "the English invasion card links both weekly rewards")
+end
+do
+    local body = atlas.decorateSource(atlas.mountByID(1774))
+    assert(body:find("|Hitem:208068", 1, true) and body:find("30 × [^\n]-|Hitem:206576")
+        and body:find("10-player", 1, true) and body:find("Obedience Crystal", 1, true),
+        "the Retail discovery text is explained in English")
+end
 checkEggAndCachePlaces("Isle of Giants", "Nazjatar")
 checkClassicShopRewards(true)
 for id, questID in pairs(drakeQuests) do
@@ -1727,4 +1969,128 @@ do
 
     C_Timer, atlas.onJournalChanged = nil, nil
 end
-print("passed: journal caching, acquisition and availability updates, source filters, class alternatives and conditional rewards")
+do
+    local tiger = assert(atlas.mountByID(32), "Bengal Tiger is visible even outside GetMountIDs")
+    local strider = assert(atlas.mountByID(61), "historical mechanostrider is visible without journal data")
+    local total = atlas.collection.total
+    assert(not atlas.isExcludedJournalMount(32, "Tiger", 10790, false, "Legacy"), "personal grant passes the journal filter")
+    for _, mount in ipairs({ tiger, strider }) do
+        assert(mount.unavailable and mount.availability.unique)
+        equal(atlas.classifyMountSource(mount).state, "historical", "one-off grants have no farm route")
+        equal(atlas.collection.byID[mount.id], "unknown", "an archive entry cannot prove ownership")
+        for _, locale in ipairs({ "ruRU", "enUS" }) do
+            language = locale
+            local name = locale == "enUS" and mount.availability.englishName or mount.availability.name
+            assert(mount.key:find(atlas.searchKey(name), 1, true), "the catalog indexes both names")
+            local history = atlas.ui.sourceHistory(mount)
+            equal(history, locale == "enUS" and mount.availability.englishHistory or mount.availability.history,
+                "the tooltip displays the history in the selected language")
+        end
+    end
+    language = "ruRU"
+    add(32, 6, "Legacy", 10790)
+    entries[32].collected = true
+    atlas.syncJournal()
+    equal(atlas.mountByID(32), tiger, "native ownership updates the existing archive card")
+    equal(atlas.collection.byID[32], true, "the exact live Tiger can be collected")
+    equal(atlas.collection.total, total, "journal and archive contribute a single entry per mount")
+
+    add(61, 3, "Vendor: A different mount", 990061)
+    atlas.syncJournal()
+    local replacement = assert(atlas.mountByID(61))
+    equal(replacement.spell, 990061, "a reused historical ID follows the native spell")
+    assert(not replacement.unavailable and not replacement.availability, "an unrelated mount cannot inherit a unique history")
+    assert(not atlas.mountByID(57).availability, "the normal Green Mechanostrider keeps its vendor route")
+end
+do
+    local mountID, spell = 1482, 353264
+    local fixtures = {
+        { "ruRU", "|cFFFFD200Источник: |r[ДАННЫЕ ИЗЪЯТЫ]", "Родственные души", "Найди тайники трёх картелей",
+            "Зо'туру", "Техноглайдер попечителя картеля Зи" },
+        { "enUS", "|cFFFFD200Source: |r[REDACTED]", "Someone Like Me", "Find the three cartel dead drops",
+            "Zo'turu", "Xy Trustee's Gearglider" },
+    }
+    add(mountID, 0, fixtures[1][2], spell)
+    for _, fixture in ipairs(fixtures) do
+        -- The journal cache reindexes when the native localized name changes.
+        language, entries[mountID].source, entries[mountID].name = fixture[1], fixture[2], fixture[6]
+        atlas.syncJournal()
+        local mount = assert(atlas.mountByID(mountID))
+        local choice = { classification = atlas.classifyMountSource(mount) }
+        equal(choice.classification.key, "quest", "the redacted gearglider source resolves to the actual quest")
+        local reward = assert(atlas.directQuestReward(mount, choice))
+        equal(reward.quests[1].id, 92082, "the gearglider uses the exact final quest")
+        equal(reward.quests[1].item, 186639, "the gearglider uses the exact awarded item")
+        equal(atlas.dataName(reward.quests[1]), fixture[3], "the quest title matches the locale")
+        local point = assert(atlas.questRewardWaypoints(mount, choice))[1]
+        equal(point.map, 2371, "the quest is turned in on K'aresh")
+        equal(point.npc, 245344, "the waypoint belongs to the actual quest giver")
+        equal(atlas.questRewardTarget(reward, point).boss, fixture[5], "the quest giver name matches the locale")
+        local body = atlas.ui.withQuestRewards(atlas.decorateSource(mount), reward)
+        local note, quest = body:find(fixture[4], 1, true), body:find("|Hquest:92082", 1, true)
+        assert(note and quest and note < quest, "the explanation precedes the native quest link")
+        local _, links = body:gsub("|Hquest:92082", "")
+        equal(links, 1, "the gearglider shows one quest link")
+        assert(not body:find("|Hitem:186639", 1, true), "the body does not duplicate the separate reward row")
+        equal(assert(atlas.questRewardItem(mount, reward, body)).item, 186639, "the reward row has the exact quest item")
+    end
+    entries[mountID].source, entries[mountID].name = "Vendor: A different source", "A different source"
+    atlas.syncJournal()
+    local mount = assert(atlas.mountByID(mountID))
+    equal(mount.journalSourceOverride, nil, "a new native gearglider source takes priority")
+    entries[mountID].source, entries[mountID].spell = fixtures[2][2], spell + 1
+    atlas.syncJournal()
+    equal(assert(atlas.mountByID(mountID)).journalSourceOverride, nil, "a different spell cannot inherit the gearglider quest")
+end
+do
+    local cases = {
+        { 393, 88718, "Aeonaxx", "Deepholm", "2–8 hr" },
+        { 420, 98718, "Poseidus", "Vashj'ir", "2–8 hr" },
+        { 612, 171620, "Nakk the Thunderer", "Nagrand", "2–8 hr" },
+        { 614, 171622, "Luk'hok", "Nagrand", "2–8 hr" },
+        { 627, 171636, "Gorok", "Frostfire Ridge", "2–8 hr" },
+        { 630, 171824, "Silthide", "Talador", "2–8 hr" },
+        { 636, 171830, "Pathrunner", "Shadowmoon Valley", "2–8 hr" },
+        { 655, 171849, "Poundfist", "Gorgrond", "2–8 hr" },
+        { 657, 171851, "Nok-Karosh", "Frostfire Ridge", "15–30 min" },
+        { 682, 179478, "Voidtalon Egg", nil, "at least 2 hr" },
+        { 1415, 339632, "Humon'gozz", "Ardenweald", "10 min" },
+        { 634, 171828, "Rukhmar", nil, "15 min" },
+    }
+    language = "enUS"
+    for _, row in ipairs(cases) do
+        local source = "|cFFFFD200Drop:|r " .. row[3] .. (row[4] and "|n|cFFFFD200Zone:|r " .. row[4] or "")
+        add(row[1], 1, source, row[2])
+    end
+    atlas.syncJournal()
+    for _, row in ipairs(cases) do
+        local mount = assert(atlas.mountByID(row[1]))
+        local view = mount.sourceGroups and mount.sourceGroups[1] or mount
+        equal(atlas.sourceRespawnText(mount, view), row[5], "the native journal route shows its respawn " .. row[1])
+        equal(atlas.sourceRespawnText(mount, view, { npc = 999999 }), nil, "an unknown selected NPC clears the timer")
+        equal(atlas.sourceRespawnText(mount, view, { map = view.sourceMap }), nil, "an unnamed point cannot inherit the timer")
+        equal(atlas.sourceRespawnText(mount, { boss = view.boss, place = view.place }), nil, "a separate route cannot inherit the timer")
+    end
+    local gorok = assert(atlas.mountByID(627))
+    local view = assert(gorok.sourceGroups[1])
+    equal(select(2, atlas.sourceRespawnText(gorok, view)), "The window starts when the corpse despawns.", "the condition is localized")
+    gorok.spell = 1
+    equal(atlas.sourceRespawnText(gorok, view), nil, "a reused mount ID cannot inherit the timer")
+    gorok.spell = 171636
+    view.sourceMap = 539
+    equal(atlas.sourceRespawnText(gorok, view), nil, "a conflicting map cannot inherit the timer")
+    view.sourceMap = 525
+    entries[627].source, entries[627].name = "Drop: Gorok|nZone: Gorgrond", "New native route"
+    atlas.syncJournal()
+    local changed = assert(atlas.mountByID(627))
+    equal(atlas.sourceRespawnText(changed, changed.sourceGroups[1]), nil, "a changed native zone clears the timer")
+    local unnamed = { sourceRequirements = { respawn = { min = 10, max = 10 } } }
+    equal(atlas.sourceRespawnText({}, unnamed), "10 min", "the active interaction can have a timer without a waypoint")
+    equal(atlas.sourceRespawnText({}, unnamed, {}), nil, "two absent requirement names do not match a waypoint")
+
+    language, entries[627].source, entries[627].name = "ruRU", "|cFFFFD200Источник:|r Горок|n|cFFFFD200Зона:|r хребет Ледяного Огня|n", "Огромный сероклык"
+    atlas.syncJournal()
+    changed = assert(atlas.mountByID(627))
+    equal(atlas.sourceRespawnText(changed, changed.sourceGroups[1]), "2–8 ч", "the Russian native source has the same timer")
+end
+print("passed: journal caching, acquisition and availability updates, source filters, class alternatives, conditional rewards and respawn routes")

@@ -11,7 +11,9 @@ function ui.scrollingList(parent, x, y, width, step, capacity, smooth)
     local rowCount = capacity
     if smooth then
         rowCount = capacity + 1
-        viewport = ui.place(CreateFrame("ScrollFrame", nil, list), list, 0, 0, width - 8, height)
+        viewport = CreateFrame("ScrollFrame", nil, list)
+        viewport:SetPoint("TOPLEFT", list, "TOPLEFT")
+        viewport:SetPoint("BOTTOMRIGHT", list, "BOTTOMRIGHT", -8, 0)
         content = CreateFrame("Frame", nil, viewport)
         content:SetSize(width - 8, rowCount * step)
         viewport:SetScrollChild(content)

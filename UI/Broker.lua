@@ -139,7 +139,7 @@ local function targetDisplay(mount, lines)
     if stats.rewardCondition then lines[#lines + 1] = L(stats.rewardCondition) end
     local value = progress or chance
     local text = attempts and value and attempts .. " / " .. value or attempts or value or L("Нет данных")
-    return text, stats.watchBags, progress and chance
+    return text, stats.watchBags
 end
 
 local queued, resolveQueued
@@ -217,7 +217,7 @@ function atlas.queuePlanBrokerStatsRefresh()
         text, watchTargetBags = targetDisplay(target, tooltipLines)
         updateBagEvent()
         display.text = ui.safeText(text)
-        if popup and popup:IsShown() then popup:refresh(planID, ordered) end
+        if popup and popup:IsShown() then popup:refresh(planID, ordered, manualID(settings())) end
     end)
 end
 
@@ -242,73 +242,20 @@ function atlas.recordBrokerAttempt(mountIDs)
     atlas.queuePlanBrokerStatsRefresh()
 end
 
-local function hideRowTooltip(row)
-    if GameTooltip:IsOwned(row) then GameTooltip:Hide() end
-end
-
-local function showRowTooltip(row)
-    if not row.item then return end
-    GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
-    GameTooltip:ClearLines()
-    brokerTooltip(GameTooltip, row.name:GetText(), row.details)
-    GameTooltip:Show()
+local function selectBrokerTarget(frame, mount)
+    if frame.profileID ~= atlas.activePlanID() or not isPlanTarget(mount.id, frame.profileID) then return end
+    local saved = settings(true)
+    if manualID(saved) == mount.id then
+        saved.brokerTargetMode, saved.brokerMountID = "auto", nil
+    else
+        saved.brokerTargetMode, saved.brokerMountID = "manual", mount.id
+    end
+    atlas.queuePlanBrokerStatsRefresh()
 end
 
 local function makePopup()
-    local width, header, step, capacity, padding = 390, 47, 44, 6, 13
-    local frame = CreateFrame("Frame", "MountAtlasBrokerTargets", UIParent)
-    frame:Hide()
-    frame:SetWidth(width)
+    local frame = atlas.createExpeditionWindow("MountAtlasBrokerTargets", selectBrokerTarget)
     frame:SetFrameStrata("FULLSCREEN_DIALOG")
-    frame:SetClampedToScreen(true)
-    frame:EnableMouse(true)
-    local background = frame:CreateTexture(nil, "BACKGROUND")
-    background:SetAllPoints()
-    background:SetColorTexture(unpack(ui.ink))
-    ui.windowBorder(frame, nil, nil, .65)
-    local heading = ui.text(frame, 22, 10, width - 44, 28, 17, "", ui.gold)
-    heading.atlasGameText = true
-    heading:SetMaxLines(1)
-    ui.fill(frame, 14, 41, width - 28, 1, ui.rule)
-    local empty = ui.text(frame, 22, 52, width - 44, 34, 15, L("В плане: %d", 0), ui.muted)
-    local list = ui.scrollingList(frame, 14, header, width - 28, step, capacity, true)
-    for _, row in ipairs(list.rows) do
-        row.icon = ui.itemIcon(row, 5, 3, 34)
-        row.name = ui.text(row, 48, 1, width - 120, 20, 15, "")
-        row.name.atlasGameText = true
-        row.name:SetMaxLines(1)
-        row.stats = ui.text(row, 48, 22, width - 102, 16, 12, "", ui.muted)
-        row.stats:SetMaxLines(1)
-        row.check = ui.icon(row, width - 68, 11, 18, "ObjectiveComplete")
-        row:SetScript("OnEnter", showRowTooltip)
-        row:SetScript("OnLeave", hideRowTooltip)
-        row:SetScript("OnHide", hideRowTooltip)
-    end
-    function list:render(row, mount)
-        local pinned = manualID(settings()) == mount.id
-        local icon = mount.icon
-        if readable(icon) and not icon and C_MountJournal and C_MountJournal.GetMountInfoByID then
-            icon = select(3, C_MountJournal.GetMountInfoByID(mount.id))
-        end
-        row.icon:SetTexture(readable(icon) and icon or 132261)
-        row.name:SetText(atlas.displayMountName(mount))
-        row.name:SetTextColor(unpack(pinned and ui.gold or ui.paper))
-        row.check:SetShown(pinned)
-        row.details = {}
-        local summary, _, chance = targetDisplay(mount, row.details)
-        row.stats:SetText(chance and summary .. " / " .. chance or summary)
-        if GameTooltip:IsOwned(row) then showRowTooltip(row) end
-    end
-    function list:onClick(mount)
-        if not mount or frame.profileID ~= atlas.activePlanID() or not isPlanTarget(mount.id, frame.profileID) then return end
-        local saved = settings(true)
-        if manualID(saved) == mount.id then
-            saved.brokerTargetMode, saved.brokerMountID = "auto", nil
-        else
-            saved.brokerTargetMode, saved.brokerMountID = "manual", mount.id
-        end
-        atlas.queuePlanBrokerStatsRefresh()
-    end
     function frame:position()
         self:ClearAllPoints()
         local owner = self.owner
@@ -321,39 +268,21 @@ local function makePopup()
         end
         local scale = owner:GetEffectiveScale() / UIParent:GetEffectiveScale()
         local screenWidth, screenHeight = UIParent:GetSize()
-        local height = self:GetHeight()
+        local width, height = self:GetSize()
         local x = left * scale - (UIParent:GetLeft() or 0)
         local screenBottom = UIParent:GetBottom() or 0
-        local y = top * scale - screenBottom + 6
-        if y + height > screenHeight then y = bottom * scale - screenBottom - height - 6 end
         x = math.max(0, math.min(x, screenWidth - width))
-        y = math.max(0, math.min(y, screenHeight - height))
-        self:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", x, y)
-    end
-    function frame:refresh(profileID, mounts)
-        if self.profileID ~= profileID then list:resetScroll() end
-        if self.profileID ~= profileID or list.items ~= mounts then
-            for _, profile in ipairs(atlas.planProfiles()) do
-                if profile.id == profileID then heading:SetText(L("Текущий план: %s", profile.name)); break end
-            end
-        end
-        self.profileID = profileID
-        list.items = mounts
-        list:redraw()
-        local visible = math.min(#mounts, capacity)
-        list:SetHeight(visible * step)
-        list:SetShown(visible > 0)
-        empty:SetShown(#mounts == 0)
-        local height = header + math.max(visible, 1) * step + padding
-        if self:GetHeight() ~= height then
-            self:SetHeight(height)
-            if self:IsShown() then self:position() end
+        local y = top * scale - screenBottom + 6
+        if y + height <= screenHeight then
+            self:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", x, y)
+        else
+            self:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", x, bottom * scale - screenBottom - 6)
         end
     end
     frame:SetScript("OnEvent", function(self)
         if not self:IsMouseOver() and not (self.owner and self.owner:IsMouseOver()) then self:Hide() end
     end)
-    frame:SetScript("OnHide", function(self)
+    frame:HookScript("OnHide", function(self)
         self:UnregisterEvent("GLOBAL_MOUSE_DOWN")
         self.owner = nil
         updateBagEvent()
@@ -368,7 +297,7 @@ function atlas.openBrokerTargetMenu(owner)
     local profileID = atlas.activePlanID()
     local options = ordered
     if resolveQueued or planID ~= profileID then options = currentTargets(profileID) end
-    popup:refresh(profileID, options)
+    popup:refresh(profileID, options, manualID(settings()))
     if owner and owner.GetTop and owner.IsMouseOver then
         popup.owner = owner
         if GameTooltip:IsOwned(owner) then GameTooltip:Hide() end

@@ -7,6 +7,7 @@ local kinds = {
     [10] = "Магазин", [11] = "Исследование", [12] = "Торговая лавка",
 }
 local known, baseKeys = {}, {}
+local uniqueMounts = atlas.uniqueMounts or {}
 atlas.journalSourceRevision = 0
 function atlas.mountByID(id)
     return known[id]
@@ -29,6 +30,7 @@ local function itemSearchWords(id)
     end
     entry(atlas.lootItems[id])
     entry((atlas.vendorTokenOffers or {})[id])
+    entry((atlas.factionMountGifts or {})[id])
     for _, reward in ipairs((atlas.mountRewardItems or {})[id] or {}) do entry(reward) end
     for _, stage in pairs((atlas.attemptStages or {})[id] or {}) do entry(stage) end
     return table.concat(words, " ")
@@ -259,7 +261,9 @@ local function sourceLine(line)
     if not heading then return end
     local label = heading:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):match("^%s*(.-)%s*$")
     if label == "" or label:find("|", 1, true) then return end
-    if label == "Торгоец" then label = "Торговец" end -- Native ruRU vendor heading typo.
+    -- These misspellings occur in native ruRU journal headings.
+    if label == "Торгоец" then label = "Торговец" end
+    if label == "IПредмет" then label = "Предмет" end
     if label == "в" and line:match("^%s*|c[fF][fF][fF][fF][dD]200в:|r%s*%S") then
         label = "Зона" -- A short location header in the native ruRU journal.
     end
@@ -589,6 +593,7 @@ local function indexJournalMount(mount, id, name, spell, category, rawSource)
     mount.unavailable = unavailable
     mount.journalUnknownSourceNote = detail and detail.unknownSourceNote or nil
     mount.sourceRequirements = detail and detail.kind == kind and detail.requirements or nil
+    mount.weeklyRewardQuests = detail and detail.kind == kind and detail.weeklyRewardQuests or nil
     mount.journalSource = unavailable and "Недоступно для получения" or display(mount.journalSourceOverride or rawSource)
     mount.isRaid = raidSource(mount, source)
     mount.sourcePlaceKind = nil
@@ -635,7 +640,8 @@ local function indexJournalMount(mount, id, name, spell, category, rawSource)
         alternatives[#alternatives + 1] = group.boss
         alternatives[#alternatives + 1] = group.englishBoss or ""
     end
-    mount.key = atlas.searchKey(table.concat({ baseKeys[id] or "", name, mount.english, kind, source, table.concat(alternatives, " "),
+    local uniqueName = availability and availability.unique and availability.name or ""
+    mount.key = atlas.searchKey(table.concat({ baseKeys[id] or "", name, mount.english, uniqueName, kind, source, table.concat(alternatives, " "),
         itemSearchWords(id), forgeMap and forgeMap[1] or "", forgeMap and forgeMap[2] or "" }, " "))
 
     -- An empty source is valid. Nil means the extra info needs to be retried.
@@ -698,12 +704,25 @@ local function sampleMount(batch, id, retryable, requestedOnly)
     local name, spell, icon, _, _, category, _, _, _, _, collected = C_MountJournal.GetMountInfoByID(id)
     name, spell, icon = journalValue(name), journalValue(spell), journalValue(icon)
     category, collected = journalValue(category), journalValue(collected)
+    local candidate = uniqueMounts[id]
+    local uniqueNative = candidate and spell == candidate.spell
+    local unique = candidate and (uniqueNative
+        or spell == nil and (not mount or not mount.spell or mount.spell == candidate.spell)) and candidate
+    -- Historical metadata can fill in a name and icon. Ownership requires a
+    -- native response for the same spell.
+    if candidate and spell == nil then collected, icon = nil, nil end
+    if unique then
+        name = atlas.getLocale() == "enUS" and unique.englishName or unique.name
+        spell, icon, retryable = unique.spell, icon or unique.icon, true
+    end
     -- An arbitrary requested ID without a native record must not subscribe
     -- that ID to future journal events. A later explicit request can try again.
     if requestedOnly and not mount and name == nil and spell == nil then return false end
     local previousOwned = collection.byID[id]
     local acquiring = pending[id] == true
     local identityReady = type(name) == "string" and name ~= "" and type(spell) == "number"
+    local replaced = candidate and mount and spell ~= nil and mount.spell ~= spell
+    if replaced and not identityReady then collected, icon = nil, nil end
     if retryable and not identityReady and not (mount and mount.journalName) then
         pendingIdentity[id] = true
     else
@@ -711,13 +730,16 @@ local function sampleMount(batch, id, retryable, requestedOnly)
     end
     local ownershipReady = type(collected) == "boolean" and (not acquiring or collected == true)
     local owned = previousOwned
+    if replaced and identityReady then owned = nil end
     if ownershipReady then owned = collected end
     if owned == nil then owned = "unknown" end
 
     local sameIdentity = mount and mount.journalName == name and mount.spell == spell
     local indexed = sameIdentity and mount.indexed
     local rawSource
-    if identityReady and (retryable or indexed or excludedSpells[spell]) then
+    if unique then
+        rawSource = ""
+    elseif identityReady and (retryable or indexed or excludedSpells[spell]) then
         local excludedEarly = excludedByIdentity(id, name, spell, owned == true)
         if not excludedEarly then
             if indexed then rawSource = mount.journalSourceRaw
@@ -744,16 +766,26 @@ local function sampleMount(batch, id, retryable, requestedOnly)
     end
 
     if acquiring and owned ~= true then pending[id] = true
-    elseif retryable and (not identityReady or not ownershipReady or rawSource == nil) then pending[id] = false
+    elseif uniqueNative and not ownershipReady then pending[id] = false
+    elseif retryable and not unique and (not identityReady or not ownershipReady or rawSource == nil) then pending[id] = false
     else pending[id] = nil end
 
     local previousExpansion = previousOwned ~= nil and mount and atlas.collectionCategory(mount)
     local changed = false
     if retryable and identityReady and not indexed and (rawSource ~= nil or not sameIdentity) then
         if not mount then
-            mount = { id = id, journalOnly = true, english = atlas.englishNames[id] or name }
+            mount = { id = id, journalOnly = true }
             known[id] = mount
             batch.added[id] = mount
+        end
+        if unique then
+            mount.english = unique.englishName
+            mount.expansion = unique.expansion
+        elseif candidate then
+            mount.english = name
+            if replaced then mount.expansion, mount.icon = nil, nil end
+        else
+            mount.english = mount.english or atlas.englishNames[id] or name
         end
         indexJournalMount(mount, id, name, spell, category, rawSource)
         mount.journalName = name
@@ -831,6 +863,13 @@ local function scanJournal(job)
         scanCheckpoint(job)
     end
     -- Curated entries can exist outside the client's current membership.
+    for id in pairs(uniqueMounts) do
+        if not sampled[id] then
+            sampled[id] = true
+            sampleMount(batch, id, true)
+        end
+        scanCheckpoint(job)
+    end
     for _, mount in ipairs(atlas.mounts) do
         local id = mount.id
         if not sampled[id] and known[id] == mount then

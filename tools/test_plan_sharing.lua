@@ -21,9 +21,9 @@ local function runTimer()
     table.remove(timers, 1)()
 end
 
-local function fire(event)
+local function fire(event, ...)
     for _, frame in ipairs(frames) do
-        if frame.events[event] then frame.onEvent(frame, event) end
+        if frame.events[event] then frame.onEvent(frame, event, ...) end
     end
 end
 
@@ -50,12 +50,14 @@ local atlas = {
     isExcludedJournalMount = function(id) return id == 5 end,
     legacySourceDetails = function(mount) if mount.id == 6 then return { state = "unavailable" } end end,
     refreshBossLockouts = function() end,
+    isWarbandCharacterHidden = function() return false end,
 }
-local refreshes = 0
+local refreshes, trackerRefreshes = 0, 0
 local catalogByID = {}
 for _, mount in ipairs(atlas.mounts) do catalogByID[mount.id] = mount end
 function atlas.mountByID(id) return catalogByID[id] end
 function atlas.queuePlanBrokerRefresh() refreshes = refreshes + 1 end
+function atlas.queueExpeditionTrackerRefresh() trackerRefreshes = trackerRefreshes + 1 end
 for _, path in ipairs({ "Libs/LibStub/LibStub.lua", "Libs/AceSerializer-3.0/AceSerializer-3.0.lua",
     "Core/WarbandPlan.lua", "Core/PlanSharing.lua" }) do assert(loadfile(path))("PawAtlas", atlas) end
 local serializer = LibStub("AceSerializer-3.0")
@@ -67,12 +69,19 @@ MountAtlasDB = { plan = { [8] = true, [9] = true } }
 MountAtlasAccountDB = {
     plan = { ["1"] = true, ["2"] = true, ["999"] = true },
     planOrder = { "2", "1", "2", "999" }, planRemoved = { ["9"] = true },
-    characters = { ["Player-fixture"] = { private = "private fixture character data" } },
+    characters = { ["Player-fixture"] = { private = "private fixture character data" }, ["Player-alt"] = {} },
+    settings = { plannerCharacterGUID = "Player-alt" },
 }
 local db = MountAtlasAccountDB
 assert(atlas.activePlanID() == "personal" and #atlas.planProfiles() == 1)
 assert(#atlas.planTargets() == 2 and MountAtlasDB.planMigrated == nil, "read migrated legacy personal data")
-fire("PLAYER_ENTERING_WORLD")
+fire("PLAYER_ENTERING_WORLD", true, false)
+assert(db.settings.plannerCharacterGUID == "Player-fixture", "login selects the current character over the previous alt")
+atlas.selectPlanCharacter("Player-alt")
+fire("PLAYER_ENTERING_WORLD", false, false)
+assert(db.settings.plannerCharacterGUID == "Player-alt", "zoning preserves the manual character selection")
+atlas.selectPlanCharacter(nil)
+assert(db.settings.plannerCharacterGUID == nil, "the whole warband remains selectable")
 assert(db.plan["8"] and not db.plan["9"] and MountAtlasDB.planMigrated)
 local reads1, reads8, reads999 = journalReads[1], journalReads[8], journalReads[999]
 fire("MOUNT_JOURNAL_SEARCH_UPDATED")
@@ -108,12 +117,49 @@ assert(db.planProfiles == nil and personalBytes() == personalBefore)
 
 local first, imported = atlas.importPlan(input, "  Набег  ")
 assert(first and imported == 2)
+assert(not atlas.movePlanProfile(first, "personal", false))
 local second = assert(atlas.importPlan(input, "Набег"))
 assert(first ~= second and atlas.activePlanID() == second)
 local descriptors = atlas.planProfiles()
 assert(#descriptors == 3 and descriptors[2].name == "Набег" and descriptors[3].name == "Набег")
 assert(atlas.previewPlanImport(assert(atlas.exportPlan(first))).name == "Набег")
 local entries = db.planProfiles.entries
+do
+    local function assertOrder(...)
+        local profiles, expected = atlas.planProfiles(), { ... }
+        assert(#profiles == #expected + 1 and profiles[1].id == "personal")
+        for index, id in ipairs(expected) do
+            assert(profiles[index + 1].id == id and db.planProfiles.order[index] == id)
+        end
+    end
+
+    local firstRecord, secondRecord = entries[first], entries[second]
+    local nextID = db.planProfiles.nextID
+    local brokerBefore, trackerBefore = refreshes, trackerRefreshes
+    assert(not atlas.movePlanProfile("personal", second, true))
+    assert(not atlas.movePlanProfile(first, "missing", false))
+    assert(not atlas.movePlanProfile(first, first, true))
+    assert(not atlas.movePlanProfile(first, second, false))
+    assertOrder(first, second)
+    assert(refreshes == brokerBefore and trackerRefreshes == trackerBefore)
+
+    assert(atlas.movePlanProfile(second, first, false))
+    assertOrder(second, first)
+    assert(atlas.activePlanID() == second and db.planProfiles.nextID == nextID)
+    assert(entries[first] == firstRecord and entries[second] == secondRecord and personalBytes() == personalBefore)
+    assert(refreshes == brokerBefore + 1 and trackerRefreshes == trackerBefore + 1)
+
+    local added = assert(atlas.createPlan("Новый план"))
+    assertOrder(second, first, added)
+    assert(atlas.movePlanProfile(second, added, true))
+    assertOrder(first, added, second)
+    assert(atlas.renamePlan(added, "Переименованный план"))
+    assertOrder(first, added, second)
+    local shared = assert(atlas.importPlan(input, "Общий план"))
+    assertOrder(first, added, second, shared)
+    assert(atlas.deletePlanProfile(added) and atlas.deletePlanProfile(shared) and atlas.selectPlan(second))
+    assertOrder(first, second)
+end
 assert(entries[first].plan ~= entries[second].plan and entries[first].planOrder ~= entries[second].planOrder)
 assert(entries[first].plan ~= db.plan and entries[first].planOrder ~= db.planOrder)
 assert(atlas.isPlanned({ id = 3 }, second) and not atlas.isPlanned({ id = 3 }))
@@ -207,6 +253,24 @@ assert(db.planProfiles.entries[created].name == "Мой маршрут")
 assert(#atlas.planTargets(false, created) == 0 and #db.planProfiles.entries[created].planOrder == 0)
 assert(personalBytes() == beforeCreate and db.plan == personalPlan and db.planOrder == personalOrder)
 assert(atlas.togglePlan({ id = 3 }, created) and atlas.isPlanned({ id = 3 }, created))
+do
+    local store, entry = db.planProfiles, entries[created]
+    local order, goals, goalOrder, nextID = store.order, entry.plan, entry.planOrder, store.nextID
+    local brokerBefore, trackerBefore = refreshes, trackerRefreshes
+    assert(select(2, atlas.renamePlan("personal", "Новое имя")) == "profile")
+    assert(select(2, atlas.renamePlan("missing", "Новое имя")) == "profile")
+    for _, name in ipairs({ "", "   ", "|Hbad", ("Я"):rep(49) }) do
+        assert(select(2, atlas.renamePlan(created, name)) == "name")
+    end
+    assert(entry.name == "Мой маршрут" and refreshes == brokerBefore and trackerRefreshes == trackerBefore)
+    assert(atlas.renamePlan(created, "  Новый маршрут  ") and atlas.activePlanID() == created)
+    assert(store.order == order and order[#order] == created and entries[created] == entry and store.nextID == nextID)
+    assert(entry.plan == goals and entry.planOrder == goalOrder and goalOrder[1] == "3" and goals["3"])
+    assert(personalBytes() == beforeCreate and entries[activeBeforeCreate].name == "Набег")
+    assert(refreshes == brokerBefore + 1 and trackerRefreshes == trackerBefore + 1)
+    assert(atlas.previewPlanImport(assert(atlas.exportPlan(created))).name == "Новый маршрут")
+    assert(atlas.renamePlan(created, "Новый маршрут") and refreshes == brokerBefore + 1)
+end
 assert(atlas.deletePlanProfile(created) and atlas.activePlanID() == "personal")
 assert(atlas.selectPlan(activeBeforeCreate))
 
@@ -309,6 +373,8 @@ do
         action = function(parent, _, _, _, _, text, _, callback)
             local button = widget("Button", parent)
             button.click = callback
+            button.caption = widget("FontString", button)
+            button.caption:SetText(text)
             buttons[text] = button
             return button
         end,
@@ -398,6 +464,29 @@ do
     assert(scroll:GetVerticalScroll() == 175 - scroll:GetHeight(), "a caret below the viewport scrolls downward")
     assert((input.heightWrites or 0) == heightWrites, "caret movement must not resize the multiline edit box")
     dialog:Hide()
+
+    local planName, confirmName = edits[4], buttons["Создать план"]
+    local profile = { id = previousActive, name = entries[previousActive].name }
+    dialog:openName()
+    assert(planName:GetText() == "" and planName.focused and not confirmName.enabled)
+    buttons["Отмена"].click()
+    dialog:openName(profile)
+    assert(planName:GetText() == profile.name and planName.focused and confirmName.caption:GetText() == "Переименовать")
+    planName:SetText("|Hbad")
+    confirmName.click()
+    assert(dialog:IsShown() and entries[profile.id].name == profile.name and changed == 1)
+    planName:SetText("  Имя из диалога  ")
+    planName:GetScript("OnEnterPressed")()
+    assert(not dialog:IsShown() and atlas.activePlanID() == profile.id and entries[profile.id].name == "Имя из диалога"
+        and changed == 2)
+    profile.name = entries[profile.id].name
+    dialog:openName(profile)
+    planName:SetText("Устаревшее")
+    assert(atlas.selectPlan("personal"))
+    dialog:closeIfStale(atlas.activePlanID())
+    assert(not dialog:IsShown() and entries[profile.id].name == profile.name and changed == 2)
+    assert(atlas.selectPlan(previousActive))
+
     CreateFrame, CreateColor, atlas.ui, atlas.L, atlas.previewPlanImport =
         originalCreateFrame, originalCreateColor, originalUI, originalL, originalPreview
 end
@@ -411,6 +500,66 @@ assert(atlas.activePlanID() == "personal" and select(2, atlas.importPlan(payload
 assert(db.planProfiles == store and store.version == 99)
 assert(select(2, atlas.createPlan("Версия")) == "profiles_version" and db.planProfiles == store)
 print("PawAtlas plan sharing passed: isolated profiles, dialog validation, ordered transfer, revalidation, limits and acquisition")
+
+do
+    local mount = { id = 42, countKey = "target", npcs = { 401, 402 } }
+    local attempts = { ["npc:401:daily"] = 1300, ["npc:402:daily"] = 1300 }
+    local current = { kills = { target = 4 }, statistics = { [42] = 8 }, planStatus = {}, migrated = true }
+    local alt = { kills = { target = 3 }, statistics = { [42] = 7 }, planStatus = { ["42"] = {
+        frequency = "daily", opportunities = {
+            ["npc:401:daily"] = { state = "attempt", expires = 1400 },
+            ["npc:402:daily"] = { state = "available", expires = 1400 },
+        },
+    } } }
+    local characters = { ["Player-fixture"] = current, Alt = alt }
+    local settings = { plannerCharacterGUID = "Player-fixture", plannerPinnedCharacters = { ["Player-fixture"] = true } }
+    local environment = setmetatable({
+        MountAtlasDB = { planMigrated = true, lastAttempts = attempts },
+        MountAtlasAccountDB = { characters = characters, settings = settings },
+        C_DateAndTime = { GetSecondsUntilDailyReset = function() return 500 end },
+    }, { __index = _G })
+    local refreshes, tracker, broker = 0, 0, 0
+    local warband = {
+        mounts = { mount }, killStatistics = {}, lootFrequencies = { [42] = "daily" },
+        lootFrequency = function() return "daily" end,
+        addTranslations = function() end,
+        refreshBossLockouts = function() end,
+        refreshDetails = function() refreshes = refreshes + 1 end,
+        queueExpeditionStatsRefresh = function() tracker = tracker + 1 end,
+        queuePlanBrokerStatsRefresh = function() broker = broker + 1 end,
+    }
+    for _, path in ipairs({ "Core/Tracking.lua", "Core/WarbandPlan.lua" }) do
+        setfenv(assert(loadfile(path)), environment)("PawAtlas", warband)
+    end
+    local planEvents = frames[#frames]
+    local counts = warband.planSummary(mount)
+    assert(counts.total == 2 and counts.done == 1 and counts.completedAttempts == 3 and counts.totalAttempts == 4)
+    assert(warband.setWarbandCharacterHidden("Player-fixture", true) and warband.isWarbandCharacterHidden("Player-fixture"))
+    assert(settings.plannerCharacterGUID == nil and settings.plannerPinnedCharacters["Player-fixture"])
+    assert(refreshes == 1 and tracker == 1 and broker == 1, "hiding the selection refreshes visible views")
+    assert(warband.setWarbandCharacterHidden("Player-fixture", true) and refreshes == 1, "repeat toggle is idempotent")
+    assert(not warband.setWarbandCharacterHidden("Missing", true))
+    assert(warband.accountCharacters()[1].guid == "Alt" and #warband.accountCharacters() == 1)
+    assert(#warband.accountCharacters(true) == 2 and warband.accountCharacterCount() == 2)
+    counts = warband.planSummary(mount)
+    assert(counts.total == 1 and counts.done == 0 and counts.completedAttempts == 1 and counts.totalAttempts == 2)
+    assert(counts.expires == 1400 and warband.rawKills(mount) == 7 and warband.savedStatisticAttempts(42) == 15)
+
+    -- Login while this character is hidden keeps the entire visible warband selected.
+    settings.plannerCharacterGUID = "Alt"
+    planEvents.onEvent(planEvents, "PLAYER_ENTERING_WORLD", true)
+    assert(settings.plannerCharacterGUID == nil)
+    warband.capturePlanSnapshot(true)
+    assert(current.planStatus["42"].state == "attempt" and attempts["npc:401:daily"] == 1300)
+
+    assert(warband.setWarbandCharacterHidden("Alt", true))
+    counts = warband.planSummary(mount)
+    assert(#warband.accountCharacters() == 0 and counts.total == 0 and counts.totalAttempts == 0)
+    assert(warband.setWarbandCharacterHidden("Player-fixture", false) and warband.setWarbandCharacterHidden("Alt", false))
+    assert(settings.plannerCharacterGUID == nil and characters["Player-fixture"] == current and characters.Alt == alt)
+    assert(warband.planSummary(mount).completedAttempts == 3)
+    print("PawAtlas warband visibility passed: selection, login, summaries, preserved attempts and snapshots")
+end
 
 -- Faction alternatives use the selected character's identity, including old
 -- per-NPC snapshots. Their existing attempt keys must remain independent.

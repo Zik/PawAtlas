@@ -78,17 +78,22 @@ do
 end
 ui.journalWindowBackground(frame)
 ui.windowBorder(frame, w, h, .76)
+local footerRules = {}
 do
     local faded = CreateColor(.59, .46, .25, 0)
     local bronze = CreateColor(.59, .46, .25, .48)
     local middle = CreateColor(.37, .43, .44, .46)
     local stops = { { 16, faded }, { 186, bronze }, { w / 2, middle }, { w - 186, bronze }, { w - 16, faded } }
-    for _, y in ipairs({ 68, 567 }) do
+    local footer = ui.place(CreateFrame("Frame", nil, frame), frame, 0, 567, w, 29)
+    -- Keep the rule above the page, card, and collection ribbon levels.
+    footer:SetFrameLevel(frame:GetFrameLevel() + 4)
+    for _, parent in ipairs({ frame, footer }) do
         for i = 2, #stops do
             local from, to = stops[i - 1], stops[i]
-            local line = ui.fill(frame, from[1], y, to[1] - from[1], 1, { 1, 1, 1 })
+            local line = ui.fill(parent, from[1], parent == footer and 0 or 68, to[1] - from[1], 1, { 1, 1, 1 })
             line:SetDrawLayer("BORDER")
             line:SetGradient("HORIZONTAL", from[2], to[2])
+            if parent == footer then footerRules[#footerRules + 1] = line end
         end
     end
 end
@@ -212,16 +217,13 @@ end
 local selected, planner, settings
 local locationIndex = 1
 local refresh, showPage, returnToCollection
-local catalogTab = ui.tab(frame, 613, 10, 155, 46, "Каталог", "Book", function() showPage(false) end)
-local planTab = ui.tab(frame, 772, 10, 151, 46, "Планнер", "Route", function() showPage(true) end)
+local catalogTab = ui.tab(frame, 613, 10, 155, 46, "Каталог", "Book", function() showPage(false) end, nil, true)
+local planTab = ui.tab(frame, 772, 10, 151, 46, "Планнер", "Route", function()
+    if shared then returnToCollection() else showPage(true) end
+end, nil, true)
 local settingsTab = ui.tab(frame, 937, 11, 48, 44, nil, "Settings", function() atlas.toggleSettings() end)
-ui.fill(frame, 930, 23, 1, 22, ui.rule)
+settingsTab.divider = ui.fill(frame, 930, 23, 1, 22, ui.rule)
 ui.fill(frame, 989, 23, 1, 22, ui.rule)
-local returnTab = ui.action(frame, 786, 25, 188, 43, "Вернуться к своей коллекции", nil,
-    function() returnToCollection() end)
-ui.setFont(returnTab.caption, 12)
-returnTab.caption:SetMaxLines(2)
-returnTab:Hide()
 ui.tab(frame, 993, 11, 34, 44, nil, "Close", function() frame:Hide() end)
 
 
@@ -263,14 +265,16 @@ clear:SetScript("OnEnter", function() clearIcon:SetVertexColor(unpack(ui.gold)) 
 clear:SetScript("OnLeave", function() clearIcon:SetVertexColor(unpack(ui.muted)) end)
 local filters = {}
 local activeFilter = 1
-for _, entry in ipairs({ { "Не получены", 0, 83, 3 }, { "Получены", 91, 83, 2 }, { "Все", 182, 83, 1 } }) do
+for _, entry in ipairs({ { "Не получены", 0, 83, 3 }, { "Получены", 91, 83, 2 }, { "Все", 182, 83, 1 },
+    { "Есть у меня", 0, 129, 4 }, { "Нет у меня", 136, 129, 5 } }) do
     local filterID = entry[4]
     filters[filterID] = ui.action(page, 26 + entry[2], 36, entry[3], 24, entry[1], nil, function()
-        activeFilter = shared and 2 or filterID
+        activeFilter = shared and activeFilter == filterID and 1 or filterID
         refresh()
     end)
     ui.setFont(filters[filterID].caption, 11)
     filters[filterID].caption:SetMaxLines(1)
+    filters[filterID]:SetShown(filterID <= 3)
 end
 
 local sourceCategories = {
@@ -345,7 +349,7 @@ do
 end
 
 local showEmpty = atlas.emptyCatalog(page, function()
-    activeFilter, sourceSubtype, frequency, sourceFilter, expansionFilter = shared and 2 or 1, nil, nil, nil, nil
+    activeFilter, sourceSubtype, frequency, sourceFilter, expansionFilter = 1, nil, nil, nil, nil
     search:SetText("")
     refresh()
 end)
@@ -354,6 +358,9 @@ collectionStatus:SetJustifyH("CENTER")
 collectionStatus:Hide()
 local card = ui.place(CreateFrame("Frame", nil, page), page, 328, 8, 680, 454)
 local cardTabs = { unpack(sourceCategories) }
+cardTabs[#cardTabs + 1] = { key = "gift", label = ITEM or "Предмет маунта", icon = "Book" }
+cardTabs[#cardTabs + 1] = { key = "islandExpedition", label = "Экспедиции", icon = "Loot" }
+cardTabs[#cardTabs + 1] = { key = "islandSalvage", label = "Сумки", icon = "Loot" }
 cardTabs[#cardTabs + 1] = { key = "history", label = "История", icon = "Book" }
 cardTabs[#cardTabs + 1] = { key = "unknown", label = "Сведения", icon = "Book" }
 do
@@ -627,7 +634,8 @@ function cardTabs:classify(mount, choices)
     for _, choice in ipairs(choices) do
         local route = atlas.classifyMountSource(mount, choice)
         choice.classification = route
-        choice.tabKey = choice.covenantVariant and "covenant" or route.key
+        choice.tabKey = choice.islandExpedition and "islandExpedition" or choice.islandSalvage and "islandSalvage"
+            or choice.covenantVariant and "covenant" or route.key
             or (route.state == "historical" and "history") or "unknown"
     end
     return choices
@@ -662,16 +670,22 @@ local function buildSourceChoices(mount)
         return cardTabs:classify(mount, covenantChoices)
     end
     local blocks = atlas.factionSources and atlas.factionSources(mount)
-    for _, block in ipairs(blocks or { mount }) do
-        local vendors = atlas.vendorSources and atlas.vendorSources(block)
-        if vendors then
-            hasVendor = true
-            for _, vendor in ipairs(vendors) do choices[#choices + 1] = { vendor = vendor, view = block } end
-        elseif blocks then
-            choices[#choices + 1] = { view = block, compact = true }
-        else
-            for _, group in ipairs(mount.sourceGroups or {}) do
-                choices[#choices + 1] = { view = group, separated = true, scopedPoints = #mount.sourceGroups > 1 }
+    local factionChoices = blocks and atlas.factionMountSourceChoices(mount, blocks)
+    if factionChoices then
+        choices = factionChoices
+        for _, choice in ipairs(choices) do hasVendor = hasVendor or choice.vendor ~= nil end
+    else
+        for _, block in ipairs(blocks or { mount }) do
+            local vendors = atlas.vendorSources and atlas.vendorSources(block)
+            if vendors then
+                hasVendor = true
+                for _, vendor in ipairs(vendors) do choices[#choices + 1] = { vendor = vendor, view = block } end
+            elseif blocks then
+                choices[#choices + 1] = { view = block, compact = true }
+            else
+                for _, group in ipairs(mount.sourceGroups or {}) do
+                    choices[#choices + 1] = { view = group, separated = true, scopedPoints = #mount.sourceGroups > 1 }
+                end
             end
         end
     end
@@ -795,6 +809,7 @@ local function buildSourceChoices(mount)
         if offer and not offer.unknown then choices[1] = cardTabs:tradingPostChoice(mount, offer) end
     end
     if blackMarket then choices[#choices + 1] = blackMarket end
+    atlas.addIslandSalvageSource(mount, choices)
     return cardTabs:classify(mount, choices)
 end
 do
@@ -802,7 +817,7 @@ do
         local index = self.routeIndex or 1
         if self.key == cardTabs.active and (not self.routeIndex or index == vendorIndex) then return end
         cardTabs.active, vendorIndex, locationIndex = self.key, index, 1
-        GameTooltip:Hide()
+        ui.hideTooltipIn(card)
         setFooter()
         atlas.refreshDetails(true)
     end
@@ -885,8 +900,15 @@ do
             and not (choices[1].vendor and choices[2].vendor)
         local visible = {}
         for _, tab in ipairs(self) do
-            if not pair and grouped[tab.key] then visible[#visible + 1] = tab.button
-            else tab.button:Hide() end
+            local group = grouped[tab.key]
+            if not pair and group then
+                if tab.key == "islandSalvage" then
+                    tab.button.caption:SetText(#group[1].islandSalvage == 1 and "Сумка" or tab.label)
+                end
+                visible[#visible + 1] = tab.button
+            else
+                tab.button:Hide()
+            end
         end
         for index, button in ipairs(routeTabs) do
             if pair then
@@ -951,8 +973,8 @@ local containerOutcome = ui.text(card, 16, 0, 500, 22, 12, "", ui.muted)
 containerOutcome:SetWordWrap(false)
 containerOutcome:SetMaxLines(1)
 local sourceButton = ui.place(CreateFrame("Button", nil, card), card, 16, 158, 272, 48)
-sourceButton:SetScript("OnClick", function(_, button)
-    GameTooltip:Hide()
+sourceButton:SetScript("OnClick", function(self, button)
+    if GameTooltip:IsOwned(self) then GameTooltip:Hide() end
     if sourceButton.questTarget then
         local target = sourceButton.questTarget
         if button == "LeftButton" then
@@ -1262,7 +1284,7 @@ local function setFieldIcon(texture, name, x, y)
     -- Native map icons include transparent margins. Keep their aspect ratio
     -- while giving the visible glyph the same height as the other headings.
     local size = ({ Boss = 23, Rare = 28, Vendor = 22, Shop = 32, Raid = 32, Dungeon = 32,
-        Place = 32, Chance = 23, Quest = 22 })[name] or 20
+        Place = 32, Chance = 23, Quest = 22, Bookmark = 16 })[name] or 20
     local width = name == "Shop" and size * 64 / 82 or size
     texture:ClearAllPoints()
     ui.place(texture, card, x + 11 - width / 2, y + 9.5 - size / 2, width, size)
@@ -1299,6 +1321,7 @@ local sourcePager = ui.place(CreateFrame("Frame", nil, card), card, 560, 160, 92
 sourcePager:SetFrameLevel(card:GetFrameLevel() + 5)
 local counter = ui.text(sourcePager, 23, 0, 46, 21, 12, "", ui.muted)
 counter:SetJustifyH("CENTER")
+local navigationReserve = 118
 local function cycle(delta, pointOnly)
     if not pointOnly and #sourceChoices > 1 then
         vendorIndex = (vendorIndex - 1 + delta) % #sourceChoices + 1
@@ -1308,7 +1331,7 @@ local function cycle(delta, pointOnly)
         if count < 2 then return end
         locationIndex = (locationIndex - 1 + delta) % count + 1
     end
-    GameTooltip:Hide()
+    ui.hideTooltipIn(card)
     setFooter()
     atlas.refreshDetails()
 end
@@ -1357,7 +1380,7 @@ do
     end
     local coords = ui.waypointButton(card, function(self, button)
         if not self.point then return end
-        GameTooltip:Hide()
+        if GameTooltip:IsOwned(self) then GameTooltip:Hide() end
         local message = ui.waypointAction({ id = selected.id }, self.point, self.points, button)
         if button ~= "RightButton" or message then setFooter(message) end
     end, function(point)
@@ -1380,7 +1403,7 @@ do
         if changed then coords:clearTooltip() end
         pager:ClearAllPoints()
         local hasCoordinateLine = exact or multiple and ui.waypointGroupSize(points) > 0
-        pager:SetPoint("TOPLEFT", card, "TOPLEFT", x, -(y + (hasCoordinateLine and 0 or 13)))
+        pager:SetPoint("TOPLEFT", card, "TOPLEFT", x + navigationReserve - pager:GetWidth(), -(y + (hasCoordinateLine and 0 or 13)))
         pager:SetShown(exact or multiple)
         pointCounter:SetText((exact or multiple) and locationIndex .. " / " .. count or "")
         for _, arrow in ipairs(arrows) do arrow:SetEnabled(multiple) end
@@ -1405,16 +1428,23 @@ do
         slot.iconName = name
         setFieldIcon(slot.icon, name, slot.x, iconY)
     end
+    local chancePadding, chanceTextOffset = 10, 27
     local fields = {
         { "kind", 13, "Boss", "Источник", 25, 6 },
         { "place", 14, "Place", "Место" },
-        { "chance", 15, "Chance", "Шанс" },
-        { "status", 8, "Loot", "Статус", 24, 2 },
+        { "chance", chancePadding, "Chance", "Шанс", chanceTextOffset, chancePadding },
+        { "status", 8, "Bookmark", "Статус", 24, 2 },
     }
     local dividers = {}
-    for i = 1, #fields - 1 do
+    for i = 1, #fields do
         dividers[i] = ui.fill(card, 0, 120, 1, 23, { .30, .38, .42, .66 })
         dividers[i]:SetDrawLayer("BORDER")
+    end
+    local function positionDivider(index, x)
+        local divider = dividers[index]
+        divider:ClearAllPoints()
+        divider:SetPoint("TOPLEFT", card, "TOPLEFT", x, -120)
+        divider:Show()
     end
     local function hideValueTooltip(self)
         if GameTooltip:IsOwned(self) then GameTooltip:Hide() end
@@ -1478,8 +1508,55 @@ do
     market:SetScript("OnLeave", hideValueTooltip)
     market:SetScript("OnHide", hideValueTooltip)
     summary.kind.blackMarket = market
+    local respawnTextX = chancePadding + chanceTextOffset
+    local respawn = CreateFrame("Frame", nil, card)
+    summary.respawn = respawn
+    respawn:EnableMouse(true)
+    respawn:Hide()
+    local clock = respawn:CreateTexture(nil, "ARTWORK")
+    ui.place(clock, respawn, chancePadding + 2, 11, 18, 18)
+    clock:SetTexture("Interface\\Icons\\Spell_Holy_BorrowedTime")
+    respawn.label = ui.text(respawn, respawnTextX, labelY - 112, 80, 19, 11, "Респавн", ui.muted)
+    respawn.label:SetMaxLines(1)
+    respawn.value = ui.text(respawn, respawnTextX, valueY - 112, 80, valueHeight, 14, "")
+    respawn.value:SetWordWrap(false)
+    respawn.value:SetMaxLines(1)
+    respawn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        ui.tooltipTitle(L("Примерное время возрождения"), unpack(ui.gold))
+        if self.condition then ui.tooltipSourceText(self.condition) end
+        ui.tooltipLine(L("На основе данных игроков"), unpack(ui.muted))
+        GameTooltip:Show()
+    end)
+    respawn:SetScript("OnLeave", hideValueTooltip)
+    respawn:SetScript("OnHide", hideValueTooltip)
+    function summary:updateRespawn(choice, view, point, navigationKind, paged)
+        local route = choice.classification
+        local placeKind = view.sourcePlaceKind or view.kind
+        local instanced = view.sourcePlaceKind ~= "Открытый мир"
+            and (view.journalInstance or view.isRaid or placeKind == "Рейд" or placeKind == "Подземелье")
+        local interval, condition
+        if route.state == "current" and not route.requirement and not choice.contextOnly
+            and not (choice.islandExpedition or choice.islandSalvage or choice.grant or choice.covenantVariant)
+            and not (navigationKind or paged)
+            and not instanced
+            and (route.key == "loot" or route.key == "quest" or route.subtype == "Сбор предметов" and point and point.npc) then
+            interval, condition = atlas.sourceRespawnText(selected, view, point)
+        end
+        respawn.value:SetText(interval or "")
+        respawn.condition = interval and condition or nil
+        respawn:SetShown(interval ~= nil)
+    end
     local measure = card:CreateFontString(nil, "ARTWORK")
     measure:Hide()
+    local function compactFieldWidth(slot)
+        measure:SetFont(slot.value:GetFont())
+        measure:SetText(slot.value:GetText())
+        local valueWidth = measure:GetUnboundedStringWidth()
+        measure:SetFont(slot.label:GetFont())
+        measure:SetText(slot.label:GetText())
+        return 2 * chancePadding + chanceTextOffset + math.ceil(math.max(valueWidth, measure:GetUnboundedStringWidth()))
+    end
     local statusChoices = { "Не получен", "Недоступно", "В коллекции" }
     function summary:layout(hasPlace, hasChance)
         local font, size, flags = self.status.value:GetFont()
@@ -1487,8 +1564,11 @@ do
         market.source = cardTabs.marketSource
         local hasMarket = market.source ~= nil
         local pagerField = sourcePager:IsShown() and (hasPlace and "place" or "kind")
+        local chanceLabel = hasChance and self.chance.label:GetText() or ""
+        local chanceValue = hasChance and self.chance.value:GetText() or ""
+        local respawnValue = respawn.value:GetText() or ""
         local key = table.concat({ font, size, flags or "", locale, tostring(hasPlace), tostring(hasChance),
-            tostring(hasMarket), tostring(self.openingChance ~= nil), tostring(pagerField) }, "\001")
+            tostring(hasMarket), chanceLabel, chanceValue, respawnValue, tostring(pagerField) }, "\001")
         if self.layoutKey == key then return end
         self.layoutKey = key
         measure:SetFont(font, size, flags)
@@ -1498,19 +1578,25 @@ do
             statusWidth = math.max(statusWidth, measure:GetUnboundedStringWidth())
         end
         statusWidth = math.max(124, math.min(177, math.ceil(statusWidth) + 52))
-        if not hasPlace and not hasChance then statusWidth = math.floor(card:GetWidth() * .41) end
-        local chanceWidth = hasChance and 123 or 0
-        if self.openingChance then
-            measure:SetFont(self.chance.label:GetFont())
-            measure:SetText(L("Шанс при открытии"))
-            chanceWidth = math.max(chanceWidth, math.ceil(measure:GetUnboundedStringWidth()) + 54)
-        end
-        local remaining = card:GetWidth() - statusWidth - chanceWidth
+        if not hasPlace and not hasChance and respawnValue == "" then statusWidth = math.floor(card:GetWidth() * .41) end
+        local chanceWidth = hasChance and compactFieldWidth(self.chance) or 0
+        local respawnWidth = respawnValue ~= "" and compactFieldWidth(respawn) or 0
+        local remaining = card:GetWidth() - statusWidth - chanceWidth - respawnWidth
         local pagerWidth = sourcePager:GetWidth() + 4
         local kindWidth = hasPlace and math.floor((remaining - (pagerField == "place" and pagerWidth or 0)) * .40) or remaining
         local widths = { kindWidth, hasPlace and (remaining - kindWidth) or 0, chanceWidth, statusWidth }
         local x, dividerIndex = 0, 0
         for i, field in ipairs(fields) do
+            if field[1] == "chance" and respawnWidth > 0 then
+                dividerIndex = dividerIndex + 1
+                positionDivider(dividerIndex, x)
+                respawn:ClearAllPoints()
+                ui.place(respawn, card, x, 112, respawnWidth, 40)
+                local width = respawnWidth - respawnTextX - chancePadding
+                respawn.label:SetWidth(width)
+                respawn.value:SetWidth(width)
+                x = x + respawnWidth
+            end
             local slot = self[field[1]]
             local width = widths[i]
             local visible = width > 0
@@ -1520,10 +1606,7 @@ do
             if visible then
                 if x > 0 then
                     dividerIndex = dividerIndex + 1
-                    local divider = dividers[dividerIndex]
-                    divider:ClearAllPoints()
-                    divider:SetPoint("TOPLEFT", card, "TOPLEFT", x, -120)
-                    divider:Show()
+                    positionDivider(dividerIndex, x)
                 end
                 local iconX = x + field[2]
                 local valueX = iconX + (field[5] or 29)
@@ -1658,6 +1741,19 @@ local cardDetails
 local chanceTrack = ui.place(CreateFrame("Frame", nil, card), card, 217, 409, 291, 31)
 chanceTrack:EnableMouse(true)
 chanceTrack:SetScript("OnEnter", function(self)
+    if self.islandCount ~= nil then
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        ui.tooltipTitle(L("Попыток: %s", self.islandCount), unpack(ui.gold))
+        ui.tooltipLine(L("Попытка засчитывается за завершение островной экспедиции или открытие одной из перечисленных для этого маунта сумок."),
+            1, 1, 1, true)
+        if self.islandRate then
+            local rate = probabilityText(self.islandRate):gsub("^≈ ", "")
+            ui.tooltipLine(L("Расчёт по %s за попытку. Фактический шанс может отличаться.",
+                rate), ui.muted[1], ui.muted[2], ui.muted[3], true)
+        end
+        GameTooltip:Show()
+        return
+    end
     if displayedProbability == nil then return end
     GameTooltip:SetOwner(self, "ANCHOR_TOP")
     local reward = ui.coloredMountName(selected)
@@ -1704,13 +1800,15 @@ chanceTrack:SetScript("OnEnter", function(self)
 end)
 chanceTrack:SetScript("OnLeave", hideOdds)
 chanceTrack:SetScript("OnHide", hideOdds)
-ui.icon(chanceTrack, 0, 2, 21, "Chance")
+chanceTrack.icon = ui.icon(chanceTrack, 0, 2, 21, "Chance")
 local chanceRail = ui.fill(chanceTrack, 28, 7, 260, 7, ui.rule)
 chanceRail:SetGradient("HORIZONTAL", CreateColor(.25, .30, .35), CreateColor(.22, .47, .35))
 local chanceFill = ui.fill(chanceTrack, 28, 7, 1, 7, ui.mint)
+chanceTrack.scaleMarkers = {}
 do
     for _, fraction in ipairs({ .25, .75 }) do
-        ui.fill(chanceTrack, 28 + chanceRail:GetWidth() * fraction, 15, 1, 2, ui.muted)
+        local markers = chanceTrack.scaleMarkers
+        markers[#markers + 1] = ui.fill(chanceTrack, 28 + chanceRail:GetWidth() * fraction, 15, 1, 2, ui.muted)
     end
     local chanceGlow = {}
     for i, y in ipairs({ 2, 14 }) do
@@ -1809,8 +1907,9 @@ do
         end
     end
 end
-ui.text(chanceTrack, 28, 16, 45, 13, 10, "0 %", ui.muted)
-ui.text(chanceTrack, 241, 16, 47, 13, 10, "100 %", ui.muted):SetJustifyH("RIGHT")
+chanceTrack.scaleMarkers[3] = ui.text(chanceTrack, 28, 16, 45, 13, 10, "0 %", ui.muted)
+chanceTrack.scaleMarkers[4] = ui.text(chanceTrack, 241, 16, 47, 13, 10, "100 %", ui.muted)
+chanceTrack.scaleMarkers[4]:SetJustifyH("RIGHT")
 chanceTrack.value = ui.text(chanceTrack, 68, 15, 180, 15, 11, "", ui.paper)
 chanceTrack.value:SetJustifyH("CENTER")
 chanceTrack.condition = ui.place(CreateFrame("Frame", nil, card), card, 12, 405, 196, 35)
@@ -1826,8 +1925,55 @@ chanceTrack.condition.title = ui.text(chanceTrack.condition, 50, 0, 147, 18, 14,
 ui.text(chanceTrack.condition, 50, 18, 147, 16, 11, "При выполнении условий", ui.muted)
 chanceTrack.condition:Hide()
 chanceTrack.background = ui.surface(card, 0, 400, card:GetWidth(), 46, false, "SourceCard")
+for _, texture in ipairs(chanceTrack.background) do texture:Hide() end
+chanceTrack.islandLabel = ui.text(card, 16, 407, 196, 31, 13, "", ui.paper)
+chanceTrack.islandLabel:SetMaxLines(2)
+chanceTrack.islandLabel:Hide()
 chanceFill:SetDrawLayer("ARTWORK", 1)
 chanceTrack:Hide()
+
+function chanceTrack:setIslandMode(enabled)
+    if self.islandMode == enabled then return end
+    self.islandMode = enabled
+    self.islandCount, self.islandRate = nil, nil
+    self.islandLabel:SetShown(enabled)
+    ui.setIcon(self.icon, enabled and "Loot" or "Chance")
+end
+
+function chanceTrack:setFill(probability, guaranteed)
+    local fraction = probability and math.max(0, math.min(1, probability)) or 0
+    local width = chanceRail:GetWidth()
+    local fillWidth = math.min(guaranteed and width or width - 1, width * fraction)
+    for _, tier in ipairs(ui.chances) do
+        if fraction * 100 <= tier.limit then
+            chanceFill:SetColorTexture(unpack(tier.color))
+            self:setRays(fraction > .60 and fillWidth, not guaranteed, unpack(tier.color))
+            break
+        end
+    end
+    self:setGlow(guaranteed == true)
+    chanceFill:SetWidth(math.max(.01, fillWidth))
+    chanceFill:SetShown(fraction > 0)
+end
+
+function chanceTrack:setScaleShown(shown)
+    for _, marker in ipairs(self.scaleMarkers) do marker:SetShown(shown) end
+end
+
+function atlas.refreshIslandExpeditionDetails()
+    if not chanceTrack.islandMode or not chanceTrack:IsVisible() then return end
+    local count, cumulative, perAttempt = atlas.islandExpeditionProgress(selected)
+    chanceTrack.islandCount, chanceTrack.islandRate = count, perAttempt
+    chanceTrack.islandLabel:SetText(count ~= nil and L("Попыток: %s", count) or "")
+    local percent = cumulative ~= nil and probabilityText(cumulative):gsub("^≈ ", "") or ""
+    chanceTrack.value:SetText(percent)
+    chanceTrack:setScaleShown(cumulative ~= nil)
+    chanceTrack:setFill(cumulative, false)
+    if GameTooltip:IsOwned(chanceTrack) and chanceTrack:IsMouseOver() then
+        chanceTrack:GetScript("OnEnter")(chanceTrack)
+    end
+end
+
 local planButton = ui.action(card, 526, 408, 134, 31, "В план", nil, function()
     atlas.togglePlan(selected, atlas.activePlanID())
     atlas.refreshDetails()
@@ -1867,15 +2013,44 @@ detailArea.icon = ui.icon(detailArea, 13, 4, 20, "Quest")
 detailArea.heading = ui.text(detailArea, 40, 3, 285, 23, 15, "Квест", ui.paper)
 detailArea.quest = ui.text(detailArea, 18, 32, card:GetWidth() - 36, 20, 15, "", ui.gold)
 detailArea.quest:SetMaxLines(1)
-detailArea.progress = ui.criteriaProgressBar(detailArea, card:GetWidth() - 178, 34)
+detailArea.questCheck = ui.check(detailArea, card:GetWidth() - 40, 32)
+detailArea.progress = ui.criteriaProgressBar(detailArea, card:GetWidth() - 203, 34)
+function detailArea:cancelWeeklyTimer()
+    if self.weeklyTimer then
+        self.weeklyTimer:Cancel()
+        self.weeklyTimer = nil
+    end
+end
+detailArea:HookScript("OnHide", detailArea.cancelWeeklyTimer)
+function detailArea:updateQuest(statusOnly)
+    local quest = self.questSource
+    local id = quest and (quest.finalQuest or quest.id)
+    local complete = id and atlas.characterQuestCompleted(quest.weeklyFlag or id) == true
+    if not (complete and quest.weeklyFlag) then
+        self:cancelWeeklyTimer()
+    elseif not self.weeklyTimer and C_Timer and C_Timer.NewTimer and C_DateAndTime and C_DateAndTime.GetSecondsUntilWeeklyReset then
+        local seconds = C_DateAndTime.GetSecondsUntilWeeklyReset()
+        if not (issecretvalue and issecretvalue(seconds)) and type(seconds) == "number" and seconds >= 0 then
+            self.weeklyTimer = C_Timer.NewTimer(seconds + 1, function()
+                self.weeklyTimer = nil
+                if self:IsVisible() then self:updateQuest(true) end
+            end)
+        end
+    end
+    self.questCheck:SetShown(complete == true)
+    if statusOnly or not quest then return end
+    self.quest:SetWidth(card:GetWidth() - (self.progress:IsShown() and 241 or 66))
+    local name = atlas.dataName(quest)
+    self.quest:SetText(ui.questChainLink(id, name) or name)
+end
 function cardDetails:layoutNote(note)
-    local questSource = self.finalQuest or self.unlockQuest
+    local questSource = self.finalQuest or self.sourceQuest
     if detailArea.sourceText ~= note or detailArea.questSource ~= questSource then detailArea:Hide() end
     detailArea.sourceText, detailArea.questSource = note, questSource
-    self.refreshNoteLinks()
     local quest = questSource ~= nil
     local hasProgress = detailArea.progress:update(self.finalQuest and self.periodicDone, self.periodicTotal, self.finalQuest, self.chainGrant)
-    detailArea.quest:SetWidth(card:GetWidth() - (hasProgress and 216 or 36))
+    detailArea:updateQuest()
+    detail:SetText(atlas.cardItemIcons(atlas.sourceInlineLinks(note or "")))
     local hasNote = note ~= "" or quest
     local sourceBottom = self.endsAt + 5
     local top = sourceBottom + (quest and 10 or 2)
@@ -1914,7 +2089,9 @@ do
     end
     area:SetScript("OnEnter", function(self)
         local choice = currentChoice()
-        local history = selected and choice and choice.classification.state ~= "historical" and ui.sourceHistory(selected)
+        local availability = selected and selected.availability
+        local history = selected and choice and (choice.classification.state ~= "historical"
+            or availability and availability.unique) and ui.sourceHistory(selected)
         local link = formerQuestLink()
         if link then
             history = ui.addRouteText(history or "", L("Раньше выдавался за задание %s", link))
@@ -1931,20 +2108,11 @@ do
         local richLink = button == "LeftButton" and formerQuestLink()
         local link = richLink and richLink:match("|H(quest:[^|]+)|h")
         if link then
-            GameTooltip:Hide()
+            if GameTooltip:IsOwned(self) then GameTooltip:Hide() end
             if IsShiftKeyDown() then atlas.linkSource(richLink, self)
             else atlas.openSourceReference(richLink, self) end
         elseif defaultClick then defaultClick(self, button) end
     end)
-end
-function cardDetails.refreshNoteLinks()
-    local text = detailArea.sourceText or ""
-    local questSource = detailArea.questSource
-    if questSource then
-        local name = atlas.dataName(questSource)
-        detailArea.quest:SetText(ui.questChainLink(questSource.finalQuest or questSource.id, name) or name)
-    end
-    detail:SetText(atlas.cardItemIcons(atlas.sourceInlineLinks(text)))
 end
 function cardDetails:refreshLayout()
     local note = self:deduplicatePlace(self.note)
@@ -1971,7 +2139,7 @@ end
 do
     local guide = ui.button(card, 500, 210, 26, 26, function(self)
         if self.view then
-            GameTooltip:Hide()
+            if GameTooltip:IsOwned(self) then GameTooltip:Hide() end
             setFooter(atlas.openPlace(self.view))
         end
     end)
@@ -1999,7 +2167,7 @@ end
 -- runtime accepts larger closures, so it cannot enforce this client constraint.
 local function refreshHeader(collected)
     collectedState:SetShown(collected)
-    if collected then collectedState:update(selected, shared ~= nil) end
+    if collected then collectedState:update(selected) end
     local expansion = selected.expansion ~= "Classic" and selected.expansion or nil
     local event = expansionFilter and (expansionFilter.id == "LegionRemix" or expansionFilter.id == "PandariaRemix")
         and atlas.collectionCategory(selected) == expansionFilter.id and expansionFilter or nil
@@ -2078,7 +2246,7 @@ local function refreshSources(collected)
     local item = atlas.lootItems[selected.id]
     local namedTarget = target and target ~= "" and target ~= view.kind and target ~= view.sourceKind
         and not ui.sameSourceAddress(target, summaryPlace)
-        and not (item and (item.basis == "open" or item.basis == "cage") and ui.containerNameMatches(target, item))
+        and not (item and (item.basis == "open" or item.basis == "cage") and ui.sourceItemMatches(target, item))
     local raidReagent = route.subtype == "Сбор предметов" and view.sourceKind == "Босс" and view.sourcePlaceKind == "Рейд"
         and atlas.accountLootSources and atlas.accountLootSources[selected.id]
     local reagentSource = raidReagent or route.subtype == "Сбор предметов" and point and point.npc
@@ -2090,7 +2258,7 @@ local function refreshSources(collected)
         and atlas.hasSourceCoordinates(navigationPoint) or #navigationPoints > 1)
     local showPager = #sourceChoices > 1 and not cardTabs.hasRouteTabs
 
-    local progress = not shared and not vendor and not interaction and view.trackingCompatible ~= false
+    local progress = not vendor and not interaction and view.trackingCompatible ~= false
         and atlas.planOpportunityProgress and atlas.planOpportunityProgress(selected, UnitGUID("player"))
     local multipleSources = progress and progress.totalAttempts > 1
     if progress and not multipleSources then
@@ -2114,7 +2282,7 @@ local function refreshSources(collected)
     end
     selected.difficultyBadgeVisible, selected.difficultyBadgeWidth = view.difficultyBadgeVisible, view.difficultyBadgeWidth
     if view.difficultyBadgeVisible then right = right - view.difficultyBadgeWidth - 10 end
-    if showNavigation then right = right - 118 end
+    if showNavigation then right = right - navigationReserve end
     placeArea:updateNavigation(showNavigation and navigationPoint or nil, showNavigation and #navigationPoints or 0,
         navigationPoints, right, targetY)
     if showProgress then
@@ -2130,7 +2298,7 @@ local function refreshSources(collected)
     local showRow = showTarget or showNavigation or showGuide or view.difficultyBadgeVisible
     sourceRow.sourceRight = right
     sourceRow:fitTarget(targetText .. (encounterLink and "  ›" or ""), right - 26, showRow)
-    local container = route.key == "loot" and not (historical or vendor or choice.blackMarket or choice.contextOnly)
+    local container = route.key == "loot" and not (historical or vendor or choice.blackMarket or choice.contextOnly or choice.islandExpedition)
         and atlas.mountRewardContainerRewards and atlas.mountRewardContainerRewards[selected.id]
     summary.openingChance = container and 1 / container.contentsRate or nil
     local outcomeText = container and (atlas.getLocale() == "enUS" and container.englishText or container.text)
@@ -2144,7 +2312,7 @@ local function refreshSources(collected)
     cardDetails.questChain, cardDetails.chainGrant = choice.questChain, choice.chainGrant
     cardDetails.progressChoice = choice
     cardDetails.directQuestReward = directQuestReward
-    cardDetails.shared, cardDetails.collected = shared ~= nil, collected
+    cardDetails.collected = collected
     cardDetails.structured = structured
     cardDetails.sourcePresentation = showTarget and { target = targetText, place = placeName, points = point and navigationPoints or nil }
     cardDetails.summaryPlace = summaryPlace
@@ -2159,23 +2327,27 @@ local function refreshSources(collected)
     cardDetails.isQuestStep = choice.questStep
     local chain = choice.questChain
     cardDetails.finalQuest = chain and choice.chainGrant and chain.finalQuest and not chain.stageTitle and chain or nil
-    cardDetails.unlockQuest = atlas.protoformUnlockQuest(selected, choice)
+    cardDetails.sourceQuest = atlas.sourceCardQuest(selected, choice)
     cardDetails.bodyEnd = collected and collectedFooterY - 6 or 395
     if cardDetails.finalQuest then cardDetails.bodyEnd = cardDetails.bodyEnd - 108
-    elseif cardDetails.unlockQuest then cardDetails.bodyEnd = cardDetails.bodyEnd - 78
+    elseif cardDetails.sourceQuest then cardDetails.bodyEnd = cardDetails.bodyEnd - 78
     elseif cardDetails.note ~= "" then cardDetails.bodyEnd = cardDetails.bodyEnd - 76 end
     local activeOffer = vendor and vendor.groupedLocations and vendorPoint or vendor
     cardDetails:update(selected, not interaction and selected.locations and point, activeOffer, choice.view)
+    summary:updateRespawn(choice, view, point, navigationKind, cardDetails.sourcePageCount > 1)
 
     sourceButton:SetWidth(math.max(54, sourceButton:GetWidth() - cardDetails.sourceInset))
     sourceButton:SetShown(showTarget)
     local sourceText, glyph = ui.sourceAppearance(route)
+    local unique = historical and selected.availability and selected.availability.unique
+    if unique then sourceText, glyph = "Уникальный", "Book" end
     sourceButton:updatePortrait(showTarget, selected, vendorPoint or vendor or questTarget or view, not vendor and not questTarget and point or nil,
-        questTarget and "QuestGiver" or raidReagent and "Boss" or glyph)
-    refreshBossCheck(view, not shared and showTarget and not vendor and not interaction,
+        questTarget and "QuestGiver" or raidReagent and "Boss" or choice.islandSalvage and "Vendor" or glyph)
+    refreshBossCheck(view, showTarget and not vendor and not interaction,
         not interaction and selected.locations and point, progress)
     sourceButton:updateHitbox(showTarget)
     summary.kind.value:SetText(sourceText)
+    summary.kind.value:SetTextColor(unpack(unique and ui.gold or ui.paper))
     local sellerFaction = vendorPoint and vendorPoint.faction or vendor and vendor.faction
     local factionLabel = sellerFaction == "Alliance" and L("Альянс") or sellerFaction == "Horde" and L("Орда")
     summary.place.label:SetText(factionLabel and L("Место") .. " · " .. factionLabel or "Место")
@@ -2183,8 +2355,13 @@ local function refreshSources(collected)
     summary.kind.hitbox:updateBounds(true)
     local status = summary.status
     local unavailable = historical or route.stock == "outOfRotation"
-    summary:setIcon("status", collected and "ObjectiveComplete" or unavailable and "Lock" or "Loot")
-    status.icon:SetVertexColor(unpack(collected and ui.mint or unavailable and ui.muted or ui.gold))
+    summary:setIcon("status", collected and "ObjectiveComplete" or unavailable and "Lock" or "Bookmark")
+    status.icon:SetDesaturated(not collected and not unavailable)
+    if collected or unavailable then
+        status.icon:SetVertexColor(unpack(collected and ui.mint or ui.muted))
+    else
+        status.icon:SetVertexColor(.85, .85, .85)
+    end
     status.value:SetText(collected and "В коллекции" or unavailable and "Недоступно" or "Не получен")
     status.value:SetTextColor(unpack(collected and ui.mint or ui.muted))
     status.hitbox:updateBounds(true)
@@ -2210,8 +2387,9 @@ local function refreshChance(collected, vendor, view, official)
     local starterChance = cardDetails.starterChance
     summary.starterChance, summary.starterRateEstimated = starterChance, cardDetails.starterRateEstimated
     local perAttempt, cumulative, attempts
-    local rollForMount = not (interaction or vendor or chain or directQuestReward or summary.sourceGuarantee or choice.blackMarket)
-    if not shared and rollForMount then
+    local rollForMount = not (interaction or vendor or chain or directQuestReward or summary.sourceGuarantee
+        or choice.blackMarket or choice.islandExpedition or choice.factionGift)
+    if rollForMount then
         perAttempt, cumulative, attempts = atlas.dropProbability(selected)
     end
     displayedInteraction = conditionalReward ~= nil and conditionalReward ~= false
@@ -2225,11 +2403,11 @@ local function refreshChance(collected, vendor, view, official)
     local trackingCompatible = not interaction and view.trackingCompatible ~= false
     local chanceEligible = not atlas.rewardChanceEligible or atlas.rewardChanceEligible(selected, vendor ~= nil)
     local sharedRaidLoot = atlas.raidLootReward and atlas.raidLootReward(selected)
-    local rewardProgress = trackingCompatible and rollForMount and not shared
+    local rewardProgress = trackingCompatible and rollForMount
         and atlas.rewardAttemptProgress and atlas.rewardAttemptProgress(selected)
     local definitions = atlas.attemptStages and atlas.attemptStages[selected.id]
     local reward = definitions and definitions.reward
-    local estimate = not shared and reward and reward.rarityEncounterEstimate and atlas.kills(selected)
+    local estimate = reward and reward.rarityEncounterEstimate and atlas.kills(selected)
     local showChance = (displayedInteraction or trackingCompatible) and not selected.availability and not vendor and not sharedRaidLoot
         and perAttempt ~= nil and (displayedReward ~= nil or chanceEligible)
     summary.rewardRateEstimated = showChance and rollForMount and not guaranteed
@@ -2237,26 +2415,27 @@ local function refreshChance(collected, vendor, view, official)
     local sourceKey = cardDetails.sourceClassification.key
     local hasRewardAttempts = type(attempts) == "number" or rewardProgress and type(rewardProgress.attempts) == "number"
     local trackedRoute = sourceKey == "loot" or sourceKey == "fishing" or hasRewardAttempts
-    local showKills = not raidGuarantee and trackedRoute and rollForMount and not shared and trackingCompatible
+    local showKills = not raidGuarantee and trackedRoute and rollForMount and trackingCompatible
         and (rewardProgress and rewardProgress.event == "MOUSEOVER" or not guaranteed and chanceEligible)
         and not collected and not selected.availability
         and (hasRewardAttempts or type(estimate) == "number" or rewardProgress ~= nil
             or not official or atlas.killStatistics[selected.id] ~= nil)
     local showProgress = not collected and displayedProbability ~= nil and (raidGuarantee ~= nil or routeGuarantee ~= nil or showChance)
-    local directGuarantee = summary.directQuestReward ~= nil
+    local showIslandAttempts = not collected and (choice.islandExpedition == true or choice.islandSalvage ~= nil)
+        and atlas.islandExpeditionProgress ~= nil
+    local directGuarantee = summary.directQuestReward ~= nil or summary.sourceGuarantee and summary.sourceGuarantee.method == "barter"
     local hasChance = raidGuarantee ~= nil or showChance or directGuarantee or starterChance ~= nil or summary.openingChance ~= nil
-    summary:layout(cardDetails.activeSummaryPlace ~= nil and cardDetails.activeSummaryPlace ~= "", hasChance)
-    cardDetails.setSummaryPlace(cardDetails.activeSummaryPlace)
     oddsArea:SetShown(hasChance)
     oddsArea:SetScript("OnEnter", (raidGuarantee or directGuarantee) and chanceTrack:GetScript("OnEnter") or summary.showOdds)
     local finalRewardChance = directGuarantee or displayedReward and displayedReward.reagent and not starterChance
     summary.chance.label:SetText(summary.openingChance and "Шанс при открытии" or raidGuarantee and "Добыча рейда" or finalRewardChance and "Награда" or "Шанс")
     summary.chance.value:SetText(summary.openingChance and probabilityText(summary.openingChance) or starterChance and probabilityText(starterChance) or (raidGuarantee or directGuarantee) and probabilityText(1, true)
         or showChance and probabilityText(perAttempt, perAttempt == 1) or "")
-    chanceTrack:SetShown(showProgress)
-    for _, texture in ipairs(chanceTrack.background) do texture:SetShown(showProgress or showKills) end
-    local fraction = showProgress and math.max(0, math.min(1, displayedProbability)) or 0
-    local value = showProgress and probabilityText(displayedProbability, guaranteed) or ""
+    summary:layout(cardDetails.activeSummaryPlace ~= nil and cardDetails.activeSummaryPlace ~= "", hasChance)
+    cardDetails.setSummaryPlace(cardDetails.activeSummaryPlace)
+    chanceTrack:setIslandMode(showIslandAttempts)
+    for _, texture in ipairs(chanceTrack.background) do texture:SetShown(showProgress or showKills or showIslandAttempts) end
+    chanceTrack:SetShown(showProgress or showIslandAttempts)
     local showCondition = showProgress and guaranteed and not showKills
     local conditionTitle, conditionIcon = "Добыча", "Loot"
     if raidGuarantee then
@@ -2267,18 +2446,13 @@ local function refreshChance(collected, vendor, view, official)
     chanceTrack.condition.title:SetText(conditionTitle)
     ui.setIcon(chanceTrack.condition.icon, conditionIcon)
     chanceTrack.condition:SetShown(showCondition)
-    chanceTrack.value:SetText(value)
-    local fillWidth = math.min(guaranteed and chanceRail:GetWidth() or chanceRail:GetWidth() - 1, chanceRail:GetWidth() * fraction)
-    for _, tier in ipairs(ui.chances) do
-        if fraction * 100 <= tier.limit then
-            chanceFill:SetColorTexture(unpack(tier.color))
-            chanceTrack:setRays(fraction > .60 and fillWidth, not guaranteed, unpack(tier.color))
-            break
-        end
+    if showIslandAttempts then
+        atlas.refreshIslandExpeditionDetails()
+    else
+        chanceTrack.value:SetText(showProgress and probabilityText(displayedProbability, guaranteed) or "")
+        chanceTrack:setScaleShown(true)
+        chanceTrack:setFill(showProgress and displayedProbability or nil, showProgress and guaranteed)
     end
-    chanceTrack:setGlow(showProgress and guaranteed or false)
-    chanceFill:SetWidth(math.max(.01, fillWidth))
-    chanceFill:SetShown(fraction > 0)
     kills:SetShown(showKills)
     killsHelp:SetShown(showKills)
     attemptsLabel:SetShown(showKills)
@@ -2295,11 +2469,6 @@ function cardDetails:refreshReward()
     refreshChance(self.collected, currentVendor(), currentSource(), selected.journalOnly == true)
 end
 
-local function viewedCollection()
-    if shared then return shared end
-    return atlas.collection
-end
-
 function atlas.refreshDetails(cardOnly)
     if cardOnly ~= true then
         if atlas.queueExpeditionStatsRefresh then atlas.queueExpeditionStatsRefresh() end
@@ -2309,12 +2478,11 @@ function atlas.refreshDetails(cardOnly)
     if planner and planner:IsShown() then planner:update(); return end
     if not page:IsShown() then return end
     local waypoint = placeArea.waypoint
-    local showingWaypoint = GameTooltip:IsShown() and GameTooltip:IsOwned(waypoint)
+    local showingWaypoint = ui.tooltipOwnerIn(waypoint) == waypoint
     catalog:redraw()
     if not selected or catalog.loading and catalog.wantsPlan then sourceLocation = nil; card:Hide(); return end
-    local collection = viewedCollection()
-    local collected = collection and collection.byID[selected.id] == true
-    if not collection then
+    local collected = atlas.collection and atlas.collection.byID[selected.id]
+    if type(collected) ~= "boolean" then
         local owned = select(11, C_MountJournal.GetMountInfoByID(selected.id))
         if (issecretvalue and issecretvalue(owned)) or type(owned) ~= "boolean" then card:Hide(); return end
         collected = owned
@@ -2323,21 +2491,19 @@ function atlas.refreshDetails(cardOnly)
     refreshHeader(collected)
     refreshChance(collected, refreshSources(collected))
     if showingWaypoint and waypoint:IsVisible() and waypoint:IsMouseOver() then waypoint:refreshTooltip() end
-    if GameTooltip:IsShown() then
-        local owner = GameTooltip:GetOwner()
-        if owner and (owner == sourceButton.hitbox or owner == sourceProgress
-            or owner == oddsArea or owner == chanceTrack or owner == chanceTrack.condition or owner == killsHelp
-            or owner == loreArea or owner == summary.kind.blackMarket or owner.atlasSummaryValue)
-            and owner:IsVisible() then
-            if owner:IsMouseOver() then owner:GetScript("OnEnter")(owner)
-            else GameTooltip:Hide() end
-        end
+    local owner = ui.tooltipOwnerIn(card)
+    if owner and (owner == sourceButton.hitbox or owner == sourceProgress or owner == summary.respawn
+        or owner == oddsArea or owner == chanceTrack or owner == chanceTrack.condition or owner == killsHelp
+        or owner == loreArea or owner == summary.kind.blackMarket or owner.atlasSummaryValue)
+        and owner:IsVisible() then
+        if owner:IsMouseOver() then owner:GetScript("OnEnter")(owner)
+        else GameTooltip:Hide() end
     end
 end
 
 local function selectMount(mount, queryChanged)
     if selected ~= mount or queryChanged then
-        if not GameTooltip:IsOwned(summary.kind.blackMarket) then GameTooltip:Hide() end
+        ui.hideTooltipIn(card, summary.kind.blackMarket)
         locationIndex = 1
         if searchQuery.key ~= "" and mount and mount.locations then
             for i, loc in ipairs(atlas.mountLocations(mount, UnitGUID("player"), true)) do
@@ -2370,6 +2536,19 @@ local function colorCatalogRow(row)
     end
     for _, texture in ipairs(row.bg) do texture:SetVertexColor(r, g, b) end
 end
+function catalog:refreshRowHistory(row)
+    local mount = row.item
+    local history = mount and mount.availability and mount.availability.unique and ui.sourceHistory(mount)
+    if not history or history == "" or not row:IsMouseOver() then
+        if GameTooltip:IsOwned(row) then GameTooltip:Hide() end
+        return
+    end
+    GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
+    ui.tooltipTitle(atlas.displayMountName(mount))
+    ui.tooltipLine(L("История"), unpack(ui.gold))
+    ui.tooltipSourceText(history)
+    GameTooltip:Show()
+end
 function catalog:render(row, mount)
     local active = mount == selected
     local r, g, b = atlas.qualityColor(atlas.mountDisplayQuality(mount.id))
@@ -2383,28 +2562,40 @@ function catalog:render(row, mount)
     end
     row.selected = active
     colorCatalogRow(row)
-    local collection = viewedCollection()
-    local owned = collection and collection.byID[mount.id] == true
+    local owned = atlas.collection and atlas.collection.byID[mount.id] == true
     local planned = not shared and not owned and atlas.isPlanned(mount, atlas.activePlanID())
     row.bookmark:SetShown(owned)
     row.tracked:SetShown(planned)
     row.name:SetWidth((owned or planned) and 187 or 209)
-    local killed = not shared and atlas.isKilled(mount)
+    local killed = atlas.isKilled(mount)
     local status = owned and (killed and "В коллекции  ·  Босс убит" or "В коллекции") or (killed and "Босс убит" or "")
+    local unique = mount.availability and mount.availability.unique
+    if unique then
+        status = status ~= "" and (L(status) .. "  ·  " .. L("Уникальный")) or "Уникальный"
+    end
     row.status:SetText(status)
-    row.status:SetTextColor(unpack(owned and ui.mint or ui.muted))
+    row.status:SetTextColor(unpack(owned and ui.mint or unique and ui.gold or ui.muted))
     row.name:SetHeight(status == "" and 40 or 22)
     row.name:SetMaxLines(status == "" and 2 or 1)
     row.line:SetShown(active)
     for _, texture in ipairs(row.selection) do texture:SetShown(active) end
     row.name:SetText(atlas.displayMountName(mount))
     if row.refreshModelPreview then row.refreshModelPreview() end
+    if GameTooltip:IsOwned(row) then self:refreshRowHistory(row) end
 end
 for _, row in ipairs(catalog.rows) do
     row.bg = ui.surface(row, 0, 0, 264, 42, false, "RoundedFill")
     row:GetHighlightTexture():SetAlpha(0)
-    row:HookScript("OnEnter", function() row.hovered = true; colorCatalogRow(row) end)
-    local function clearRowHover() row.hovered = false; colorCatalogRow(row) end
+    row:HookScript("OnEnter", function()
+        row.hovered = true
+        colorCatalogRow(row)
+        catalog:refreshRowHistory(row)
+    end)
+    local function clearRowHover()
+        row.hovered = false
+        colorCatalogRow(row)
+        if GameTooltip:IsOwned(row) then GameTooltip:Hide() end
+    end
     row:HookScript("OnLeave", clearRowHover)
     row:HookScript("OnHide", clearRowHover)
     row.selection = ui.surface(row, 0, 0, 264, 42, false, "OrnateOutline")
@@ -2429,6 +2620,13 @@ end
 
 local lastKey, lastFilter, lastSourceFilter, lastSourceSubtype, lastFrequency, lastExpansion
 local lastCollection
+function catalog:matchesCollection(id)
+    if shared and shared.byID[id] ~= true then return false end
+    if activeFilter == 1 then return true end
+    local owned = atlas.collection and atlas.collection.byID[id]
+    return owned == (activeFilter == 2 or activeFilter == 4)
+end
+
 refresh = function(preferredMount)
     searchQuery = atlas.searchQuery(search:GetText())
     local key = searchQuery.key .. "\n" .. (searchQuery.layout or "")
@@ -2449,7 +2647,7 @@ refresh = function(preferredMount)
         selectMount(preferredMount or selected)
         return
     end
-    local collection = viewedCollection()
+    local collection = atlas.collection
     if sourceMenu.journalRevision ~= atlas.journalSourceRevision then
         sourceMenu.journalRevision, sourceMenu.categories = atlas.journalSourceRevision, nil
         catalog.needsRefresh = true
@@ -2489,17 +2687,17 @@ refresh = function(preferredMount)
     sourceMenu.weekly:SetShown(frequency == "weekly")
     sourceMenu.trigger:setActive(not allSources)
     local matches, wanted, keep = atlas.mounts, preferredMount or selected, false
-    if activeFilter == 1 and allSources and searchQuery.key == "" then
+    if not shared and activeFilter == 1 and allSources and searchQuery.key == "" then
         keep = wanted and atlas.mountByID(wanted.id) == wanted
     else
         matches = {}
         for _, mount in ipairs(atlas.mounts) do
-            if (not sourceSubtype or (sourceSubtype == "rare" and mount.locations and mount.kind ~= "Исследование")
+            if catalog:matchesCollection(mount.id)
+                and (not sourceSubtype or (sourceSubtype == "rare" and mount.locations and mount.kind ~= "Исследование")
                 or (sourceSubtype == "raid" and (mount.isRaid or mount.kind == "Рейд")))
                 and atlas.matchesSearch(mount.key, searchQuery)
                 and (not expansionFilter or atlas.collectionCategory(mount) == expansionFilter.id)
                 and (not frequency or mount.questFrequency == frequency or atlas.lootFrequency(mount) == frequency)
-                and (activeFilter == 1 or (collection and collection.byID[mount.id] == (activeFilter == 2)))
                 and sourceMenu:matches(mount, sourceFilter) then
                 matches[#matches + 1] = mount
                 if wanted == mount then keep = true end
@@ -2603,6 +2801,10 @@ local function fitWindow()
             frame:SetScale(scale)
         end
     end
+    local effectiveScale = frame:GetEffectiveScale()
+    local ruleHeight = PixelUtil and PixelUtil.GetNearestPixelSize
+        and PixelUtil.GetNearestPixelSize(1, effectiveScale, 1) or math.max(1, 1 / effectiveScale)
+    for _, line in ipairs(footerRules) do line:SetHeight(ruleHeight) end
     if atlas.refreshWindowScaleSetting then atlas.refreshWindowScaleSetting(scale) end
     return scale
 end
@@ -2634,15 +2836,21 @@ end
 frame:RegisterEvent("DISPLAY_SIZE_CHANGED")
 frame:RegisterEvent("UI_SCALE_CHANGED")
 frame:RegisterEvent("QUEST_LOG_UPDATE")
+frame:RegisterEvent("QUEST_TURNED_IN")
 frame:RegisterEvent("BANKFRAME_OPENED")
 frame:SetScript("OnEvent", function(_, event)
     if event == "DISPLAY_SIZE_CHANGED" or event == "UI_SCALE_CHANGED" then fitWindow()
     elseif event == "BANKFRAME_OPENED" then
         local chain = selected and atlas.periodicQuestChains[selected.id]
         if card:IsVisible() and chain and chain.item then atlas.refreshSourceDetails() end
-    elseif event == "QUEST_LOG_UPDATE" then
-        if card:IsVisible() and selected and (cardDetails.questChain and cardDetails.questChain.quests
-            or atlas.periodicQuestChains[selected.id]) then atlas.refreshDetails(true) end
+    elseif event == "QUEST_LOG_UPDATE" or event == "QUEST_TURNED_IN" then
+        if not card:IsVisible() or not selected then return end
+        if cardDetails.directQuestSteps then
+            local done, total = atlas.questRewardChainProgress(cardDetails.directQuestReward, cardDetails.directQuestSteps)
+            if done ~= cardDetails.periodicDone or total ~= cardDetails.periodicTotal then atlas.refreshDetails(true) end
+        elseif cardDetails.questChain and cardDetails.questChain.quests or atlas.periodicQuestChains[selected.id] then
+            atlas.refreshDetails(true)
+        elseif detailArea:IsVisible() and detailArea.questSource then detailArea:updateQuest(true) end
     end
 end)
 search:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
@@ -2669,13 +2877,11 @@ end
 local ownCatalog
 
 local function setSharedControls(show)
-    planTab:SetShown(not show)
+    planTab.caption:SetText(show and "Вернуться" or "Планнер")
+    ui.setIcon(planTab.glyph, show and "Reset" or "Route")
     settingsTab:SetShown(not show)
-    returnTab:SetShown(show)
-    filters[1]:SetShown(not show)
-    filters[3]:SetShown(not show)
-    filters[2]:ClearAllPoints()
-    filters[2]:SetPoint("TOPLEFT", page, "TOPLEFT", show and 26 or 111, -36)
+    settingsTab.divider:SetShown(not show)
+    for id, button in ipairs(filters) do button:SetShown(show == (id > 3)) end
     collectionBadge:EnableMouse(not show)
     guide:SetText(show and L("Коллекция: %s", shared.owner:match("^[^-]+") or shared.owner)
         or "ПОЛЕВОЙ СПРАВОЧНИК   /   АЗЕРОТ")
@@ -2683,8 +2889,9 @@ end
 
 returnToCollection = function()
     if not shared then return end
-    GameTooltip:Hide()
+    ui.hideTooltipIn(page)
     shared = nil
+    catalog.needsRefresh = true
     setSharedControls(false)
     activeFilter, sourceSubtype, frequency = ownCatalog.activeFilter, ownCatalog.sourceSubtype, ownCatalog.frequency
     sourceFilter, expansionFilter, selected = ownCatalog.sourceFilter, ownCatalog.expansionFilter, ownCatalog.selected
@@ -2710,9 +2917,10 @@ function atlas.showSharedCatalog(owner)
             locationIndex = locationIndex, vendorIndex = vendorIndex, tab = cardTabs.active,
         }
     end
-    GameTooltip:Hide()
+    ui.hideTooltipIn(page)
     shared = { owner = owner, byID = {}, status = "Загрузка коллекции…" }
-    activeFilter, sourceSubtype, frequency, sourceFilter, expansionFilter = 2, nil, nil, nil, nil
+    catalog.needsRefresh = true
+    activeFilter, sourceSubtype, frequency, sourceFilter, expansionFilter = 1, nil, nil, nil, nil
     selected = nil
     catalog:resetScroll()
     setCatalogSearch("")

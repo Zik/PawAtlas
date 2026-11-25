@@ -93,6 +93,7 @@ end
 
 local sourceCategories = {
     loot = { "Добыча", "Loot", "loot" },
+    gift = { ITEM or "Предмет маунта", "Book", "other" },
     fishing = { "Рыбалка", "Fishing", "loot" },
     profession = { "Профессия", "Profession", "other" },
     quest = { "Квест", "Quest", "quest" },
@@ -283,15 +284,19 @@ function atlas.questChainTitle(chain, id)
     end
 end
 
+function atlas.characterQuestCompleted(id)
+    local done = C_QuestLog and C_QuestLog.IsQuestFlaggedCompleted and C_QuestLog.IsQuestFlaggedCompleted(id)
+    if not (issecretvalue and issecretvalue(done)) and type(done) == "boolean" then return done end
+end
+
 function atlas.questChainProgress(chain, showSteps)
     local quests = chain.quests or { chain.finalQuest }
     local log, complete, total = C_QuestLog, 0, #quests
     local active, nextQuest, finalCompleted
     local states = showSteps and {}
     for _, id in ipairs(quests) do
-        local done = log and log.IsQuestFlaggedCompleted and log.IsQuestFlaggedCompleted(id)
+        local done = atlas.characterQuestCompleted(id)
         local accepted = log and log.IsOnQuest and log.IsOnQuest(id)
-        if issecretvalue and issecretvalue(done) then done = nil end
         if issecretvalue and issecretvalue(accepted) then accepted = nil end
         if chain.stageTitle and id == chain.finalQuest then
             total = total - 1
@@ -422,12 +427,88 @@ function atlas.directQuestReward(mount, choice)
     end
     -- Keep a faction-exclusive mount documented when inspecting it on the other faction.
     if not applicable or #applicable == 0 then return reward end
-    return { spell = reward.spell, quests = applicable, prerequisites = reward.prerequisites, starter = reward.starter }
+    return { spell = reward.spell, quests = applicable, prerequisites = reward.prerequisites,
+        progressQuests = reward.progressQuests, starter = reward.starter }
 end
 
 function atlas.questMatchesPlayerFaction(quest)
     local faction = UnitFactionGroup and UnitFactionGroup("player")
     return not quest.faction or faction ~= "Alliance" and faction ~= "Horde" or quest.faction == faction
+end
+
+function atlas.questRewardItem(mount, reward, source)
+    if not reward or reward.spell ~= mount.spell then return end
+    local item, details
+    for _, quest in ipairs(reward.quests) do
+        if atlas.questMatchesPlayerFaction(quest) then
+            if not quest.item or item and item ~= quest.item then return end
+            item = quest.item
+            if quest.rewardItem and quest.rewardItem.item == item then details = quest.rewardItem end
+        end
+    end
+    if not item then return end
+    if type(source) == "string" and (source:find("|Hitem:" .. item .. "%D")
+        or source:find("{[iI][tT][eE][mM]:" .. item .. ":")) then return end
+    if not details then
+        for _, entry in ipairs((atlas.mountRewardItems or {})[mount.id] or {}) do
+            if entry.item == item then details = entry; break end
+        end
+    end
+    return { item = item, basis = "teaching", name = details and details.name,
+        englishName = details and details.englishName, icon = details and details.icon,
+        quality = details and details.quality or (atlas.mountQuality or {})[mount.id] }
+end
+
+local function completedQuestSteps(steps)
+    local completed = 0
+    for _, step in ipairs(steps) do
+        local done
+        if type(step) == "number" then
+            done = atlas.characterQuestCompleted(step)
+        elseif step.id then
+            done = atlas.characterQuestCompleted(step.id)
+        else
+            -- Alternative quest IDs represent one checkpoint.
+            done = false
+            for _, id in ipairs(step) do
+                local variant = atlas.characterQuestCompleted(id)
+                if variant == true then done = true break end
+                if variant == nil then done = nil end
+            end
+        end
+        if done == nil then return end
+        if done then completed = completed + 1 end
+    end
+    return completed
+end
+
+function atlas.questRewardProgressSteps(reward)
+    if not reward then return end
+    if #reward.quests == 1 then
+        local quest = reward.quests[1]
+        if atlas.questMatchesPlayerFaction(quest) then
+            return quest.progressQuests or reward.progressQuests or reward.prerequisites
+        end
+    else
+        return reward.progressQuests or reward.prerequisites
+    end
+end
+
+function atlas.questRewardChainProgress(reward, steps)
+    if not steps or #steps == 0 then return end
+    local total, knownFinal, eligible = #steps + 1, true, false
+    for _, quest in ipairs(reward.quests) do
+        if atlas.questMatchesPlayerFaction(quest) then
+            eligible = true
+            local done = atlas.characterQuestCompleted(quest.id)
+            if done == true then return total, total end
+            if done == nil then knownFinal = false end
+        end
+    end
+    if eligible and knownFinal then
+        local completed = completedQuestSteps(steps)
+        if completed ~= nil then return completed, total end
+    end
 end
 
 function atlas.periodicQuestProgress(mount, choice)
@@ -468,12 +549,8 @@ function atlas.periodicQuestProgress(mount, choice)
         if not matched then return end
     end
 
-    local function completion(id)
-        local value = done(id)
-        if not (issecretvalue and issecretvalue(value)) and type(value) == "boolean" then return value end
-    end
     local total = data.required or #steps.quests
-    if completion(steps.finalQuest) == true then return total, total, frequency end
+    if atlas.characterQuestCompleted(steps.finalQuest) == true then return total, total, frequency end
 
     if data.objectiveQuest then
         if not GetQuestObjectiveInfo then return end
@@ -494,24 +571,8 @@ function atlas.periodicQuestProgress(mount, choice)
         return
     end
 
-    local complete = 0
-    for _, stage in ipairs(steps.quests) do
-        local value
-        if type(stage) == "table" then
-            local known = true
-            for _, id in ipairs(stage) do
-                local variant = completion(id)
-                if variant == true then value = true break end
-                if variant == nil then known = false end
-            end
-            if value == nil and known then value = false end
-        else
-            value = completion(stage)
-        end
-        if value == nil then return end
-        if value == true then complete = complete + 1 end
-    end
-    return complete, total, frequency
+    local complete = completedQuestSteps(steps.quests)
+    if complete ~= nil then return complete, total, frequency end
 end
 
 function atlas.questNavigationReward(mount, choice)
@@ -612,6 +673,81 @@ function atlas.extraQuestRewardSource(mount)
             trackingCompatible = false } }
 end
 
+function atlas.factionMountSourceChoices(mount, blocks)
+    local gift = (atlas.factionMountGifts or {})[mount.id]
+    if not gift or gift.spell ~= mount.spell then return end
+    blocks = blocks or atlas.factionSources(mount)
+    if not blocks then return end
+
+    local giftBlock, giftLine
+    for _, block in ipairs(blocks) do
+        if block.faction == gift.faction then
+            for line in block.journalSourceRaw:gmatch("[^\n]+") do
+                local label, value = line:match("^([^:]+):%s*(.+)$")
+                if label == "Предмет" or label == "Item" or label == "Источник" or label == "Source" then
+                    local itemID = value:match("|Hitem:(%d+)")
+                    local name = atlas.searchKey(value)
+                    if tonumber(itemID) == gift.item or not itemID
+                        and (name == atlas.searchKey(gift.name) or name == atlas.searchKey(gift.englishName)) then
+                        giftBlock, giftLine = block, line
+                        break
+                    end
+                end
+            end
+        end
+        if giftBlock then break end
+    end
+    if not giftBlock then return end
+
+    local choices = {}
+    for _, block in ipairs(blocks) do
+        local lines, portalName = {}, nil
+        for line in (block.journalSourceRaw .. "\n"):gmatch("(.-)\n") do
+            local label, value = line:match("^([^:]+):%s*(.+)$")
+            local name = value and atlas.searchKey(value)
+            if block == giftBlock and line == giftLine then
+                local english = atlas.getLocale() == "enUS"
+                lines[#lines + 1] = english and "A player from the opposite faction can gift you this mount."
+                    or "Игрок противоположной фракции может подарить тебе этого маунта"
+            elseif block.faction ~= gift.faction and atlas.isDropSourceLabel(label)
+                and (name == "порталы времени" or name == "time rifts") then
+                portalName = value
+            else
+                lines[#lines + 1] = line
+            end
+        end
+        if block == giftBlock then
+            choices[#choices + 1] = { factionGift = gift, separateSource = true, compact = true, view = {
+                id = mount.id, spell = mount.spell, faction = block.faction, factionRoute = true,
+                separateReward = true, difficultyLocalOnly = true, trackingCompatible = false,
+                decoratedSource = table.concat(lines, "\n"):match("^%s*(.-)%s*$"),
+            } }
+        else
+            local vendorView = block
+            if portalName then
+                vendorView = {}
+                for key, value in pairs(block) do vendorView[key] = value end
+                vendorView.journalSourceRaw = table.concat(lines, "\n")
+            end
+            local vendors = atlas.vendorSources(vendorView)
+            for _, vendor in ipairs(vendors or {}) do choices[#choices + 1] = { vendor = vendor, view = vendorView } end
+            if portalName and vendors then
+                local info = (atlas.dropSourceInfo or {})[mount.id]
+                choices[#choices + 1] = { verifiedDrop = true, view = {
+                    id = mount.id, spell = mount.spell, faction = block.faction, factionRoute = true,
+                    boss = portalName, place = block.place, sourceKind = "Добыча",
+                    sourceMap = info and info.map, sourcePlaceKind = info and info.placeKind,
+                    difficultyLocalOnly = true, trackingCompatible = true,
+                    journalSourceRaw = ("%s: %s"):format(atlas.L("Источник"), portalName),
+                } }
+            elseif not vendors then
+                choices[#choices + 1] = { view = block, compact = true }
+            end
+        end
+    end
+    return choices
+end
+
 local function sourceResult(choice, key, subtype, icon)
     local category = sourceCategories[key]
     if not category then
@@ -659,6 +795,14 @@ function atlas.classifyMountSource(mount, choice)
         return { label = label, icon = method and method[2] or "Book", tab = "unavailable", state = "historical",
             historyKey = historyKey, historyLabel = method and method[1],
             seasonal = availability and availability.temporary == true or false }
+    end
+
+    if choice.factionGift then
+        return sourceResult(choice, "gift")
+    elseif choice.islandSalvage then
+        return sourceResult(choice, "loot", "Добыча из сумки")
+    elseif choice.islandExpedition then
+        return sourceResult(choice, "loot")
     end
 
     if vendor then
@@ -798,6 +942,16 @@ function atlas.protoformUnlockQuest(mount, choice)
     if item and atlas.protoformMountRecipes[item] then return atlas.protoformForgeQuest end
 end
 
+function atlas.sourceCardQuest(mount, choice)
+    local route = choice and choice.classification
+    if mount.weeklyRewardQuests and route and route.key == "loot" and route.state == "current"
+        and not (route.requirement or choice.contextOnly or choice.separateSource or choice.verifiedDrop) then
+        local faction = UnitFactionGroup and UnitFactionGroup("player")
+        return mount.weeklyRewardQuests[faction]
+    end
+    return atlas.protoformUnlockQuest(mount, choice)
+end
+
 -- The guarantee describes this route's final reward. A separate starter,
 -- drop or alternative route keeps its own chance and attempt counters.
 function atlas.sourceGuaranteedReward(mount, choice)
@@ -821,6 +975,21 @@ function atlas.sourceGuaranteedReward(mount, choice)
     local vendor = choice.vendor
     if vendor then
         if route.key == "purchase" then
+            if vendor.redemption == "barter" then
+                local barter = vendor.barterOffer
+                if not barter or barter ~= mount.reviewedVendorOffer or barter.spell ~= mount.spell
+                    or barter.npc ~= vendor.npc or not barter.itemCosts or #barter.itemCosts == 0
+                    or randomContainerSource(mount, view) then return end
+                for _, item in ipairs((atlas.mountRewardItems or {})[mount.id] or {}) do
+                    if item.item == barter.item and item.basis == "drop" then
+                        return { method = "barter", item = item.item, reward = {
+                            item = item.item, basis = item.basis, name = item.name, englishName = item.englishName,
+                            quality = atlas.mountDisplayQuality(mount.id), icon = barter.rewardIcon,
+                        } }
+                    end
+                end
+                return
+            end
             local reward = atlas.rewardItem(mount, vendor, true)
             local priced, directItem = directVendorPrice(vendor, reward)
             if priced and (directItem or not randomContainerSource(mount, view)) then
@@ -874,6 +1043,76 @@ function atlas.extraTradingPostSource(mount)
     if not mount or mount.kind == "Торговая лавка" then return end
     local offer = atlas.tradingPostOffer(mount)
     if offer and not offer.unknown then return offer end
+end
+
+local islandBagOrder = {}
+function atlas.addIslandSalvageSource(mount, choices)
+    local salvage = atlas.islandSalvage
+    local bags = salvage and salvage.mounts and salvage.mounts[mount.id]
+    if not bags or mount.unavailable then return end
+
+    local expedition
+    for _, choice in ipairs(choices) do
+        local view = choice.view or mount
+        if not choice.vendor and not choice.contextOnly then
+            local source = atlas.normalizeSource(view.journalSourceOverride or view.journalSourceRaw or view.journalSource)
+            for line in source:gmatch("[^\n]+") do
+                local label, value = line:match("^%s*([^:]+):%s*(.-)%s*$")
+                if label == "Источник" or label == "Добыча" or label == "Drop" or label == "Source" then
+                    local name = atlas.searchKey(value)
+                    if name == "островные экспедиции" or name == "island expeditions" then
+                        choice.islandExpedition = true
+                        expedition = true
+                        break
+                    end
+                end
+            end
+        end
+    end
+    if not expedition then return end
+
+    local english = atlas.getLocale() == "enUS"
+    local currencyName = english and salvage.englishCurrencyName or salvage.currencyName
+    local currency = C_CurrencyInfo and C_CurrencyInfo.GetCurrencyInfo and C_CurrencyInfo.GetCurrencyInfo(salvage.currency)
+    local icon = currency and currency.iconFileID
+    local currencyIcon = icon and ("|T%s:14:14|t "):format(icon) or ""
+    local currencyLink = ("|Hcurrency:%d|h%s[%s]|h"):format(salvage.currency, currencyIcon, currencyName)
+    local ordered = islandBagOrder[bags]
+    if not ordered then
+        ordered = {}
+        for _, id in ipairs(bags) do if salvage.containers[id] then ordered[#ordered + 1] = id end end
+        table.sort(ordered, function(a, b)
+            local first, second = salvage.containers[a].amount, salvage.containers[b].amount
+            return first == second and a < b or first < second
+        end)
+        islandBagOrder[bags] = ordered
+    end
+    local lines, rotating = {}, false
+    for _, itemID in ipairs(ordered) do
+        local bag = salvage.containers[itemID]
+        local name = english and bag.englishName or bag.name
+        lines[#lines + 1] = ("{item:%d:%s}  ·  %d %s"):format(itemID, name, bag.amount, currencyLink)
+        rotating = rotating or bag.rotating
+    end
+    if #lines == 0 then return end
+    local intro = atlas.L("Маунт может выпасть при открытии.")
+    if rotating then intro = intro .. " " .. atlas.L("Ассортимент меняется каждую неделю.") end
+    table.insert(lines, 1, intro)
+    local conditions = table.concat(lines, "\n")
+
+    local faction = UnitFactionGroup and UnitFactionGroup("player")
+    for _, merchant in ipairs(salvage.merchants) do
+        if faction == merchant.faction or faction ~= "Alliance" and faction ~= "Horde" then
+            local vendor = {
+                name = english and merchant.englishName or merchant.name,
+                place = english and merchant.englishPlace or merchant.place,
+                faction = merchant.faction, npc = merchant.npc,
+                map = merchant.map, x = merchant.x, y = merchant.y,
+                conditions = conditions, priceResolved = true,
+            }
+            choices[#choices + 1] = { category = "loot", islandSalvage = bags, vendor = vendor, view = mount }
+        end
+    end
 end
 
 function atlas.extraBlackMarketSource(mount)
@@ -1335,6 +1574,50 @@ local function reviewedBossNpc(mount, view)
     if npc and matchesReviewedBossRoute(view, route, sourceTargetNames(view)) then return npc end
 end
 
+function atlas.sourceCreatureID(mount, view, point)
+    if point then return sourceNpc(point) end
+    if not view then return end
+    local npc = sourceNpc(view) or reviewedBossNpc(mount, view) or (view.sourceRequirements and sourceNpc(view.sourceRequirements))
+    if npc then return npc end
+    if not mount or not (atlas.worldBossLocks and atlas.worldBossLocks[mount.id])
+        or not primaryAcquisitionSource(mount, nil, view) or view.sourcePlaceKind ~= "Открытый мир" then return end
+    local info = atlas.dropSourceInfo[mount.id]
+    if not info or not info.map or info.map ~= view.sourceMap then return end
+    local stats = atlas.killStatistics[mount.id]
+    local sources = stats and #stats == 1 and atlas.killStatisticSources[stats[1]]
+    if sources and #sources == 1 then return sourceNpc(sources[1]) end
+    local stages = atlas.attemptStages[mount.id]
+    return stages and stages.reward and sourceNpc(stages.reward)
+end
+
+function atlas.journalRespawnSource(mount, view, point)
+    if not mount or not view or point or mount.unavailable or mount.availability or mount.journalSourceOverride
+        or (mount.kind ~= "Добыча" and mount.kind ~= "Рарка") or not primaryAcquisitionSource(mount, nil, view)
+        or view.journalInstance or view.journalEncounter or view.isRaid or view.difficulties then return end
+    local route = atlas.journalRespawnSources and atlas.journalRespawnSources[mount.id]
+    if not route or route.spell ~= mount.spell or not mount.journalSourceRaw
+        or view.sourceMap and view.sourceMap ~= route.map then return end
+
+    local source = atlas.normalizeSource(mount.journalSourceRaw):match("^%s*(.-)%s*$")
+    local label, target, rest = source:match("^([^:\n]+): ([^\n]+)(.*)$")
+    if label ~= "Источник" and label ~= "Добыча" and label ~= "Drop" and label ~= "Source" then return end
+    local boss, englishBoss = sourceTargetKey(route.boss), sourceTargetKey(route.englishBoss)
+    target = sourceTargetKey(target)
+    if not target or (target ~= boss and target ~= englishBoss) then return end
+    local viewTargets = sourceTargetNames(view)
+    if not viewTargets[boss] and not viewTargets[englishBoss] then return end
+
+    if route.map then
+        local place = sourceTargetKey(rest:match("^\nМесто: ([^\n]+)$"))
+        local area = atlas.dropSourceInfo and atlas.dropSourceInfo[mount.id]
+        if not place or not area or (place ~= sourceTargetKey(area.place) and place ~= sourceTargetKey(area.englishPlace))
+            or sourceTargetKey(view.place) ~= place then return end
+    elseif rest ~= "" or sourceTargetKey(view.place) then
+        return
+    end
+    return route
+end
+
 local function encounterSourcePortrait(view, subject, point, npc)
     local id = view.journalEncounter
     local entries = encounterCreatures(id)
@@ -1497,6 +1780,13 @@ local function mapMatchesName(id, key, info)
         if mapNameKey(name) == key then return true end
     end
     return false
+end
+
+function atlas.matchesDropMapName(id, name)
+    local key = mapNameKey(name)
+    -- The outdoor journal uses the short name also used by the Mechagon dungeon.
+    if id == 1462 and (key == "мехагон" or key == "mechagon") then return true end
+    return mapMatchesName(id, key, nativeMapInfo(id))
 end
 
 local function mapChildOf(id, parent)

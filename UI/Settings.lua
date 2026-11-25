@@ -278,9 +278,9 @@ function atlas.makeSettings(parent)
     local function hideImportTooltip(self) if GameTooltip:IsOwned(self) then GameTooltip:Hide() end end
     importButton:HookScript("OnLeave", hideImportTooltip)
     importButton:HookScript("OnHide", hideImportTooltip)
-    ui.text(account, 14, 138, 80, 24, 14, "Персонаж", ui.gold)
+    ui.text(account, 42, 138, 80, 24, 14, "Персонаж", ui.gold)
     do
-        local help = ui.place(CreateFrame("Frame", nil, account), account, 90, 138, 24, 24)
+        local help = ui.place(CreateFrame("Frame", nil, account), account, 118, 138, 24, 24)
         help:EnableMouse(true)
         local glyph = ui.text(help, 0, 0, 24, 24, 15, "?", ui.gold)
         glyph:SetJustifyH("CENTER")
@@ -354,14 +354,47 @@ function atlas.makeSettings(parent)
     account:SetScript("OnHide", function() confirm:Hide(); clearConfirm:Hide() end)
     integrations:SetScript("OnHide", function() clearConfirm:Hide(); importDetails:Hide() end)
     local characters = ui.scrollingList(account, 0, 170, 706, 42, 7)
+    local function showVisibilityTooltip(button)
+        local record = button:GetParent().item
+        if not record then return end
+        local hidden = atlas.isWarbandCharacterHidden(record.guid)
+        if not GameTooltip:IsOwned(button) then GameTooltip:SetOwner(button, "ANCHOR_TOP") end
+        ui.tooltipTitle(L(hidden and "Показать в отряде" or "Скрыть из отряда"))
+        GameTooltip:Show()
+    end
+    local function hideVisibilityTooltip(button)
+        if GameTooltip:IsOwned(button) then GameTooltip:Hide() end
+    end
     for _, row in ipairs(characters.rows) do
         ui.fill(row, 0, 39, 698, 1, ui.rule):SetAlpha(.6)
-        row.icon = ui.icon(row, 12, 7, 24, "Unknown")
-        row.name = ui.text(row, 46, 0, 238, 38, 16, "")
+        row.icon = ui.icon(row, 42, 7, 24, "Unknown")
+        row.name = ui.text(row, 76, 0, 208, 38, 16, "")
         row.realm = ui.text(row, 300, 0, 240, 38, 15, "", ui.muted)
         row.name.atlasGameText = true
         row.realm.atlasGameText = true
         row.level = ui.text(row, 560, 0, 80, 38, 16, "", ui.gold)
+        row.visibility = ui.button(row, 6, 5, 28, 28, function()
+            local record = row.item
+            if not record then return end
+            if atlas.setWarbandCharacterHidden(record.guid, not atlas.isWarbandCharacterHidden(record.guid)) then
+                atlas.refreshAccountSettings()
+            end
+        end)
+        row.visibility:ClearHighlightTexture()
+        local eye = row.visibility:CreateTexture(nil, "ARTWORK")
+        eye:SetPoint("CENTER")
+        eye:SetSize(16, 17)
+        eye:SetAtlas("friends-icon-eye")
+        row.visibility.glyph = eye
+        local slash = row.visibility:CreateTexture(nil, "OVERLAY")
+        slash:SetPoint("CENTER")
+        slash:SetSize(19, 2)
+        slash:SetColorTexture(unpack(ui.muted))
+        slash:SetRotation(math.pi / 4)
+        row.visibility.slash = slash
+        row.visibility:HookScript("OnEnter", showVisibilityTooltip)
+        row.visibility:HookScript("OnLeave", hideVisibilityTooltip)
+        row.visibility:HookScript("OnHide", hideVisibilityTooltip)
         row.remove = ui.action(row, 659, 5, 28, 28, nil, "Close", function()
             if not row.item then return end
             pendingGUID = row.item.guid
@@ -374,17 +407,21 @@ function atlas.makeSettings(parent)
     end
     function characters:onClick() end
     function characters:render(row, record)
+        local hidden = atlas.isWarbandCharacterHidden(record.guid)
         row.name:SetText(record.name)
         row.name:SetTextColor(unpack(ui.characterClassColor(record)))
         ui.setCharacterClassIcon(row.icon, record)
         row.realm:SetText(record.realm)
         row.level:SetText(record.level or "—")
+        row.visibility.glyph:SetAlpha(hidden and .5 or 1)
+        row.visibility.slash:SetShown(hidden)
+        if GameTooltip:IsOwned(row.visibility) then showVisibilityTooltip(row.visibility) end
     end
     atlas.refreshAccountSettings = function()
         if not account:IsVisible() then return end
         refreshImport()
         characterCount:SetText(L("Учтено персонажей: %d", atlas.accountCharacterCount()))
-        characters.items = atlas.accountCharacters()
+        characters.items = atlas.accountCharacters(true)
         characters:redraw()
     end
     account:SetScript("OnShow", atlas.refreshAccountSettings)
@@ -525,7 +562,9 @@ function atlas.makeSettings(parent)
             line:SetGradient("VERTICAL", bottom[2], top[2])
         end
     end
-    local gameTooltips = ui.accountCheckbox(fonts, 368, 96, 338, "Подсказки в игре", "gameTooltips")
+    local gameTooltips = ui.accountCheckbox(fonts, 368, 96, 338, "Подсказки в игре", "gameTooltips", function()
+        if atlas.initializeGameTooltips then atlas.initializeGameTooltips() end
+    end)
     local function settingTooltip(control, label, description)
         control:HookScript("OnEnter", function(self)
             GameTooltip:SetOwner(self, "ANCHOR_TOP")

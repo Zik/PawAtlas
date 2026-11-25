@@ -32,6 +32,7 @@ function atlas.collectedState(card, footerTop)
     summon:SetPoint("RIGHT", state, "RIGHT", -38, -height / 2)
     summon:SetSize(summonWidth, iconSize)
     summon:RegisterForClicks("LeftButtonUp")
+    summon:EnableMouse(true)
     if summon.SetMotionScriptsWhileDisabled then summon:SetMotionScriptsWhileDisabled(true) end
     local glow = summon:CreateTexture(nil, "BACKGROUND")
     glow:SetPoint("CENTER", summon, "CENTER", 0, -5)
@@ -71,17 +72,16 @@ function atlas.collectedState(card, footerTop)
     summonLabel:SetJustifyH("CENTER")
     summonLabel:SetMaxLines(1)
 
-    local function layoutSummon(shared)
+    local function layoutSummon()
         local _, fontSize = summonLabel:GetFont()
         local labelHeight = math.ceil(math.max(summonLabel:GetStringHeight(), fontSize * 1.2))
         summonLabel:SetHeight(labelHeight)
-        summonLabel:SetShown(not shared)
-        summon:SetHeight(shared and iconSize or iconSize + summonGap + labelHeight)
+        summon:SetHeight(iconSize + summonGap + labelHeight)
     end
 
     local function readable(value) return not (issecretvalue and issecretvalue(value)) end
     local function canSummon()
-        if state.shared or not state.mount then return false end
+        if not state.mount then return false end
         if InCombatLockdown and InCombatLockdown() then return false, ERR_NOT_IN_COMBAT end
         local _, _, _, _, usable, _, _, _, _, _, collected = C_MountJournal.GetMountInfoByID(state.mount.id)
         if not readable(collected) or collected ~= true then return false end
@@ -95,18 +95,17 @@ function atlas.collectedState(card, footerTop)
     local function updateButton(hovered)
         local enabled = canSummon()
         summon:SetEnabled(enabled)
-        summon:EnableMouse(not state.shared)
-        mountIcon:SetAlpha((enabled or state.shared) and 1 or .5)
+        mountIcon:SetAlpha(enabled and 1 or .5)
         glow:SetAlpha(enabled and (hovered and .46 or .20) or 0)
         summonLabel:SetAlpha(enabled and 1 or .5)
-        local rimAlpha = state.shared and .65 or enabled and (hovered and 1 or .65) or .35
+        local rimAlpha = enabled and (hovered and 1 or .65) or .35
         for _, texture in ipairs(border) do texture:SetAlpha(rimAlpha) end
     end
     local function hideTooltip()
         if GameTooltip:IsOwned(summon) then GameTooltip:Hide() end
     end
     local function showTooltip()
-        if state.shared or not state.mount then return end
+        if not state.mount then return end
         GameTooltip:SetOwner(summon, "ANCHOR_TOP")
         ui.tooltipTitle(ui.coloredMountName(state.mount))
         if MOUNT_SUMMON_TOOLTIP then ui.tooltipLine(MOUNT_SUMMON_TOOLTIP, 1, 1, 1, true) end
@@ -139,14 +138,14 @@ function atlas.collectedState(card, footerTop)
         if GameTooltip:IsOwned(summon) then showTooltip() end
     end
 
-    function state:update(mount, shared)
-        self.mount, self.shared = mount, shared
-        layoutSummon(shared)
+    function state:update(mount)
+        self.mount = mount
+        layoutSummon()
         local _, _, icon = C_MountJournal.GetMountInfoByID(mount.id)
         mountIcon:SetTexture(icon or mount.icon or "Interface\\PetBattles\\MountJournalEmptyIcon")
         self:updateQuality()
         layoutLabels()
-        updateButton(not shared and summon:IsMouseOver())
+        updateButton(summon:IsMouseOver())
     end
     state:Hide()
     return state

@@ -28,6 +28,8 @@ for mountID, rule in pairs(sources) do
     end
 end
 local sent, itemLoads, calendarReady, queued = {}, {}, false, false
+local itemRetryDelays = { 2, 5, 10 }
+local queue
 local entryGeneration, loadingScreen, deliveryReady = 0, false, false
 local function readable(value) return not (issecretvalue and issecretvalue(value)) end
 local function number(value)
@@ -147,18 +149,40 @@ local function activeEvents()
     end
     return result
 end
+local function scheduleItemRetry(item, load)
+    local delay = itemRetryDelays[load.attempts]
+    load.state = delay and "waiting" or "exhausted"
+    if not delay then return end
+    C_Timer.After(delay, function()
+        if itemLoads[item] ~= load or load.state ~= "waiting" then return end
+        load.state = "ready"
+        queue() -- Recheck the event, the player's collection and preferences before requesting again.
+    end)
+end
 local function requestItem(item)
-    if not itemLoads[item] and C_Item and C_Item.RequestLoadItemDataByID then
-        itemLoads[item] = "pending"
-        C_Item.RequestLoadItemDataByID(item)
+    if not C_Item or not C_Item.RequestLoadItemDataByID then return end
+    local load = itemLoads[item]
+    if not load then
+        load = { attempts = 0, state = "ready" }
+        itemLoads[item] = load
     end
+    if load.state == "ready" then
+        load.attempts, load.state = load.attempts + 1, "pending"
+        C_Item.RequestLoadItemDataByID(item)
+    elseif load.state == "received" then
+        -- The item callback can precede the mount mapping or its usable link.
+        scheduleItemRetry(item, load)
+    end
+    return true
 end
 local function rewardLink(rule)
-    local link = C_Item and C_Item.GetItemInfo and select(2, C_Item.GetItemInfo(rule.item))
+    local link
+    if C_Item and C_Item.GetItemInfo and (not C_Item.IsItemDataCachedByID or C_Item.IsItemDataCachedByID(rule.item)) then
+        link = select(2, C_Item.GetItemInfo(rule.item))
+    end
     if readable(link) and type(link) == "string" and tonumber(link:match("|Hitem:(%d+)")) == rule.item then return link end
     link = C_Spell and C_Spell.GetSpellLink and C_Spell.GetSpellLink(rule.spell)
     if readable(link) and type(link) == "string" and tonumber(link:match("|Hspell:(%d+)")) == rule.spell then return link end
-    requestItem(rule.item)
 end
 local function notifyReward(id, rule, group, eventName, occurrence)
     local key = "mount:" .. id
@@ -182,12 +206,15 @@ local function notifyReward(id, rule, group, eventName, occurrence)
     end
     local _, _, collected, identity = rewardInfo(id, rule)
     local mount = atlas.mountByID and atlas.mountByID(id)
-    if not identity or collected ~= false or (mount and mount.unavailable) then return end
+    if collected == true or (mount and mount.unavailable) then return end
+    if not identity or collected == nil then return itemLoads[rule.item] ~= nil end
     local itemMount = C_MountJournal and C_MountJournal.GetMountFromItem and C_MountJournal.GetMountFromItem(rule.item)
-    if readable(itemMount) and (itemMount == nil or itemMount == 0) then requestItem(rule.item) end
+    if not readable(itemMount) then return itemLoads[rule.item] ~= nil end
+    if itemMount == nil or itemMount == 0 then return requestItem(rule.item) end
     if not number(itemMount) or itemMount ~= id then return end
     local link = rewardLink(rule)
-    if link and DEFAULT_CHAT_FRAME and DEFAULT_CHAT_FRAME.AddMessage then
+    if not link then return requestItem(rule.item) end
+    if DEFAULT_CHAT_FRAME and DEFAULT_CHAT_FRAME.AddMessage then
         DEFAULT_CHAT_FRAME:AddMessage(atlas.L("PawAtlas: %s — доступно событие: %s", link, eventName))
         sent[deliveryKey] = group.worldQuest and true
             or { start = occurrence.start, finish = occurrence.finish }
@@ -196,23 +223,33 @@ end
 local function evaluate(worldQuestsOnly)
     if not deliveryReady or not atlas.eventRemindersEnabled() then return end
     local events = not worldQuestsOnly and activeEvents()
+    local needed = {}
     for id, rule in pairs(sources) do
         if rule.worldQuest then
             local active = C_TaskQuest and C_TaskQuest.IsActive and C_TaskQuest.IsActive(rule.worldQuest)
             if readable(active) and active == true then
                 local name = atlas.getLocale() == "enUS" and rule.englishBoss or rule.boss
-                notifyReward(id, rule, bossesByQuest[rule.worldQuest], name)
+                needed[rule.item] = notifyReward(id, rule, bossesByQuest[rule.worldQuest], name)
+            elseif not readable(active) or active ~= false then
+                needed[rule.item] = true
             end
+        elseif not events and itemLoads[rule.item] then
+            -- A quest-only refresh or a calendar still loading cannot retire holiday requests.
+            needed[rule.item] = true
         end
     end
     for group, event in pairs(events or {}) do
         for id in pairs(group.mounts) do
-            notifyReward(id, sources[id], group, event.name, event)
+            local rule = sources[id]
+            if notifyReward(id, rule, group, event.name, event) then needed[rule.item] = true end
         end
+    end
+    for item in pairs(itemLoads) do
+        if not needed[item] then itemLoads[item] = nil end
     end
 end
 local pendingCalendar = false
-local function queue(worldQuestsOnly)
+queue = function(worldQuestsOnly)
     if not deliveryReady or not atlas.eventRemindersEnabled() then return end
     if not worldQuestsOnly then pendingCalendar = true end
     if queued then return end
@@ -245,7 +282,7 @@ end
 function atlas.setEventRemindersEnabled(enabled)
     settings(true).eventRemindersEnabled = enabled == true
     refreshSettings()
-    if enabled == true then requestCalendar(); queue(true) end
+    if enabled == true then requestCalendar(); queue(true) else itemLoads = {} end
 end
 local function saveMute(key, value)
     local saved = settings(true)
@@ -280,8 +317,14 @@ frame:SetScript("OnEvent", function(_, event, id, success)
     elseif event == "CALENDAR_UPDATE_EVENT_LIST" then calendarReady = true; queue()
     elseif event == "QUEST_LOG_UPDATE" then queue(true)
     elseif event == "ITEM_DATA_LOAD_RESULT" then
-        if not number(id) or itemLoads[id] ~= "pending" then return end
-        itemLoads[id] = success == true and "loaded" or "failed"
-        if success == true then queue() end
+        local load = number(id) and itemLoads[id]
+        if not load or not readable(success) then return end
+        if success == true then
+            -- A different requester may also populate the cache during backoff.
+            if load.state == "pending" then load.state = "received" end
+            queue()
+        elseif success == false and load.state == "pending" then
+            scheduleItemRetry(id, load)
+        end
     else refreshSettings(); queue() end
 end)

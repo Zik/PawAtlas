@@ -11,6 +11,42 @@ local refreshQueued, mountQualitiesQueued = false, false
 local questLoads, sourceItemLoads = {}, {}
 local mountQualityItems = {}
 
+local function respawnText(window)
+    if not window then return end
+    local low, high = window.min or window.max, window.max or window.min
+    local unit = "%s мин"
+    if low % 60 == 0 and high % 60 == 0 then
+        low, high, unit = low / 60, high / 60, "%s ч"
+    elseif low % 1 ~= 0 or high % 1 ~= 0 then
+        low, high, unit = low * 60, high * 60, "%s с"
+    end
+    local duration = low == high and tostring(low) or string.format("%d–%d", low, high)
+    local text = atlas.L(unit, duration)
+    if not window.min then text = atlas.L("до %s", text)
+    elseif not window.max then text = atlas.L("от %s", text) end
+    return text, window.condition and atlas.L(window.condition)
+end
+
+function atlas.npcRespawnText(npcID)
+    return respawnText(atlas.npcRespawns and atlas.npcRespawns[npcID])
+end
+
+function atlas.sourceRespawnText(mount, view, point)
+    if not view then return end
+    local npc = atlas.sourceCreatureID(mount, view, point)
+    if npc then return atlas.npcRespawnText(npc) end
+    local requirement = view.sourceRequirements
+    if requirement and (not point or requirement.name and requirement.name ~= "" and point.boss == requirement.name
+        or requirement.englishName and requirement.englishName ~= "" and point.englishBoss == requirement.englishName) then
+        return respawnText(requirement.respawn)
+    end
+    local journal = atlas.journalRespawnSource(mount, view, point)
+    if journal then
+        if journal.npc then return atlas.npcRespawnText(journal.npc) end
+        return respawnText(journal.respawn)
+    end
+end
+
 local function readable(value)
     return not (issecretvalue and issecretvalue(value))
 end
@@ -269,10 +305,14 @@ end
 
 local inlineQuestPattern = "{quest:(%d+):([^{}]+)}"
 local inlineMissionPattern = "{mission:(%d+):([^{}]+)}"
+local inlineJournalPattern = "{journal:(%d+):([^{}]+)}"
 function atlas.sourceInlineLinks(text)
     text = atlas.sourceItemLinks(text)
     text = text:gsub(inlineQuestPattern, function(rawID, fallback)
         return atlas.sourceQuestReference(tonumber(rawID), fallback) or fallback
+    end)
+    text = text:gsub(inlineJournalPattern, function(rawID, fallback)
+        return atlas.sourceJournalInstanceLink and atlas.sourceJournalInstanceLink(rawID, fallback) or fallback
     end)
     return (text:gsub(inlineMissionPattern, function(rawID, name)
         local id = tonumber(rawID)
@@ -926,15 +966,18 @@ end
 
 function atlas.legacySourceDetails(mount)
     if type(mount) ~= "table" then return end
+    local unique = atlas.uniqueMounts and atlas.uniqueMounts[mount.id]
     local detail = atlas.legacySources and atlas.legacySources[mount.id]
-    if type(detail) ~= "table" or not number(detail.spell) then return end
+    if not unique and (type(detail) ~= "table" or not number(detail.spell)) then return end
     local spell = mount.spell
     if not number(spell) and C_MountJournal and C_MountJournal.GetMountInfoByID then
         local _, journalSpell = C_MountJournal.GetMountInfoByID(mount.id)
         spell = journalSpell
     end
     -- A reused MountID must never inherit another spell's retired source.
-    if number(spell) and spell == detail.spell then return detail end
+    if not number(spell) then return end
+    if unique and spell == unique.spell then return unique end
+    if type(detail) == "table" and spell == detail.spell then return detail end
 end
 
 function atlas.achievementIsFeat(id)

@@ -109,7 +109,7 @@ local function client(name, collection)
 end
 
 local alice = client("Alice", { [1] = true, [7] = true, [8] = false, [9] = "unknown", [3142] = true })
-local bob = client("Bob", { [1] = false })
+local bob = client("Bob", { [1] = false, [7] = true, [9] = true })
 local eve = client("Eve", { [9] = true })
 
 local ownHidden, ownLink = alice.filters.CHAT_MSG_SAY(nil, "CHAT_MSG_SAY", "[PawAtlas-Alice]", alice.name)
@@ -208,8 +208,9 @@ for index = 4, 2, -1 do
 end
 assert(calls == 1 and result.owner == alice.name and result.count == 3)
 assert(result.collected[1] and result.collected[7] and result.collected[3142])
-assert(not result.collected[8] and not result.collected[9])
-assert(bob.atlas.collection.byID == bob.owned and bob.owned[1] == false)
+assert(not result.collected[8] and not result.collected[9], "the snapshot excludes mounts owned only by the receiver")
+assert(bob.atlas.collection.byID == bob.owned and bob.owned[1] == false and bob.owned[7] == true
+    and bob.owned[9] == true and bob.owned[3142] == nil, "received ownership does not modify the local journal")
 assert(bob.atlas.attempts == attempts and bob.atlas.plans == plans)
 alice.addon(question, bob.name)
 advance(12)

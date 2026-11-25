@@ -18,7 +18,7 @@ end
 
 -- Keep the owner and request together: a late item response must never reopen a
 -- tooltip after leaving its region or selecting a different mount.
-local function showItemTooltip(owner, itemID, fallback, link, append)
+local function showItemTooltip(owner, itemID, fallback, link, append, fallbackQuality)
     owner.pendingItem = nil
     owner:UnregisterEvent("ITEM_DATA_LOAD_RESULT")
     local function render()
@@ -31,7 +31,7 @@ local function showItemTooltip(owner, itemID, fallback, link, append)
         if not GameTooltip:IsOwned(owner) then GameTooltip:SetOwner(owner, "ANCHOR_TOP") end
         if GameTooltip:NumLines() == 0 then
             local quality = select(3, atlas.sourceItemInfo(itemID))
-            ui.tooltipTitle(atlas.qualityText(fallback and fallback ~= "" and fallback or RETRIEVING_ITEM_INFO, quality))
+            ui.tooltipTitle(atlas.qualityText(fallback and fallback ~= "" and fallback or RETRIEVING_ITEM_INFO, quality or fallbackQuality))
             if append then append() end
         end
         GameTooltip:Show()
@@ -50,13 +50,13 @@ local function showItemTooltip(owner, itemID, fallback, link, append)
     end
 end
 
-local function showAchievementTooltip(owner, id, text, shared)
+local function showAchievementTooltip(owner, id, text)
     GameTooltip:SetOwner(owner, "ANCHOR_TOP")
     GameTooltip:ClearLines()
     -- The player's Blizzard link carries the completion bits for individual criteria.
-    local link = not shared and atlas.nativeAchievementLink(id)
+    local link = atlas.nativeAchievementLink(id)
     if link then GameTooltip:SetHyperlink(link) end
-    owner.achievementNeedsData = not shared and GameTooltip:NumLines() == 0
+    owner.achievementNeedsData = GameTooltip:NumLines() == 0
     if GameTooltip:NumLines() == 0 then
         local actualID, name, _, _, _, _, _, description
         if GetAchievementInfo then actualID, name, _, _, _, _, _, description = GetAchievementInfo(id) end
@@ -66,8 +66,8 @@ local function showAchievementTooltip(owner, id, text, shared)
         ui.tooltipTitle(exact and name or title)
         if exact and description and description ~= "" then ui.tooltipLine(description, 1, 1, 1, true) end
     end
-    owner.hoveredAchievement = not shared and id or nil
-    owner.hoveredAchievementText = not shared and text or nil
+    owner.hoveredAchievement = id
+    owner.hoveredAchievementText = text
     GameTooltip:Show()
     if owner.achievementNeedsData and not owner.achievementTooltipRetry then
         local request = {}
@@ -75,7 +75,7 @@ local function showAchievementTooltip(owner, id, text, shared)
         C_Timer.After(.25, function()
             if owner.achievementTooltipRetry == request and owner.hoveredAchievement == id and owner.achievementNeedsData
                 and owner:IsVisible() and owner:IsMouseOver() and GameTooltip:IsShown() and GameTooltip:IsOwned(owner) then
-                showAchievementTooltip(owner, id, owner.hoveredAchievementText, shared)
+                showAchievementTooltip(owner, id, owner.hoveredAchievementText)
             end
         end)
     end
@@ -235,6 +235,20 @@ function atlas.cardDetails(card, pagerArrow)
     journal:SetScript("OnLeave", hideTooltip)
     journal:SetScript("OnHide", hideTooltip)
     journal:SetScript("OnHyperlinkEnter", function(self, link, text)
+        local instanceID = atlas.sourceJournalInstanceID(link)
+        if instanceID then
+            local title, description
+            if EJ_GetInstanceInfo then title, description = EJ_GetInstanceInfo(instanceID) end
+            title = (text and (text:match("|h(.-)|h") or text)) or title
+            if title and title ~= "" then
+                hideTooltip(self)
+                GameTooltip:SetOwner(self, "ANCHOR_TOP")
+                ui.tooltipTitle(title)
+                if description and description ~= "" then ui.tooltipSourceText(description) end
+                GameTooltip:Show()
+            end
+            return
+        end
         local kind, id = link:match("^(%a+):(%d+)")
         id = tonumber(id)
         if kind == "pawatlascost" or kind == "pawatlascoin" then
@@ -274,9 +288,9 @@ function atlas.cardDetails(card, pagerArrow)
             GameTooltip:SetHyperlink(link)
             if not GameTooltip:IsOwned(self) then GameTooltip:SetOwner(self, "ANCHOR_TOP") end
             local chain, grant = panel.questChain, panel.chainGrant
-            local unlock = panel.unlockQuest and panel.unlockQuest.id == id and panel.unlockQuest
+            local sourceQuest = panel.sourceQuest and panel.sourceQuest.id == id and panel.sourceQuest
             local directTitle = directQuestTitle(panel.directQuestReward, id)
-            local chainTitle = unlock and atlas.dataName(unlock) or chain and atlas.questChainTitle(chain, id) or directTitle
+            local chainTitle = sourceQuest and atlas.dataName(sourceQuest) or chain and atlas.questChainTitle(chain, id) or directTitle
             local nativeTitle = chainTitle and C_QuestLog and C_QuestLog.GetTitleForQuestID and C_QuestLog.GetTitleForQuestID(id)
             local missingTitle = chainTitle and (issecretvalue and issecretvalue(nativeTitle)
                 or type(nativeTitle) ~= "string" or nativeTitle == "")
@@ -285,9 +299,9 @@ function atlas.cardDetails(card, pagerArrow)
                 local title = chainTitle or text and (text:match("|h(.-)|h") or text)
                 if title and title ~= "" then ui.tooltipTitle(title, 1, .82, 0) end
             end
-            if unlock then
+            if sourceQuest and sourceQuest.tooltip then
                 ui.tooltipLine(" ")
-                ui.tooltipSourceText(atlas.getLocale() == "enUS" and unlock.englishTooltip or unlock.tooltip)
+                ui.tooltipSourceText(atlas.getLocale() == "enUS" and sourceQuest.englishTooltip or sourceQuest.tooltip)
             elseif chain and grant and (chainTitle or id == chain.firstQuest) then
                 if GameTooltip:NumLines() == 0 then ui.tooltipTitle(atlas.dataName(chain)) end
                 ui.tooltipLine(" ")
@@ -306,7 +320,7 @@ function atlas.cardDetails(card, pagerArrow)
             end
         elseif kind == "achievement" then
             hideTooltip(self)
-            showAchievementTooltip(self, id, text, panel.shared)
+            showAchievementTooltip(self, id, text)
         end
     end)
     journal:SetScript("OnHyperlinkClick", function(self, link, text, button)
@@ -316,7 +330,10 @@ function atlas.cardDetails(card, pagerArrow)
         if IsShiftKeyDown() then atlas.linkSource(link, self, text); return end
         local id = tonumber(link:match("^achievement:(%d+)"))
         if id then atlas.openAchievement(id)
-        else atlas.openSourceReference(link, self, text) end
+        else
+            local _, err = atlas.openSourceReference(link, self, text)
+            if err and UIErrorsFrame then UIErrorsFrame:AddMessage(err, 1, .1, .1) end
+        end
     end)
     journal:SetScript("OnHyperlinkLeave", function(self)
         hideTooltip(self)
@@ -387,6 +404,7 @@ function atlas.cardDetails(card, pagerArrow)
         local icon = item.item and C_Item and C_Item.GetItemIconByID and C_Item.GetItemIconByID(item.item)
         local hasIcon = not (issecretvalue and issecretvalue(icon))
             and (type(icon) == "number" and icon > 0 or type(icon) == "string" and icon ~= "")
+        if not hasIcon and item.icon then icon, hasIcon = item.icon, true end
         if hasIcon then
             itemIcon:SetTexture(icon)
             itemIcon:SetTexCoord(.07, .93, .07, .93)
@@ -396,6 +414,7 @@ function atlas.cardDetails(card, pagerArrow)
         itemGlyph:SetShown(not hasIcon)
     end
     local function appendItemContext()
+        if panel.progressChoice and panel.progressChoice.factionGift then return end
         local item = panel.item
         local progress = panel.itemProgress
         local collectionOnly = collectionWithoutChance(progress)
@@ -472,7 +491,7 @@ function atlas.cardDetails(card, pagerArrow)
         local item = panel.item
         if not item then return end
         if item.item then
-            showItemTooltip(self, item.item, item.name, nil, appendItemContext)
+            showItemTooltip(self, item.item, item.name, nil, appendItemContext, item.quality)
         else
             GameTooltip:SetOwner(self, "ANCHOR_TOP")
             ui.tooltipTitle(item.name)
@@ -541,12 +560,12 @@ function atlas.cardDetails(card, pagerArrow)
     sourcePager:Hide()
 
     function panel:deduplicatePlace(body)
+        if body == "" then return body end
         local place = self.activeSummaryPlace
-        body = ui.deduplicateSourceFields(body, place, self.visibleCovenant, self.addressSource)
-        if not place or body == "" then return body end
         local view, point = self.sourceMapView, self.summaryPoint
-        local mapID = atlas.sourceMapID(place, point, view)
-        if not mapID then return body end
+        local mapID = place and atlas.sourceMapID(place, point, view)
+        body = ui.deduplicateSourceFields(body, place, self.visibleCovenant, self.addressSource, mapID)
+        if not mapID or body == "" then return body end
         local lines, removed = {}, false
         for line in (body .. "\n"):gmatch("(.-)\n") do
             local name = ui.singleSourcePlace(line)
@@ -557,9 +576,14 @@ function atlas.cardDetails(card, pagerArrow)
     end
 
     function panel:update(mount, loc, vendor, sourceView)
-        self.periodicDone, self.periodicTotal = nil, nil
-        if self.progressChoice and not self.shared then
-            self.periodicDone, self.periodicTotal = atlas.periodicQuestProgress(mount, self.progressChoice)
+        self.periodicDone, self.periodicTotal, self.directQuestSteps = nil, nil, nil
+        if self.progressChoice then
+            if atlas.periodicQuestChains[mount.id] then
+                self.periodicDone, self.periodicTotal = atlas.periodicQuestProgress(mount, self.progressChoice)
+            else
+                self.directQuestSteps = atlas.questRewardProgressSteps(self.directQuestReward)
+                self.periodicDone, self.periodicTotal = atlas.questRewardChainProgress(self.directQuestReward, self.directQuestSteps)
+            end
         end
         if self.mount ~= mount then self.sourcePage = 1 end
         local vendorKey = vendor and table.concat({ vendor.name or "", vendor.place or "", vendor.conditions or "", vendor.faction or "" }, "\001")
@@ -601,12 +625,23 @@ function atlas.cardDetails(card, pagerArrow)
             { view = sourceView, classification = route, vendor = vendor }) then raidLoot = nil end
         self.raidLoot = raidLoot
         local ownReward = not contextOnly and not (sourceView and (sourceView.tradingPost or sourceView.separateReward))
-        local rewardItem = requirements and requirements.reward
-            or not vendor and not self.interaction and ownReward and atlas.lootItems[mount.id]
-        local progress = not self.interaction and not self.shared and not vendor and not mount.availability and not (sourceView and sourceView.trackingCompatible == false)
+        local choice = self.progressChoice
+        local barter = vendor and vendor.redemption == "barter" and atlas.sourceGuaranteedReward(mount, choice)
+        local questView = sourceView or mount
+        local questItem = not vendor and not self.interaction and ownReward and atlas.questRewardItem(mount, self.directQuestReward,
+            questView.decoratedSource or questView.journalSourceOverride or questView.journalSourceRaw or questView.journalSource)
+        local loot = not vendor and not self.interaction and ownReward and atlas.lootItems[mount.id]
+        if self.directQuestReward and loot and (not loot.basis or loot.basis == "drop" or loot.basis == "teaching") then loot = nil end
+        local rewardItem = choice and choice.factionGift or requirements and requirements.reward
+            or barter and barter.reward or loot or questItem
+        if choice and choice.islandExpedition and rewardItem and rewardItem.basis == "open" then
+            rewardItem = atlas.rewardItem(mount, loc, true)
+        end
+        local progress = not self.interaction and not vendor and not mount.availability and not (sourceView and sourceView.trackingCompatible == false)
             and atlas.itemAttemptProgress and atlas.itemAttemptProgress(mount) or nil
         local missingRewardItem = not rewardItem or (not rewardItem.item and (not rewardItem.basis or rewardItem.basis == "drop"))
         local displayItem = not self.interaction and ownReward and missingRewardItem and not (progress and progress.item) and not vendor
+            and not self.directQuestReward
             and atlas.rewardItem and atlas.rewardItem(mount, loc,
                 not mount.availability and (mount.kind == "Квест" or mount.covenantSourceOnly))
         if displayItem or rewardItem then
@@ -646,7 +681,7 @@ function atlas.cardDetails(card, pagerArrow)
             local item = self.item
             local cachedName, _, quality = atlas.sourceItemInfo(item.item)
             item.name = atlas.itemDisplayName(item, cachedName) or atlas.itemReferenceName(item.item)
-            item.quality = quality
+            item.quality = quality or item.quality
         end
         self.containerItem = not vendor and not mount.availability and ownReward and self.item and self.item.name
             and (self.item.basis == "open" or self.item.basis == "cage") and self.item or nil
@@ -682,11 +717,12 @@ function atlas.cardDetails(card, pagerArrow)
         self.activeSummaryPlace = sourcePages and ui.singleSourcePlace(self.sourceText) or self.summaryPlace
         if self.setSummaryPlace then self.setSummaryPlace(self.activeSummaryPlace) end
         local item = self.item
-        local hasItem = not vendor and item and item.name ~= nil
+        local hasItem = (not vendor or barter) and item and item.name ~= nil
         local craftedItem = route and route.key == "profession" and atlas.craftedMountItem(mount)
         self.visibleCovenant = nil
         if hasItem then
-            local label = L(requirements and "Награда" or ({ ingredient="Собрать", egg="Выбить и дождаться созревания", open="Открыть", cage="Открыть",
+            local label = L((requirements or questItem and item.item == questItem.item) and "Награда"
+                or ({ ingredient="Собрать", egg="Выбить и дождаться созревания", open="Открыть", cage="Открыть",
                 teaching="Предмет маунта" })[item.basis] or route and route.key ~= "loot" and "Награда" or "Добыча")
             if raidLoot then
                 label = raidLoot.quantity == 1 and L("Добыча · 1 маунт на рейд") or L("Добыча · %d маунта на рейд", raidLoot.quantity)
@@ -724,20 +760,20 @@ function atlas.cardDetails(card, pagerArrow)
             updateItemName()
         end
         if route and route.state == "historical" then
-            self.sourceText = ui.historicalSourceBody(mount, self.sourceText)
-            if self.sourceText == "" and mount.unavailable then self.sourceText = L("Недоступно для получения") end
+            if mount.availability and mount.availability.unique then
+                self.sourceText = ""
+            else
+                self.sourceText = ui.historicalSourceBody(mount, self.sourceText)
+                if self.sourceText == "" and mount.unavailable then self.sourceText = L("Недоступно для получения") end
+            end
         elseif not vendor then
             self.sourceText = ui.compactSourceBody(self.sourceText, route)
         end
         if self.sourceText == "" and not self.collected and mount.unknownSourceNote then
             self.sourceText = L(mount.unknownSourceNote)
         end
+        if hasItem then self.sourceText = ui.withoutDisplayedItem(self.sourceText, item) end
         if self.containerItem then
-            self.sourceText = ui.containerSourceBody(self.sourceText, self.containerItem)
-            local presentation = self.sourcePresentation
-            if presentation then
-                self.sourceText = ui.structuredLootBody(self.sourceText, presentation.target, presentation.place, presentation.points)
-            end
             local reward = atlas.rewardItem and atlas.rewardItem(mount, loc, true)
             if reward and reward.item ~= self.containerItem.item and not self.sourceText:find("|Hitem:" .. reward.item .. "%D") then
                 local name = atlas.dataName(reward) or atlas.itemReferenceName(reward.item)
@@ -781,7 +817,7 @@ function atlas.cardDetails(card, pagerArrow)
             end
         end
         local achievementID
-        if not self.shared and route and route.key == "achievement" then
+        if route and route.key == "achievement" then
             for id in self.sourceText:gmatch("|Hachievement:(%d+)") do
                 if achievementID and achievementID ~= id then achievementID = nil; break end
                 achievementID = id
@@ -811,7 +847,8 @@ function atlas.cardDetails(card, pagerArrow)
         local bottomPadding = 7
         local itemSpace = hasItem and 55 or 0
         local availableHeight = self.bodyEnd - sourceY - textY - bottomPadding - itemSpace
-        local maxHeight = math.min(vendor and 92 or (hasItem or contextOnly) and 96 or 155, math.max(18, availableHeight))
+        local compactVendor = vendor and not (choice and choice.islandSalvage)
+        local maxHeight = math.min(compactVendor and 92 or (hasItem or contextOnly) and 96 or 155, math.max(18, availableHeight))
         local textLeft = 16
         local emblemWidth, emblemRight
         ui.setFont(journalText, condition and 13 or vendor and 14 or 15)
@@ -999,7 +1036,7 @@ function atlas.cardDetails(card, pagerArrow)
             end
             if hovered and contextOwner.hoveredAchievement == hovered and GameTooltip:IsOwned(contextOwner)
                 and GameTooltip:IsShown() and contextOwner:IsVisible() and contextOwner:IsMouseOver() then
-                showAchievementTooltip(contextOwner, hovered, contextOwner.hoveredAchievementText, panel.shared)
+                showAchievementTooltip(contextOwner, hovered, contextOwner.hoveredAchievementText)
             end
         end)
     end)
@@ -1012,7 +1049,7 @@ function atlas.cardDetails(card, pagerArrow)
             end
             local owner = GameTooltip:GetOwner()
             if owner and owner.hoveredAchievement and owner.achievementNeedsData and GameTooltip:IsShown() and owner:IsMouseOver() then
-                showAchievementTooltip(owner, owner.hoveredAchievement, owner.hoveredAchievementText, panel.shared)
+                showAchievementTooltip(owner, owner.hoveredAchievement, owner.hoveredAchievementText)
             end
         end
     end

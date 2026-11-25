@@ -4,6 +4,8 @@ local lockoutsReady = false
 local suppressedCharacters = {}
 local observeStatisticGrowth = false
 local statisticSamples = {}
+local statisticVictories = {}
+local npcStatistics, encounterStatistics = {}, {}
 local brokerStatisticSamples = {}
 local brokerStatisticCreditUntil
 local questRefreshPending = false
@@ -11,6 +13,11 @@ local raidRefreshPending = false
 local encounterTargets, visitTargets = {}, {}
 local lastLootPrune
 local pendingAttemptRefresh
+-- BfA expedition Map.db2 IDs tracked by Rarity: Collector's Edition.
+local islandMaps = {
+    [1813] = true, [1814] = true, [1879] = true, [1882] = true, [1883] = true, [1892] = true,
+    [1893] = true, [1897] = true, [1898] = true, [1907] = true, [2124] = true,
+}
 
 local function requestLockoutsAfterKill()
     if raidRefreshPending then return end
@@ -153,27 +160,28 @@ function atlas.usesKillAPI(mount)
     return atlas.killStatistics[mount.id] ~= nil
 end
 
-local function readStatistics(ids)
-    if not GetStatistic then return nil end
+local function readStatistic(id)
+    -- Some historical statistic IDs are unavailable in the current client.
+    local ok, value = pcall(GetStatistic, id)
+    if not ok or not readable(value) then return end
+    if type(value) == "string" then
+        if value:match("^%s*%-%-?%s*$") then return false end
+        value = value:gsub(" ", ""):gsub(" ", ""):gsub("[%s,%.]", "")
+        value = value:match("^%d+$") and tonumber(value) or nil
+    end
+    if validNumber(value) then return math.floor(value) end
+end
+
+local function readStatistics(ids, observed)
+    if not GetStatistic then return end
     local total, samples = 0, {}
     for _, id in ipairs(ids) do
-        -- A catalog snapshot can contain a statistic unavailable in this client.
-        local ok, value = pcall(GetStatistic, id)
-        if not ok then return nil end
-        if not readable(value) then return nil end
-        local pending = false
-        if type(value) == "string" then
-            if value:match("^%s*%-%-?%s*$") then value, pending = 0, true
-            else
-                value = value:gsub(" ", ""):gsub(" ", ""):gsub("[%s,%.]", "")
-                value = value:match("^%d+$") and tonumber(value) or nil
-            end
-        end
-        if not validNumber(value) then return nil end
-        total = total + math.floor(value)
-        if not pending then samples[id] = math.floor(value) end
+        local value = readStatistic(id)
+        samples[id] = value
+        -- One difficulty can still be loading while another records a kill.
+        total = total + math.max(value or 0, observed and observed[id] or 0)
     end
-    return total, samples
+    if next(samples) then return total, samples end
 end
 
 -- Account totals retain one contribution per character GUID. Local attempts and
@@ -220,6 +228,44 @@ local function characterCounts()
         record.migrated = true
     end
     return record
+end
+
+function atlas.islandExpeditionCompletions()
+    local characters = type(MountAtlasAccountDB) == "table" and MountAtlasAccountDB.characters
+    local total = 0
+    for guid, character in pairs(type(characters) == "table" and characters or {}) do
+        local count = type(character) == "table" and character.islandExpeditionCompletions
+        if not suppressedCharacters[guid] and validNumber(count) then total = total + math.floor(count) end
+    end
+    return total
+end
+
+local function onDifferentMap(map, instanceType, island)
+    return validNumber(map) and map ~= island and (map > 0 or (readable(instanceType) and instanceType == "none"))
+end
+
+function atlas.pendingIslandExpeditionMap()
+    local map = select(8, GetInstanceInfo())
+    if validNumber(map) and islandMaps[map] and MountAtlasDB.completedIslandMap ~= map then return map end
+end
+
+local function recordIslandCompletion(map)
+    if not validNumber(map) or not islandMaps[map] or MountAtlasDB.completedIslandMap == map then return end
+    -- ISLAND_COMPLETED is synchronous and only identifies the map and winner.
+    -- Ignore a replay after zoning out, but trust the event while instance data loads.
+    local _, instanceType, _, _, _, _, _, instanceMap = GetInstanceInfo()
+    if onDifferentMap(instanceMap, instanceType, map) then return end
+    local character = characterCounts()
+    if not character then return end
+    MountAtlasDB.completedIslandMap = map
+    local count = character.islandExpeditionCompletions
+    character.islandExpeditionCompletions = (validNumber(count) and math.floor(count) or 0) + 1
+    if atlas.settleIslandExpeditionAcquisitions then atlas.settleIslandExpeditionAcquisitions(map) end
+    local settings = MountAtlasAccountDB.settings
+    if (not settings or settings.chatMessages ~= false) and DEFAULT_CHAT_FRAME and DEFAULT_CHAT_FRAME.AddMessage then
+        DEFAULT_CHAT_FRAME:AddMessage("PawAtlas: " .. atlas.L("Пройдено экспедиций: %d", atlas.islandExpeditionCompletions()))
+    end
+    if atlas.refreshIslandExpeditionDetails then atlas.refreshIslandExpeditionDetails() end
 end
 
 -- Stage attempts share character identity/removal with boss statistics, but
@@ -269,29 +315,68 @@ function atlas.removeAccountCharacter(guid)
     return true
 end
 
+local statisticRetryDelays = { 2, 5, 8, 10, 15, 20 }
+-- After() runs on the next available frame, including the last scheduled scan.
+local statisticConfirmationWindow = statisticRetryDelays[#statisticRetryDelays] + 0.5
+
+-- A statistic can update before an encounter or loot event confirms its source.
+local function confirmStatisticRise(observed, stat, value, candidate, victory, time)
+    if candidate then
+        observed.pending = observed.pending or {}
+        observed.pending[stat] = { value = value, expires = time + statisticConfirmationWindow }
+    end
+    local pending = observed.pending and observed.pending[stat]
+    if not pending then return false end
+    if pending.value ~= value or pending.expires < time then
+        observed.pending[stat] = nil
+    elseif victory then
+        observed.pending[stat] = nil
+        return true
+    end
+    return false
+end
+
 local function saveStatistic(record, id, count, samples)
     if count == nil then return end
     local previous = record.statistics[id]
     local observed = statisticSamples[id] or {}
     statisticSamples[id] = observed
-    local increase = 0
+    local increase, confirmed = 0, false
+    local time = GetTime()
+    local singleStatistic = #atlas.killStatistics[id] == 1
+    local worldBoss = singleStatistic and atlas.worldBossLocks and atlas.worldBossLocks[id]
     for statisticID, value in pairs(samples or {}) do
         local baseline = observed[statisticID]
-        -- A saved total identifies the baseline only for a single statistic.
-        -- With several difficulties, a newly loaded component may be old kills.
-        if baseline == nil and #atlas.killStatistics[id] == 1 and validNumber(previous) and previous > 0 then
-            baseline = previous
+        if value == false then
+            if baseline == nil then observed[statisticID] = false end
+        else
+            local sampledBaseline = baseline
+            -- Only a single-statistic mount has an unambiguous saved baseline.
+            if singleStatistic and validNumber(previous) and previous > 0 then
+                baseline = math.max(baseline or 0, previous)
+            end
+            local victory = (statisticVictories[statisticID] or -1) >= time
+            -- Outside combat, world bosses can update an already sampled total
+            -- while the same kill's encounter or corpse is still being reported.
+            local candidate = count > (previous or 0) and (baseline == false and value == 1
+                or worldBoss and not observeStatisticGrowth and validNumber(sampledBaseline) and value == baseline + 1)
+            if confirmStatisticRise(observed, statisticID, value, candidate, victory, time) then
+                increase, confirmed = increase + 1, true
+            elseif validNumber(baseline) and value > baseline and (observeStatisticGrowth or victory) then
+                increase = increase + value - baseline
+                if victory and not observeStatisticGrowth then confirmed = true end
+            end
+            observed[statisticID] = math.max(baseline or 0, value)
         end
-        if validNumber(baseline) and value > baseline then increase = increase + value - baseline end
-        observed[statisticID] = validNumber(baseline) and math.max(baseline, value) or value
     end
-    local grew = observeStatisticGrowth and increase > 0
+    local grew = increase > 0
     if grew and atlas.recordImportedStatistic then
         atlas.recordImportedStatistic(id, UnitGUID("player"), increase)
     end
     -- Lifetime kill statistics are cumulative. During login the API can briefly
     -- return "--"/zero before loading its real value; retain the known baseline.
     record.statistics[id] = validNumber(previous) and math.max(math.floor(previous), count) or count
+    if confirmed and atlas.recordBrokerAttempt then atlas.recordBrokerAttempt(id) end
     if grew and atlas.notifyKillStatistic then
         atlas.notifyKillStatistic(id)
     end
@@ -319,7 +404,7 @@ local function syncStatistics(creditAttempts)
     local pendingGameplay = observeStatisticGrowth
         and (inCombat() or (brokerStatisticCreditUntil and GetTime() <= brokerStatisticCreditUntil))
     for id, statistics in pairs(atlas.killStatistics) do
-        local count, samples = readStatistics(statistics)
+        local count, samples = readStatistics(statistics, statisticSamples[id])
         -- An unavailable API must not erase the last valid character snapshot.
         if saveStatistic(record, id, count, samples) then changed = true end
         -- A card can read the same statistic before the delayed gameplay scan.
@@ -327,10 +412,12 @@ local function syncStatistics(creditAttempts)
         local observed = brokerStatisticSamples[id] or {}
         brokerStatisticSamples[id] = observed
         for statisticID, value in pairs(samples or {}) do
-            local previous = observed[statisticID]
-            if gameplay and previous and value > previous then credited[id] = true end
-            if gameplay or not pendingGameplay or not previous then
-                observed[statisticID] = previous and math.max(previous, value) or value
+            if value ~= false then
+                local previous = observed[statisticID]
+                if gameplay and previous and value > previous then credited[id] = true end
+                if gameplay or not pendingGameplay or not previous then
+                    observed[statisticID] = previous and math.max(previous, value) or value
+                end
             end
         end
     end
@@ -347,11 +434,36 @@ function atlas.accountCharacterCount()
     return count
 end
 
-function atlas.accountCharacters()
+local function warbandCharacter(guid)
+    if not readable(guid) or type(guid) ~= "string" then return end
+    local characters = type(MountAtlasAccountDB) == "table" and MountAtlasAccountDB.characters
+    local record = type(characters) == "table" and characters[guid]
+    if type(record) == "table" then return record end
+end
+
+function atlas.isWarbandCharacterHidden(guid)
+    local record = warbandCharacter(guid)
+    return record ~= nil and record.hiddenFromWarband == true
+end
+
+function atlas.setWarbandCharacterHidden(guid, hidden)
+    local record = warbandCharacter(guid)
+    if not record or type(hidden) ~= "boolean" then return false end
+    if (record.hiddenFromWarband == true) == hidden then return true end
+    record.hiddenFromWarband = hidden and true or nil
+    local saved = MountAtlasAccountDB.settings
+    if hidden and type(saved) == "table" and saved.plannerCharacterGUID == guid then
+        atlas.selectPlanCharacter(nil)
+    end
+    if atlas.refreshDetails then atlas.refreshDetails() end
+    return true
+end
+
+function atlas.accountCharacters(includeHidden)
     local characters = type(MountAtlasAccountDB) == "table" and MountAtlasAccountDB.characters
     local result = {}
     for guid, record in pairs(type(characters) == "table" and characters or {}) do
-        if type(record) == "table" then
+        if type(record) == "table" and (includeHidden or record.hiddenFromWarband ~= true) then
             result[#result + 1] = { guid = guid, name = record.name or "—", realm = record.realm or "—",
                 level = record.level, class = record.class }
         end
@@ -367,7 +479,6 @@ end
 local scanGeneration = 0
 local statisticRetryGeneration = 0
 local pendingStatisticScans = {}
-local statisticRetryDelays = { 2, 5, 8, 10, 15, 20 }
 
 local function refreshChangedStatistics(creditAttempts)
     if not syncStatistics(creditAttempts) then return end
@@ -405,6 +516,61 @@ local function queueStatisticRetries()
     end
 end
 
+local function indexStatisticSource(index, key, stat, source)
+    if not key then return end
+    local entries = index[key] or {}
+    index[key] = entries
+    entries[#entries + 1] = { stat = stat, source = source }
+end
+
+local function markStatisticVictory(entries, difficulty, map)
+    if not entries then return false end
+    local time, changed, matched = GetTime(), false, false
+    for _, entry in ipairs(entries) do
+        local source = entry.source
+        if (not source.map or (validNumber(map) and map == source.map))
+            and (not source.difficulties or (validNumber(difficulty) and source.difficulties[difficulty])) then
+            matched = true
+            local untilTime = time + statisticConfirmationWindow
+            if untilTime > (statisticVictories[entry.stat] or 0) + 1 then changed = true end
+            statisticVictories[entry.stat] = untilTime
+        end
+    end
+    return changed, matched
+end
+
+local function readableTable(value)
+    return readable(value) and type(value) == "table" and (not canaccesstable or canaccesstable(value))
+end
+
+local function confirmBossStatistics(encounter, difficulty, units)
+    local _, _, instanceDifficulty, _, _, _, _, map = GetInstanceInfo()
+    if not validNumber(difficulty) then difficulty = instanceDifficulty end
+    local matched = validNumber(encounter) and markStatisticVictory(encounterStatistics[encounter], difficulty, map)
+    if readableTable(units) then
+        for _, unit in ipairs(units) do
+            if readableTable(unit) and validNumber(unit.creatureID) then
+                matched = markStatisticVictory(npcStatistics[unit.creatureID], difficulty, map) or matched
+            end
+        end
+    end
+    if matched then queueStatisticRetries() end
+end
+
+local function creatureID(guid)
+    if not readable(guid) or type(guid) ~= "string" then return end
+    local kind, npc = guid:match("^(%a+)%-%d+%-%d+%-%d+%-%d+%-(%d+)%-")
+    if kind == "Creature" or kind == "Vehicle" then return tonumber(npc) end
+end
+
+local function confirmCreatureStatistics(entries)
+    if not entries then return end
+    local _, _, difficulty, _, _, _, _, map = GetInstanceInfo()
+    local changed, matched = markStatisticVictory(entries, difficulty, map)
+    if changed then queueStatisticRetries() end
+    return matched
+end
+
 function atlas.refreshAccountStatistics()
     scanGeneration = scanGeneration + 1
     brokerStatisticSamples, brokerStatisticCreditUntil = {}, nil
@@ -425,6 +591,7 @@ function atlas.clearAttemptStatistics()
         if type(character) == "table" then
             character.kills, character.statistics, character.stageAttempts = {}, {}, {}
             character.collectionItems = nil
+            character.islandExpeditionCompletions = nil
             character.migrated = true
         end
     end
@@ -437,7 +604,7 @@ function atlas.clearAttemptStatistics()
     -- Drop pending imports/messages and delayed statistic refreshes. Eligibility
     -- locks and loot GUIDs remain intact so one loot window cannot count twice.
     scanGeneration = scanGeneration + 1
-    statisticSamples = {}
+    statisticSamples, statisticVictories = {}, {}
     brokerStatisticSamples, brokerStatisticCreditUntil = {}, nil
     local observed = observeStatisticGrowth
     observeStatisticGrowth = false
@@ -451,27 +618,35 @@ function atlas.clearAttemptStatistics()
     return true
 end
 
-function atlas.rawKills(mount)
-    local record = characterCounts()
-    local api = atlas.usesKillAPI(mount)
-    if api and record then
-        local count, samples = readStatistics(atlas.killStatistics[mount.id])
-        saveStatistic(record, mount.id, count, samples)
-    end
+local function savedCount(field, key)
     local characters = type(MountAtlasAccountDB) == "table" and MountAtlasAccountDB.characters
     local total, found = 0, false
     if type(characters) == "table" then
         for _, character in pairs(characters) do
             if type(character) == "table" then
-                local counts
-                if api then counts = character.statistics else counts = character.kills end
-                local key = api and mount.id or (mount.countKey or tostring(mount.id))
+                local counts = character[field]
                 local count = type(counts) == "table" and counts[key]
                 if validNumber(count) then total, found = total + math.floor(count), true end
             end
         end
     end
-    if api then return found and total or nil end
+    return found and total or nil
+end
+
+function atlas.savedStatisticAttempts(id)
+    return savedCount("statistics", id)
+end
+
+function atlas.rawKills(mount)
+    local record = characterCounts()
+    if atlas.usesKillAPI(mount) then
+        if record then
+            local count, samples = readStatistics(atlas.killStatistics[mount.id], statisticSamples[mount.id])
+            saveStatistic(record, mount.id, count, samples)
+        end
+        return atlas.savedStatisticAttempts(mount.id)
+    end
+    local total = savedCount("kills", mount.countKey or tostring(mount.id)) or 0
     -- At login the player's GUID can be unavailable until entering the world.
     local guid = UnitGUID and UnitGUID("player")
     local suppressed = readable(guid) and suppressedCharacters[guid]
@@ -492,7 +667,7 @@ end
 
 -- Independent eligible attempts: the historical probability is not the chance
 -- of the next drop. Container/ingredient rates must not use NPC kill counts.
-function atlas.dropProbability(mount)
+function atlas.dropProbability(mount, savedAttempts)
     if atlas.raidLootRewards and atlas.raidLootRewards[mount.id] then return nil end
     if atlas.rewardChanceEligible and not atlas.rewardChanceEligible(mount) then return nil end
     local progress = atlas.rewardAttemptProgress and atlas.rewardAttemptProgress(mount)
@@ -509,7 +684,7 @@ function atlas.dropProbability(mount)
     local perAttempt = 1 / rate
     if reward and reward.unverifiedEligibility then return perAttempt end
     local tracked = not mount.journalOnly or atlas.usesKillAPI(mount)
-    local attempts = tracked and atlas.kills(mount)
+    local attempts = tracked and (savedAttempts or atlas.kills(mount))
     if not validNumber(attempts) or (not overall and item and item.basis ~= "drop") then return perAttempt end
     attempts = math.floor(attempts)
     local cumulative = attempts == 0 and 0 or (1 - (1 - perAttempt) ^ attempts)
@@ -615,13 +790,13 @@ local function recordLoot()
         for i = 1, #sources, 2 do
             local guid = sources[i]
             if readable(guid) and type(guid) == "string" and not active(MountAtlasDB.lastLoot[guid], now) then
-                local unitType, npc = guid:match("^(%a+)%-%d+%-%d+%-%d+%-%d+%-(%d+)%-")
                 -- Vehicles can award the same creature loot (for example Felsiege).
                 -- Keep objects, items and player GUIDs out of creature attempts.
-                npc = tonumber(npc)
-                local targets = (unitType == "Creature" or unitType == "Vehicle") and atlas.lootByNPC[npc]
+                local npc = creatureID(guid)
+                local confirmed = confirmCreatureStatistics(npcStatistics[npc])
+                local targets = atlas.lootByNPC[npc]
+                if confirmed or targets then MountAtlasDB.lastLoot[guid] = now + 86400 end
                 if targets then
-                    MountAtlasDB.lastLoot[guid] = now + 86400
                     local limits = {}
                     for _, mount in ipairs(targets) do
                         local frequency = atlas.lootFrequencies[mount.id]
@@ -653,14 +828,21 @@ end
 
 local function onEvent(event, ...)
     if event == "ENCOUNTER_END" then
-        local encounter, _, difficulty, _, success = ...
+        local encounter, _, difficulty, _, success, units = ...
         if readable(success) and success == 1 then
+            confirmBossStatistics(encounter, difficulty, units)
             countEncounter(encounter, difficulty)
             requestLockoutsAfterKill()
         end
     elseif event == "BOSS_KILL" then
+        confirmBossStatistics((...))
         countEncounter((...), select(3, GetInstanceInfo()))
         requestLockoutsAfterKill()
+    elseif event == "PARTY_KILL" then
+        local _, guid = ...
+        confirmCreatureStatistics(npcStatistics[creatureID(guid)])
+    elseif event == "ISLAND_COMPLETED" then
+        recordIslandCompletion(...)
     elseif event == "LOOT_READY" then
         recordLoot()
     elseif event == "LOOT_OPENED" then
@@ -683,7 +865,12 @@ local function onEvent(event, ...)
         -- initial scan above establishes available baselines; unknown samples
         -- still cannot contribute growth until a real value has been observed.
         if inCombat() then observeStatisticGrowth = true end
-        local _, _, difficulty, _, _, _, _, map = GetInstanceInfo()
+        local _, instanceType, difficulty, _, _, _, _, map = GetInstanceInfo()
+        -- A reload on the completed island preserves its marker. A confirmed
+        -- map change lets the character count another run on that same island.
+        if MountAtlasDB.completedIslandMap and onDifferentMap(map, instanceType, MountAtlasDB.completedIslandMap) then
+            MountAtlasDB.completedIslandMap = nil
+        end
         if validNumber(map) and validNumber(difficulty) then
             local targets = visitTargets[map]
             if targets then
@@ -760,10 +947,19 @@ function atlas.initializeTracking()
         end
     end
     characterCounts()
+    for stat, sources in pairs(atlas.killStatisticSources or {}) do
+        for _, source in ipairs(sources) do
+            indexStatisticSource(npcStatistics, source.npc, stat, source)
+            indexStatisticSource(encounterStatistics, source.encounter, stat, source)
+        end
+    end
     if atlas.planTargets then atlas.planTargets() end
     for _, name in ipairs({ "ENCOUNTER_END", "BOSS_KILL", "LOOT_READY", "LOOT_OPENED", "PLAYER_ENTERING_WORLD",
         "PLAYER_LOGOUT", "UPDATE_INSTANCE_INFO", "CRITERIA_UPDATE", "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED",
-        "QUEST_LOG_UPDATE", "QUEST_TURNED_IN" }) do
+        "QUEST_LOG_UPDATE", "QUEST_TURNED_IN", "ISLAND_COMPLETED" }) do
         atlas:RegisterEvent(name, onEvent)
+    end
+    if not C_EventUtils or not C_EventUtils.IsEventValid or C_EventUtils.IsEventValid("PARTY_KILL") then
+        atlas:RegisterEvent("PARTY_KILL", onEvent)
     end
 end
