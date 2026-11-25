@@ -113,7 +113,7 @@ jobs:
             exit 1
           fi
           cp "$source" .release/release-notes.md
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: PawAtlas-package
           path: |
@@ -169,7 +169,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           name: PawAtlas-package
           path: .release
