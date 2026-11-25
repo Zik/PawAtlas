@@ -13,6 +13,7 @@ local raidRefreshPending = false
 local encounterTargets, visitTargets = {}, {}
 local lastLootPrune
 local pendingAttemptRefresh
+local bonusRollPrompts, activeBonusRoll = {}, nil
 -- BfA expedition Map.db2 IDs tracked by Rarity: Collector's Edition.
 local islandMaps = {
     [1813] = true, [1814] = true, [1879] = true, [1882] = true, [1883] = true, [1892] = true,
@@ -592,6 +593,7 @@ function atlas.clearAttemptStatistics()
             character.kills, character.statistics, character.stageAttempts = {}, {}, {}
             character.collectionItems = nil
             character.islandExpeditionCompletions = nil
+            character.bonusRolls = nil
             character.migrated = true
         end
     end
@@ -606,6 +608,7 @@ function atlas.clearAttemptStatistics()
     scanGeneration = scanGeneration + 1
     statisticSamples, statisticVictories = {}, {}
     brokerStatisticSamples, brokerStatisticCreditUntil = {}, nil
+    bonusRollPrompts, activeBonusRoll = {}, nil
     local observed = observeStatisticGrowth
     observeStatisticGrowth = false
     if atlas.resetAttemptStageSession then atlas.resetAttemptStageSession() end
@@ -618,7 +621,7 @@ function atlas.clearAttemptStatistics()
     return true
 end
 
-local function savedCount(field, key)
+local function savedCount(field, key, additionalField)
     local characters = type(MountAtlasAccountDB) == "table" and MountAtlasAccountDB.characters
     local total, found = 0, false
     if type(characters) == "table" then
@@ -627,6 +630,9 @@ local function savedCount(field, key)
                 local counts = character[field]
                 local count = type(counts) == "table" and counts[key]
                 if validNumber(count) then total, found = total + math.floor(count), true end
+                local additional = additionalField and character[additionalField]
+                local extra = type(additional) == "table" and additional[key]
+                if validNumber(extra) then total, found = total + math.floor(extra), true end
             end
         end
     end
@@ -634,7 +640,7 @@ local function savedCount(field, key)
 end
 
 function atlas.savedStatisticAttempts(id)
-    return savedCount("statistics", id)
+    return savedCount("statistics", id, "bonusRolls")
 end
 
 function atlas.rawKills(mount)
@@ -826,6 +832,74 @@ local function recordLoot()
     if changed then atlas.queueAttemptRefresh(true) end
 end
 
+local function rememberBonusRollPrompt(spell, promptType, _, duration, currency, cost)
+    if not atlas.bonusRollSources then return end
+    local bonusType = Enum and Enum.ConfirmationPromptUIType and Enum.ConfirmationPromptUIType.BonusRoll or 1
+    if not validNumber(spell) or not validNumber(promptType) or promptType ~= bonusType
+        or not validNumber(duration) or duration == 0
+        or not validNumber(currency) or not validNumber(cost) or cost ~= 1 then return end
+    local source = atlas.bonusRollSources[spell]
+    if currency == 0 then currency = BONUS_ROLL_REQUIRED_CURRENCY end
+    if not source or not validNumber(currency) or source.currency ~= currency or not atlas.killStatistics[source.mount] then return end
+    local time = GetTime()
+    local previous = bonusRollPrompts[spell]
+    if not previous or (previous ~= activeBonusRoll and previous.expires <= time) then
+        bonusRollPrompts[spell] = { source = source, expires = time + duration }
+    end
+end
+
+local function restoreBonusRollPrompts(initialLogin, reloadingUI)
+    if initialLogin == true or reloadingUI == true then
+        bonusRollPrompts, activeBonusRoll = {}, nil
+    else
+        local time = GetTime()
+        for spell, prompt in pairs(bonusRollPrompts) do
+            if prompt ~= activeBonusRoll and (not prompt.started or prompt.expires <= time) then
+                bonusRollPrompts[spell] = nil
+            end
+        end
+    end
+    -- Blizzard rebuilds the native roll window from this same pending list.
+    local prompts = GetSpellConfirmationPromptsInfo and GetSpellConfirmationPromptsInfo()
+    if not readableTable(prompts) then return end
+    for _, prompt in ipairs(prompts) do
+        if readableTable(prompt) then
+            rememberBonusRollPrompt(prompt.spellID, prompt.confirmType, nil, prompt.duration, prompt.currencyID, prompt.currencyCost)
+        end
+    end
+end
+
+local function startBonusRoll()
+    -- STARTED has no spell payload. Blizzard keeps the selected spell and its
+    -- cost currency on the single bonus roll frame throughout the roll.
+    local frame = BonusRollFrame
+    local spell = frame and frame:IsShown() and frame.spellID
+    local currency = frame and frame.CurrentCountFrame and frame.CurrentCountFrame.currencyID
+    local prompt = validNumber(spell) and bonusRollPrompts[spell]
+    if prompt and activeBonusRoll == prompt then return end
+    activeBonusRoll = nil
+    if not prompt or prompt.started or prompt.expires <= GetTime()
+        or not validNumber(currency) or prompt.source.currency ~= currency then return end
+    prompt.started, prompt.spell = true, spell
+    activeBonusRoll = prompt
+end
+
+local function finishBonusRoll(rewardType, _, _, _, _, _, _, secondary)
+    if not activeBonusRoll or not readable(secondary) or secondary ~= false or not readable(rewardType)
+        or (rewardType ~= "item" and rewardType ~= "money" and rewardType ~= "currency") then return end
+    local id = activeBonusRoll.source.mount
+    activeBonusRoll = nil
+    local record = characterCounts()
+    if not record then return end
+    if type(record.bonusRolls) ~= "table" then record.bonusRolls = {} end
+    local previous = record.bonusRolls[id]
+    record.bonusRolls[id] = (validNumber(previous) and math.floor(previous) or 0) + 1
+    if atlas.recordImportedStatistic then atlas.recordImportedStatistic(id, UnitGUID("player"), 1) end
+    if atlas.recordBrokerAttempt then atlas.recordBrokerAttempt(id) end
+    if atlas.notifyKillStatistic then atlas.notifyKillStatistic(id) end
+    atlas.queueAttemptRefresh(true)
+end
+
 local function onEvent(event, ...)
     if event == "ENCOUNTER_END" then
         local encounter, _, difficulty, _, success, units = ...
@@ -841,6 +915,21 @@ local function onEvent(event, ...)
     elseif event == "PARTY_KILL" then
         local _, guid = ...
         confirmCreatureStatistics(npcStatistics[creatureID(guid)])
+    elseif event == "SPELL_CONFIRMATION_PROMPT" then
+        rememberBonusRollPrompt(...)
+    elseif event == "SPELL_CONFIRMATION_TIMEOUT" then
+        local spell = ...
+        local prompt = validNumber(spell) and bonusRollPrompts[spell]
+        if prompt and not prompt.started then bonusRollPrompts[spell] = nil end
+    elseif event == "BONUS_ROLL_STARTED" then
+        startBonusRoll()
+    elseif event == "BONUS_ROLL_FAILED" then
+        if activeBonusRoll and bonusRollPrompts[activeBonusRoll.spell] == activeBonusRoll then
+            bonusRollPrompts[activeBonusRoll.spell] = nil
+        end
+        activeBonusRoll = nil
+    elseif event == "BONUS_ROLL_RESULT" then
+        finishBonusRoll(...)
     elseif event == "ISLAND_COMPLETED" then
         recordIslandCompletion(...)
     elseif event == "LOOT_READY" then
@@ -860,6 +949,7 @@ local function onEvent(event, ...)
     elseif event == "PLAYER_REGEN_ENABLED" then
         queueStatisticRetries()
     elseif event == "PLAYER_ENTERING_WORLD" then
+        if atlas.bonusRollSources then restoreBonusRollPrompts(...) end
         atlas.refreshAccountStatistics()
         -- Reloading during a fight has no PLAYER_REGEN_DISABLED event. The
         -- initial scan above establishes available baselines; unknown samples
@@ -961,5 +1051,13 @@ function atlas.initializeTracking()
     end
     if not C_EventUtils or not C_EventUtils.IsEventValid or C_EventUtils.IsEventValid("PARTY_KILL") then
         atlas:RegisterEvent("PARTY_KILL", onEvent)
+    end
+    if atlas.bonusRollSources then
+        for _, name in ipairs({ "SPELL_CONFIRMATION_PROMPT", "SPELL_CONFIRMATION_TIMEOUT", "BONUS_ROLL_STARTED",
+            "BONUS_ROLL_FAILED", "BONUS_ROLL_RESULT" }) do
+            if not C_EventUtils or not C_EventUtils.IsEventValid or C_EventUtils.IsEventValid(name) then
+                atlas:RegisterEvent(name, onEvent)
+            end
+        end
     end
 end

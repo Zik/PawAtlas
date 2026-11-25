@@ -5493,6 +5493,13 @@ atlas.unreleasedMounts = {
     [2302] = 466464,
     [2716] = 1254363,
 }
+-- Pandaria confirmation spells and currencies from Blizzard, BonusRollPreview and Rarity CE.
+atlas.bonusRollSources = {
+    [132205] = { mount = 473, currency = 697 },
+    [132206] = { mount = 515, currency = 697 },
+    [136381] = { mount = 542, currency = 752 },
+    [137554] = { mount = 533, currency = 752 },
+}
 -- Unambiguous source locations from Rarity and Blizzard UiMap.db2.
 atlas.dropSourceInfo = {
     [69] = { map = 317, place = "Стратхольм", englishPlace = "Stratholme", mapType = 4, sourceKind = "Босс", maps = { 317, 318, 827, 1505 }, placeKind = "Подземелье" },

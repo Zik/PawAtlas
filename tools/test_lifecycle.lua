@@ -1665,6 +1665,7 @@ end
 
 do
     local worldBosses = { [473] = 870, [515] = 870, [533] = 870, [542] = 1064, [634] = 1116 }
+    local rollSpells = { [473] = 132205, [515] = 132206, [533] = 137554, [542] = 136381 }
     for id, map in pairs(worldBosses) do
         local currentMap = map
         local stat = statisticCatalog.killStatistics[id][1]
@@ -1680,6 +1681,11 @@ do
             equal(key, stat, "read targeted world boss statistic")
             return sample
         end
+        local promptSpell, coin = rollSpells[id], id <= 515 and 697 or 752
+        local pendingPrompts
+        env.GetSpellConfirmationPromptsInfo = function() return pendingPrompts end
+        env.BONUS_ROLL_REQUIRED_CURRENCY = 697
+        env.BonusRollFrame = { CurrentCountFrame = {}, shown = true, IsShown = function(self) return self.shown end }
         env.C_MountJournal = { GetMountInfoByID = function(key)
             equal(key, id, "read targeted world boss mount ownership")
             return mount.name, nil, nil, nil, nil, nil, nil, nil, nil, nil, false
@@ -1705,6 +1711,7 @@ do
         local probe = {
             mounts = {}, lootByNPC = {}, killStatistics = { [id] = { stat } },
             killStatisticSources = { [stat] = { source } },
+            bonusRollSources = statisticCatalog.bonusRollSources,
             worldBossLocks = { [id] = { frequency = "weekly" } },
             attemptStages = { [id] = statisticCatalog.attemptStages[id] },
             lootItems = { [id] = statisticCatalog.lootItems[id] },
@@ -1786,8 +1793,114 @@ do
         equal(chat[3], mount.name .. " #1", "a first kill announces after a delayed first statistic " .. id)
         equal(credits, 3, "the first kill credits Broker once " .. id)
         equal(imported, 3, "the first kill adds one imported delta " .. id)
+        if promptSpell then
+            local function prompt(spell, currency)
+                env.BonusRollFrame.spellID = spell
+                env.BonusRollFrame.CurrentCountFrame.currencyID = currency == 0 and env.BONUS_ROLL_REQUIRED_CURRENCY or currency
+                signal("SPELL_CONFIRMATION_PROMPT", spell, 1, nil, 180, currency, 1)
+            end
+            local function result(kind, secondary)
+                signal("BONUS_ROLL_RESULT", kind or "money", "", 1, 0, 0, true, nil, secondary == true)
+            end
+
+            -- The boss prompt can arrive before the statistic updates.
+            signal("BOSS_KILL", source.encounter)
+            prompt(promptSpell, id == 515 and 0 or coin)
+            signal("BONUS_ROLL_STARTED")
+            signal("BONUS_ROLL_STARTED")
+            signal("SPELL_CONFIRMATION_TIMEOUT", promptSpell, 1)
+            result("item", true)
+            equal(#chat, 3, "secondary result does not complete the roll " .. id)
+            result()
+            result()
+            signal("BONUS_ROLL_STARTED")
+            result()
+            equal(chat[4], mount.name .. " #2", "gold counts as one bonus attempt " .. id)
+            equal(#chat, 4, "repeated bonus events do not add attempts " .. id)
+            equal(account.characters[player].statistics[id], 1, "bonus does not change the base statistic " .. id)
+            sample = "2"
+            advance(3)
+            equal(chat[5], mount.name .. " #3", "late base attempt follows the bonus attempt " .. id)
+            equal(probe.kills(mount), 3, "base and bonus attempts share the account total " .. id)
+            local rate, cumulative, attempts = probe.dropProbability(mount)
+            equal(attempts, 3, "the probability uses the combined total " .. id)
+            assert(math.abs(cumulative - (1 - (1 - rate) ^ 3)) < 1e-12)
+            equal(imported, 5, "base and bonus add one imported delta each " .. id)
+            equal(credits, 5, "base and bonus both credit Broker " .. id)
+
+            advance(180)
+            sample = "3"
+            signal("BOSS_KILL", source.encounter)
+            advance(3)
+            equal(chat[6], mount.name .. " #4", "base attempt can arrive first " .. id)
+            prompt(promptSpell, coin)
+            env.BonusRollFrame.spellID = promptSpell + 1
+            signal("BONUS_ROLL_STARTED")
+            result()
+            env.BonusRollFrame.spellID = promptSpell
+            result()
+            equal(#chat, 6, "another boss and unstarted prompts cannot count " .. id)
+            env.BonusRollFrame.shown = false
+            signal("BONUS_ROLL_STARTED")
+            result()
+            equal(#chat, 6, "an unrelated start cannot use a hidden stale frame " .. id)
+            env.BonusRollFrame.shown = true
+            signal("BONUS_ROLL_STARTED")
+            signal("BONUS_ROLL_FAILED")
+            result()
+            equal(#chat, 6, "a failed roll cannot count " .. id)
+            prompt(promptSpell, coin)
+            signal("SPELL_CONFIRMATION_TIMEOUT", promptSpell, 1)
+            signal("BONUS_ROLL_STARTED")
+            result()
+            prompt(promptSpell, coin + 1)
+            signal("BONUS_ROLL_STARTED")
+            result()
+            equal(#chat, 6, "expired and wrong-currency prompts cannot count " .. id)
+            prompt(promptSpell, coin)
+            signal("BONUS_ROLL_STARTED")
+            result("item")
+            equal(chat[7], mount.name .. " #5", "a completed roll counts after the base attempt " .. id)
+
+            advance(180)
+            prompt(promptSpell, coin)
+            signal("BONUS_ROLL_STARTED")
+            result()
+            equal(chat[8], mount.name .. " #6", "a confirmed roll can be used without a new base attempt " .. id)
+            equal(account.characters[player].bonusRolls[id], 3, "only confirmed bonus history is stored " .. id)
+
+            setfenv(assert(loadfile("Core/RarityImport.lua")), env)("PawAtlas", probe)
+            account.rarityImport = { entries = { [id] = { total = 100 } } }
+            advance(180)
+            prompt(promptSpell, coin)
+            signal("BONUS_ROLL_STARTED")
+            result()
+            equal(chat[9], mount.name .. " #101", "a new roll adds once above the Rarity import floor " .. id)
+            equal(probe.rawKills(mount), 7, "Rarity history stays separate from local and Blizzard counts " .. id)
+            equal(probe.kills(mount), 101, "Rarity history and the new roll reach the displayed total " .. id)
+
+            advance(180)
+            prompt(promptSpell, coin)
+            signal("BONUS_ROLL_STARTED")
+            probe.clearAttemptStatistics()
+            result()
+            equal(probe.kills(mount), 3, "reset preserves the Blizzard history and clears local bonus history " .. id)
+            equal(#chat, 9, "result arriving after reset cannot count " .. id)
+
+            pendingPrompts = { { spellID = promptSpell, confirmType = 1, duration = 1,
+                currencyID = coin, currencyCost = 1 } }
+            signal("PLAYER_ENTERING_WORLD", false, true)
+            signal("BONUS_ROLL_STARTED")
+            advance(2)
+            pendingPrompts = nil
+            signal("PLAYER_ENTERING_WORLD", false, false)
+            result()
+            result()
+            equal(chat[10], mount.name .. " #4", "a restored offer can finish after an in-session zone transition " .. id)
+            equal(#chat, 10, "zone changes do not allow a duplicate result " .. id)
+        end
     end
-    print("PawAtlas world boss statistic order passed: five bosses, cold journal, late reads and duplicate events")
+    print("PawAtlas world boss attempts passed: five bosses, cold journal, both bonus orders and duplicate events")
 end
 
 do
