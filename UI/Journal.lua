@@ -697,7 +697,7 @@ function cardTabs:tradingPostChoice(mount, offer)
     }
 end
 local function buildSourceChoices(mount)
-    local choices, hasVendor = {}, false
+    local choices, hasVendor, hasDrop = {}, false, false
     local blackMarket = atlas.extraBlackMarketSource(mount)
     if mount.availability then
         local category = mount.unavailable and "unavailable" or sourceTabByKind[mount.kind] or "other"
@@ -718,7 +718,10 @@ local function buildSourceChoices(mount)
     local factionChoices = blocks and atlas.factionMountSourceChoices(mount, blocks)
     if factionChoices then
         choices = factionChoices
-        for _, choice in ipairs(choices) do hasVendor = hasVendor or choice.vendor ~= nil end
+        for _, choice in ipairs(choices) do
+            hasVendor = hasVendor or choice.vendor ~= nil
+            hasDrop = hasDrop or choice.verifiedDrop == true
+        end
     else
         for _, block in ipairs(blocks or { mount }) do
             local vendors = atlas.vendorSources and atlas.vendorSources(block)
@@ -736,7 +739,7 @@ local function buildSourceChoices(mount)
     end
     -- These alternatives are reviewed acquisition routes, not another copy of
     -- the journal/vendor text. Their rate and attempts stay in the core stages.
-    local route = hasVendor and atlas.verifiedRewardDropRoute and atlas.verifiedRewardDropRoute(mount)
+    local route = hasVendor and not hasDrop and atlas.verifiedRewardDropRoute and atlas.verifiedRewardDropRoute(mount)
     if route then
         for _, entry in ipairs(route.routes or { route }) do
             local boss, place = entry.boss or route.boss, entry.place or route.place
@@ -1761,8 +1764,21 @@ local kills = ui.text(card, 144, 409, 57, 28, 20, "")
 kills:SetJustifyH("RIGHT")
 local killsHelp = ui.place(CreateFrame("Frame", nil, card), card, 8, 406, 195, 36)
 killsHelp:EnableMouse(true)
+function killsHelp:showRiftTooltip(owner)
+    local progress = self.riftProgress
+    GameTooltip:SetOwner(owner, "ANCHOR_TOP")
+    ui.tooltipTitle(L("Попыток: %s", progress.attempts), unpack(ui.gold))
+    GameTooltip:AddDoubleLine(L("Завершено подходящих разломов"), tostring(progress.finals), 1, 1, 1, unpack(ui.paper))
+    GameTooltip:AddDoubleLine(L("Открыто ящиков"), tostring(progress.boxes), 1, 1, 1, unpack(ui.paper))
+    if progress.referencePerAttempt then
+        local rate = probabilityText(progress.referencePerAttempt):gsub("^≈ ", "")
+        ui.tooltipLine(L("Расчёт по %s за попытку. Фактический шанс может отличаться.", rate), ui.muted[1], ui.muted[2], ui.muted[3], true)
+    end
+    GameTooltip:Show()
+end
 killsHelp:SetScript("OnEnter", function(self)
     if not selected then return end
+    if self.riftProgress then return self:showRiftTooltip(self) end
     GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
     ui.tooltipTitle(attemptsLabel:GetText(), unpack(ui.gold))
     if self.encounterEstimate then
@@ -1786,6 +1802,7 @@ local cardDetails
 local chanceTrack = ui.place(CreateFrame("Frame", nil, card), card, 217, 409, 291, 31)
 chanceTrack:EnableMouse(true)
 chanceTrack:SetScript("OnEnter", function(self)
+    if killsHelp.riftProgress then return killsHelp:showRiftTooltip(self) end
     if self.islandCount ~= nil then
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
         ui.tooltipTitle(L("Попыток: %s", self.islandCount), unpack(ui.gold))
@@ -2479,8 +2496,10 @@ local function refreshChance(collected, vendor, view, official)
     summary:layout(cardDetails.activeSummaryPlace ~= nil and cardDetails.activeSummaryPlace ~= "", hasChance)
     cardDetails.setSummaryPlace(cardDetails.activeSummaryPlace)
     chanceTrack:setIslandMode(showIslandAttempts)
+    killsHelp.riftProgress = showKills and rewardProgress and rewardProgress.finals ~= nil and rewardProgress or nil
+    local barProbability = killsHelp.riftProgress and killsHelp.riftProgress.referenceCumulative or showProgress and displayedProbability or nil
     for _, texture in ipairs(chanceTrack.background) do texture:SetShown(showProgress or showKills or showIslandAttempts) end
-    chanceTrack:SetShown(showProgress or showIslandAttempts)
+    chanceTrack:SetShown(barProbability ~= nil or showIslandAttempts)
     local showCondition = showProgress and guaranteed and not showKills
     local conditionTitle, conditionIcon = "Добыча", "Loot"
     if raidGuarantee then
@@ -2494,9 +2513,9 @@ local function refreshChance(collected, vendor, view, official)
     if showIslandAttempts then
         atlas.refreshIslandExpeditionDetails()
     else
-        chanceTrack.value:SetText(showProgress and probabilityText(displayedProbability, guaranteed) or "")
+        chanceTrack.value:SetText(barProbability ~= nil and probabilityText(barProbability, guaranteed) or "")
         chanceTrack:setScaleShown(true)
-        chanceTrack:setFill(showProgress and displayedProbability or nil, showProgress and guaranteed)
+        chanceTrack:setFill(barProbability, showProgress and guaranteed)
     end
     kills:SetShown(showKills)
     killsHelp:SetShown(showKills)

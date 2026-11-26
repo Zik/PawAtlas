@@ -40,7 +40,7 @@
 | Action | Where |
 | --- | --- |
 | Open the atlas | `/paw`, `/pawatlas`, or PawAtlas in the minimap addon menu |
-| Import Rarity attempts | Settings → Integrations |
+| Import Rarity attempts and see which counters changed | Settings → Integrations → Import from Rarity → Summary |
 | Enable the tracker | Settings → Expedition mode |
 | Hide or show a character in the Warband planner | Settings → Statistics → eye icon next to the character |
 | Choose holiday and world boss reminders | Settings → Events. Hover over an event to see its mounts |

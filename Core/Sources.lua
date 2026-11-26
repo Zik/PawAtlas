@@ -704,13 +704,11 @@ function atlas.factionMountSourceChoices(mount, blocks)
         local lines, portalName = {}, nil
         for line in (block.journalSourceRaw .. "\n"):gmatch("(.-)\n") do
             local label, value = line:match("^([^:]+):%s*(.+)$")
-            local name = value and atlas.searchKey(value)
             if block == giftBlock and line == giftLine then
                 local english = atlas.getLocale() == "enUS"
                 lines[#lines + 1] = english and "A player from the opposite faction can gift you this mount."
                     or "Игрок противоположной фракции может подарить тебе этого маунта"
-            elseif block.faction ~= gift.faction and atlas.isDropSourceLabel(label)
-                and (name == "порталы времени" or name == "time rifts") then
+            elseif block.faction ~= gift.faction and atlas.isTimeRiftDropLine(mount.id, label, value) then
                 portalName = value
             else
                 lines[#lines + 1] = line

@@ -512,8 +512,9 @@ function atlas.movePlanTarget(mountID, anchorID, after, profileID)
 end
 
 local function resetTime(frequency, now)
-    local getter = C_DateAndTime and (frequency == "weekly" and C_DateAndTime.GetSecondsUntilWeeklyReset
-        or frequency == "daily" and C_DateAndTime.GetSecondsUntilDailyReset)
+    local method = frequency == "weekly" and "GetSecondsUntilWeeklyReset"
+        or frequency == "daily" and "GetSecondsUntilDailyReset"
+    local getter = C_DateAndTime and C_DateAndTime[method]
     local ok, seconds
     if getter then ok, seconds = pcall(getter) end
     if not ok then return nil end
@@ -558,7 +559,8 @@ local function opportunityGroups(mount, guid)
     if mount.encounter then return end
     local definition, npcs = opportunitySource(mount)
     if definition and definition.method == "SPECIAL" and definition.key then
-        return { { key = "stage:" .. definition.key .. ":" .. frequency, npcs = mount.npcs or {} } }, frequency
+        return { { key = "stage:" .. definition.key .. ":" .. frequency,
+            lootQuestID = definition.lootQuestID, npcs = mount.npcs or {} } }, frequency
     end
     if type(npcs) ~= "table" then return end
     local groups, byKey, seenNPC = {}, {}, {}
@@ -632,10 +634,11 @@ local function currentOpportunities(mount, now, questCache)
         end
         local used = expires and number(value) and value > now
         local unlocked = false
-        if not used and expires and questReady and type(quests) == "table" then
-            local allKnown, seen = #group.npcs > 0, {}
-            for _, npc in ipairs(group.npcs) do
-                local quest = quests[npc]
+        if not used and expires and questReady and (group.lootQuestID or type(quests) == "table") then
+            local checks = group.lootQuestID and 1 or #group.npcs
+            local allKnown, seen = checks > 0, {}
+            for index = 1, checks do
+                local quest = group.lootQuestID or quests[group.npcs[index]]
                 if not number(quest) or quest <= 0 then allKnown = false
                 elseif not seen[quest] then
                     seen[quest] = true

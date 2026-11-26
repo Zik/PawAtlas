@@ -1907,13 +1907,13 @@ atlas.lootItems = {
     [1627] = { item = 204352, basis = "ingredient", required = 50, name = "Остатки слизи стихий", englishName = "Leftover Elemental Slime" },
     [1635] = { item = 200468, rate = 33, basis = "open", name = "Трофеи великой охоты", englishName = "Grand Hunt Spoils" },
     [1732] = { item = 205203, rate = 100, basis = "drop", name = "Кобальтовый глинокрыл", englishName = "Cobalt Shalewing" },
-    [1776] = { item = 207583, rate = 500, basis = "open", name = "Ящик коллапсировавшей реальности", englishName = "Box of Collapsed Reality" },
-    [1777] = { item = 207583, rate = 500, basis = "open", name = "Ящик коллапсировавшей реальности", englishName = "Box of Collapsed Reality" },
-    [1778] = { item = 207583, rate = 500, basis = "open", name = "Ящик коллапсировавшей реальности", englishName = "Box of Collapsed Reality" },
-    [1779] = { item = 207583, rate = 500, basis = "open", name = "Ящик коллапсировавшей реальности", englishName = "Box of Collapsed Reality" },
-    [1781] = { item = 207583, rate = 500, basis = "open", name = "Ящик коллапсировавшей реальности", englishName = "Box of Collapsed Reality" },
-    [1782] = { item = 207583, rate = 500, basis = "open", name = "Ящик коллапсировавшей реальности", englishName = "Box of Collapsed Reality" },
-    [1783] = { item = 207583, rate = 500, basis = "open", name = "Ящик коллапсировавшей реальности", englishName = "Box of Collapsed Reality" },
+    [1776] = { item = 207583, basis = "open", name = "Ящик коллапсировавшей реальности", englishName = "Box of Collapsed Reality" },
+    [1777] = { item = 207583, basis = "open", name = "Ящик коллапсировавшей реальности", englishName = "Box of Collapsed Reality" },
+    [1778] = { item = 207583, basis = "open", name = "Ящик коллапсировавшей реальности", englishName = "Box of Collapsed Reality" },
+    [1779] = { item = 207583, basis = "open", name = "Ящик коллапсировавшей реальности", englishName = "Box of Collapsed Reality" },
+    [1781] = { item = 207583, basis = "open", name = "Ящик коллапсировавшей реальности", englishName = "Box of Collapsed Reality" },
+    [1782] = { item = 207583, basis = "open", name = "Ящик коллапсировавшей реальности", englishName = "Box of Collapsed Reality" },
+    [1783] = { item = 207583, basis = "open", name = "Ящик коллапсировавшей реальности", englishName = "Box of Collapsed Reality" },
     [1818] = { item = 210061, rate = 100, basis = "drop", name = "Поводья Ану'релоса, Наставления Пламени", englishName = "Reins of Anu'relos, Flame's Guidance" },
     [2023] = { item = 216874, rate = 100, basis = "open", name = "Заполненная добычей корзина", englishName = "Loot-Filled Basket" },
     [2038] = { item = 212645, rate = 200, basis = "drop", name = "Глиношкурый длиннорог", englishName = "Clayscale Hornstrider" },
@@ -5941,7 +5941,7 @@ atlas.attemptStages = {
     [1407] = { reward = { key = "mount:1407", method = "SPECIAL", item = 181818, name = "Изгрызенные поводья неоперившегося костекрыла", englishName = "Chewed Reins of the Callow Flayedwing" }, item = { method = "NPC", rate = 500, npcs = { 162258, 162588, 172390, 162259, 170456, 162589, 170893, 164587 }, key = "item:184104", item = 184104, name = "Зараженное чумой яйцо", englishName = "Blight-Touched Egg" } },
     [1410] = { reward = { method = "NPC", rate = 33, npcs = { 157309 }, questId = { 61720 }, key = "mount:1410", item = 182079, name = "Покрытые слизью поводья громадного некроруха", englishName = "Slime-Covered Reins of the Hulking Deathroc" } },
     [1411] = { reward = { method = "NPC", rate = 33, npcs = { 162741 }, questId = { 58872 }, requiresCovenant = true, requiredCovenantID = 4, key = "mount:1411", item = 182080, name = "Хищный чумной рух", englishName = "Predatory Plagueroc" } },
-    [1426] = { reward = { method = "SPECIAL", sourceRate = 20, questId = { 60933 }, key = "mount:1426", item = 183741, nodes = { "Cache of the Ascended" }, objects = { 354175 }, rate = 20, name = "Перерожденный небогрив", englishName = "Ascended Skymane" } },
+    [1426] = { reward = { method = "SPECIAL", sourceRate = 20, questId = { 60933 }, key = "mount:1426", item = 183741, nodes = { "Cache of the Ascended" }, lootQuestID = 60977, objects = { 354175 }, rate = 20, name = "Перерожденный небогрив", englishName = "Ascended Skymane" } },
     [1428] = { reward = { method = "USE", rate = 20, items = { 180649 }, key = "mount:1428", item = 183800, name = "Янтарный арденвельдский мотылек", englishName = "Amber Ardenmoth", searchNames = { "Wild Hunt Supplies", "Припасы Дикой Охоты" } } },
     [1434] = { reward = { method = "NPC", rate = 100, npcs = { 180978 }, key = "mount:1434", item = 187676, name = "Полип звездных глубин", englishName = "Deepstar Polyp" }, item = { method = "FISHING", rate = 1333, zones = { 1970 }, requiresPool = false, key = "item:187662", item = 187662, name = "Странная жижа", englishName = "Strange Goop" } },
     [1437] = { reward = { method = "NPC", rate = 100, npcs = { 162873, 162880, 162875, 162853, 162874, 162872 }, questId = { 62786 }, key = "mount:1437", item = 184062, name = "Погрызенные поводья закаленного бойцовского пса", englishName = "Gnawed Reins of the Battle-Bound Warhound" } },
@@ -5978,13 +5978,13 @@ atlas.attemptStages = {
     [1635] = { reward = { method = "USE", rate = 33, items = { 200468 }, questId = { 70906, 70006 }, key = "mount:1635", item = 192791, name = "Вьючный равнинный мамонт", englishName = "Plainswalker Bearer", searchNames = { "Grand Hunt Spoils", "Трофеи великой охоты" } } },
     [1732] = { reward = { method = "NPC", rate = 100, npcs = { 203625 }, questId = { 75333 }, key = "mount:1732", item = 205203, name = "Кобальтовый глинокрыл", englishName = "Cobalt Shalewing" } },
     [1735] = { reward = { method = "USE", rate = 33, items = { 205368, 205367, 205369, 205372, 205370, 205374 }, rateEstimated = true, key = "mount:1735", item = 205204, name = "Огненный глинокрыл – образец 01", englishName = "Flaming Shalewing Subject 01", searchNames = { "Appreciative Researcher's Gift", "Indebted Researcher's Gift", "Indebted Researcher's Scrounged Goods", "Researcher's Gift", "Thankful Researcher's Gift", "Thankful Researcher's Scrounged Goods", "Дар благодарного исследователя", "Дар исследователя", "Дар обязанного исследователя", "Дар признательного исследователя", "Собранные припасы благодарного исследователя", "Собранные припасы обязанного исследователя" } } },
-    [1776] = { reward = { method = "USE", rate = 500, items = { 207583 }, requiresHorde = true, key = "mount:1776", item = 206673, name = "Рог белого боевого волка", englishName = "Horn of the White War Wolf", searchNames = { "Box of Collapsed Reality", "Ящик коллапсировавшей реальности" } } },
-    [1777] = { reward = { method = "USE", rate = 500, items = { 207583 }, requiresAlliance = true, key = "mount:1777", item = 206674, name = "Поводья прожорливого черного грифона", englishName = "Reins of the Ravenous Black Gryphon", searchNames = { "Box of Collapsed Reality", "Ящик коллапсировавшей реальности" } } },
-    [1778] = { reward = { method = "USE", rate = 500, items = { 207583 }, key = "mount:1778", item = 206675, name = "Златолапый альбатрос", englishName = "Gold-Toed Albatross", searchNames = { "Box of Collapsed Reality", "Ящик коллапсировавшей реальности" } } },
-    [1779] = { reward = { method = "USE", rate = 500, items = { 207583 }, key = "mount:1779", item = 206676, name = "Дракон бури Скверны", englishName = "Felstorm Dragon", searchNames = { "Box of Collapsed Reality", "Ящик коллапсировавшей реальности" } } },
-    [1781] = { reward = { method = "USE", rate = 500, items = { 207583 }, key = "mount:1781", item = 206678, name = "Поводок cерной гончей", englishName = "Sulfur Hound's Leash", searchNames = { "Box of Collapsed Reality", "Ящик коллапсировавшей реальности" } } },
-    [1782] = { reward = { method = "USE", rate = 500, items = { 207583 }, key = "mount:1782", item = 206679, name = "Отлаженный исполин", englishName = "Perfected Juggernaut", searchNames = { "Box of Collapsed Reality", "Ящик коллапсировавшей реальности" } } },
-    [1783] = { reward = { method = "USE", rate = 500, items = { 207583 }, key = "mount:1783", item = 206680, name = "Поводья покорителя Плети", englishName = "Reins of the Scourgebound Vanquisher", searchNames = { "Box of Collapsed Reality", "Ящик коллапсировавшей реальности" } } },
+    [1776] = { reward = { method = "USE", items = { 207583 }, requiresHorde = true, key = "mount:1776", item = 206673, riftProgressRate = 500, rarityIncompatible = true, name = "Рог белого боевого волка", englishName = "Horn of the White War Wolf", searchNames = { "Box of Collapsed Reality", "Ящик коллапсировавшей реальности" } } },
+    [1777] = { reward = { method = "USE", items = { 207583 }, requiresAlliance = true, key = "mount:1777", item = 206674, riftProgressRate = 500, rarityIncompatible = true, name = "Поводья прожорливого черного грифона", englishName = "Reins of the Ravenous Black Gryphon", searchNames = { "Box of Collapsed Reality", "Ящик коллапсировавшей реальности" } } },
+    [1778] = { reward = { method = "USE", items = { 207583 }, key = "mount:1778", item = 206675, riftProgressRate = 500, rarityIncompatible = true, name = "Златолапый альбатрос", englishName = "Gold-Toed Albatross", searchNames = { "Box of Collapsed Reality", "Ящик коллапсировавшей реальности" } } },
+    [1779] = { reward = { method = "USE", items = { 207583 }, key = "mount:1779", item = 206676, riftProgressRate = 500, rarityIncompatible = true, name = "Дракон бури Скверны", englishName = "Felstorm Dragon", searchNames = { "Box of Collapsed Reality", "Ящик коллапсировавшей реальности" } } },
+    [1781] = { reward = { method = "USE", items = { 207583 }, key = "mount:1781", item = 206678, riftProgressRate = 500, rarityIncompatible = true, name = "Поводок cерной гончей", englishName = "Sulfur Hound's Leash", searchNames = { "Box of Collapsed Reality", "Ящик коллапсировавшей реальности" } } },
+    [1782] = { reward = { method = "USE", items = { 207583 }, key = "mount:1782", item = 206679, riftProgressRate = 500, rarityIncompatible = true, name = "Отлаженный исполин", englishName = "Perfected Juggernaut", searchNames = { "Box of Collapsed Reality", "Ящик коллапсировавшей реальности" } } },
+    [1783] = { reward = { method = "USE", items = { 207583 }, key = "mount:1783", item = 206680, riftProgressRate = 500, rarityIncompatible = true, name = "Поводья покорителя Плети", englishName = "Reins of the Scourgebound Vanquisher", searchNames = { "Box of Collapsed Reality", "Ящик коллапсировавшей реальности" } } },
     [1808] = { reward = { method = "SPECIAL", sourceRate = 10, key = "mount:1808", item = 209947, nodes = { "Dreamseed Cache" }, rate = 10, name = "Поводья цветущего оленя из Сна", englishName = "Reins of the Blossoming Dreamstag" } },
     [1810] = { reward = { method = "SPECIAL", sourceRate = 10, key = "mount:1810", item = 209950, nodes = { "Dreamseed Cache" }, rate = 10, name = "Поводья пламенеющего оленя из Сна", englishName = "Reins of the Rekindled Dreamstag" } },
     [1815] = { reward = { method = "SPECIAL", sourceRate = 10, key = "mount:1815", item = 210059, nodes = { "Dreamseed Cache" }, rate = 10, name = "Поводья зимнего саблезуба из Сна", englishName = "Reins of the Winter Night Dreamsaber" } },
@@ -6053,6 +6053,19 @@ atlas.attemptStages = {
     [3058] = { reward = { method = "NPC", rate = 50, groupSize = 5, equalOdds = true, difficulties = { [23] = true }, key = "mount:3058", item = 276804, name = "Извивающийся выводок", englishName = "The Writhing Brood" } },
     [3061] = { reward = { method = "NPC", rate = 500, npcs = { 263456, 258920, 256631, 261142, 264854, 268090, 265262, 258916, 257906, 261109, 268049, 265237, 255088, 258254, 255087, 257863, 255927 }, key = "mount:3061", item = 276803, name = "Рубиновый скользмей", englishName = "Ruby Writhe" } },
     [2950] = { item = { key = "item:269245", item = 269245, method = "COLLECTION", required = 4, inventoryGoal = true, name = "Вкусное споровое угощение", englishName = "Delicious Sporesnack" }, reward = { key = "mount:2950", item = 269240, method = "SPECIAL", rate = 1, name = "Светящийся споролет", englishName = "Luminous Sporeglider" } },
+}
+
+-- Time Rift finales: Blizzard Map/UiMap.db2, Rarity CE criteria, and timeway vendors.
+-- https://worldofwarcraft.blizzard.com/en-us/news/23968772
+-- https://warcraft.wiki.gg/wiki/Time_Rifts#Vendors
+atlas.timeRiftSources = {
+    [1776] = { criterion = 60692, instance = 2634, npc = 205308, map = 2207, faction = "Horde" },
+    [1777] = { criterion = 60692, instance = 2634, npc = 205308, map = 2207, faction = "Alliance" },
+    [1778] = { criterion = 60688, instance = 2635, npc = 205304, map = 2205 },
+    [1779] = { criterion = 60690, instance = 2595, npc = 205306, map = 2202 },
+    [1781] = { criterion = 60691, instance = 2593, npc = 205307, map = 2201 },
+    [1782] = { criterion = 60693, instance = 2587, npc = 205309, map = 2206 },
+    [1783] = { criterion = 60689, instance = 2639, npc = 205305, map = 2203 },
 }
 
 atlas.islandSalvageMounts = {
@@ -6833,6 +6846,7 @@ atlas.blackMarketMounts = {
 -- Exact NPC tracking quests for reviewed daily loot sources; no eligibility guarantee.
 -- WoWthing CC0: https://github.com/ThingEngineering/wowthing-data/tree/befe8b4a548a8ba94b9100609b1c155154b1d2db
 -- Shared encounters: Rarity CE v0.3.1, source pin in tools/import_rares.py.
+-- The Ascended Council flag 60933 reveals the cache; flag 60977 records its loot.
 -- Unmapped NPCs stay unknown. Collection/prerequisite quests are not completion proof.
 atlas.npcLootQuests = {
     [611] = { [95044] = 39288, [95053] = 39287, [95054] = 39290, [95056] = 39289 },
@@ -6867,7 +6881,7 @@ atlas.npcLootQuests = {
     [1391] = { [160821] = 58259 },
     [1393] = { [168647] = 61632 },
     [1411] = { [162741] = 58872 },
-    [1426] = { [170832] = 60933, [170833] = 60933, [170834] = 60933, [170835] = 60933, [170836] = 60933 },
+    [1426] = { [170832] = 60977, [170833] = 60977, [170834] = 60977, [170835] = 60977, [170836] = 60977 },
     [1434] = { [180978] = 65548 },
     [1437] = { [162853] = 62786, [162872] = 62786, [162873] = 62786, [162874] = 62786, [162875] = 62786, [162880] = 62786 },
     [1502] = { [179460] = 64164 },

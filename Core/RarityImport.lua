@@ -56,6 +56,10 @@ local function isIslandMount(id)
     return atlas.islandSalvageMounts and atlas.islandSalvageMounts[id] ~= nil
 end
 
+local function isTimeRiftMount(id)
+    return atlas.timeRiftSources and atlas.timeRiftSources[id] ~= nil
+end
+
 local function legacyIslandHistory(entry)
     -- Only the incoming Rarity snapshot is available independently of PawAtlas.
     return type(entry) == "table" and number(entry.source) or 0
@@ -113,10 +117,11 @@ function atlas.rarityImportedCollection(mount)
 end
 
 local function incompatibleCounter(key)
-    local id = type(key) == "number" and key or type(key) == "string" and tonumber(key:match("^mount:(%d+)$"))
+    local id = type(key) == "number" and key
+        or type(key) == "string" and tonumber(key:match("^mount:(%d+)$") or key:match("^rift:(%d+)$"))
     local definitions = id and atlas.attemptStages and atlas.attemptStages[id]
     local reward = definitions and definitions.reward
-    return isIslandMount(id) or reward and (reward.rarityIncompatible or reward.unverifiedEligibility), id, reward
+    return isIslandMount(id) or isTimeRiftMount(id) or reward and (reward.rarityIncompatible or reward.unverifiedEligibility), id, reward
 end
 
 local function reviewedEncounter(reward)
@@ -124,22 +129,79 @@ local function reviewedEncounter(reward)
         and not reward.historical and not reward.rarityIncompatible
 end
 
-function atlas.withImportedAttempts(mount, raw)
-    local entries = importedEntries()
-    local entry = entries and entries[mount.id]
-    local imported = type(entry) == "table" and number(entry.total)
-    if not imported then return raw end
-    local incompatible, _, reward = incompatibleCounter(mount.id)
-    if entry.encounterEstimate then return reviewedEncounter(reward) and imported or raw end
-    if incompatible then return raw end
-    raw = number(raw)
-    -- Keep old history as a floor, then add only newly observed attempts.
-    -- First-login API history must never become an incremental attempt.
+function atlas.rarityFactionRewardVariants(id)
+    local definitions = atlas.attemptStages and atlas.attemptStages[id]
+    local reward = definitions and definitions.reward
+    local variants = reward and reward.variants
+    if not variants or #variants ~= 2 or reward.method ~= "NPC" or reward.historical then return end
+    local alliance, horde
+    for _, variant in ipairs(variants) do
+        if variant.method ~= "NPC" or variant.historical or not identifier(variant.item)
+            or not variant.npcs or #variant.npcs ~= 1 then return end
+        if variant.requiresAlliance and not variant.requiresHorde then alliance = variant
+        elseif variant.requiresHorde and not variant.requiresAlliance then horde = variant end
+    end
+    if alliance and horde and alliance.item ~= horde.item and alliance.npcs[1] ~= horde.npcs[1] then return variants end
+end
+
+local function importedDelta(entry)
     local delta = 0
     for _, value in pairs(type(entry.deltaByGUID) == "table" and entry.deltaByGUID or {}) do
         delta = delta + (number(value) or 0)
     end
-    return math.max(raw or 0, imported + delta)
+    return delta
+end
+
+local function factionLocalCounts(variants)
+    local counts = { [variants[1].item] = 0, [variants[2].item] = 0 }
+    local characters = type(MountAtlasAccountDB) == "table" and MountAtlasAccountDB.characters
+    for guid, character in pairs(type(characters) == "table" and characters or {}) do
+        local attempts = type(character) == "table" and character.factionRewardAttempts
+        if type(attempts) == "table" and not atlas.isCharacterSuppressed(guid) then
+            for item, count in pairs(counts) do
+                counts[item] = count + (number(attempts[item]) or 0)
+            end
+        end
+    end
+    return counts
+end
+
+local function factionAttempts(entry, raw, counts)
+    local saved = type(entry) == "table" and entry or {}
+    local histories = type(saved.factionHistory) == "table" and saved.factionHistory or {}
+    local total, localAttempts = 0, 0
+    for item, count in pairs(counts) do
+        local history = histories[item]
+        local source = history and number(history.source) or 0
+        local overlap = history and number(history.overlap) or 0
+        total = total + source + math.max(0, count - overlap)
+        localAttempts = localAttempts + count
+    end
+    -- Older imports retained only one floor. Keep the previous known total and
+    -- later local attempts without assigning the old count to either faction.
+    local legacy = number(saved.total)
+    return math.max(raw or 0, total, legacy and legacy + importedDelta(saved) + localAttempts or 0)
+end
+
+function atlas.withImportedAttempts(mount, raw)
+    local entries = importedEntries()
+    local entry = entries and entries[mount.id]
+    if type(entry) ~= "table" then return raw end
+    local incompatible, _, reward = incompatibleCounter(mount.id)
+    local imported = number(entry.total)
+    if entry.encounterEstimate then return reviewedEncounter(reward) and imported or raw end
+    if incompatible then return raw end
+    local variants = atlas.rarityFactionRewardVariants(mount.id)
+    if variants then return factionAttempts(entry, number(raw), factionLocalCounts(variants)) end
+    if not imported then return raw end
+    -- Keep old history as a floor, then add only newly observed attempts.
+    -- First-login API history must never become an incremental attempt.
+    return math.max(number(raw) or 0, imported + importedDelta(entry))
+end
+
+local function addImportedDelta(entry, guid, increase)
+    if type(entry.deltaByGUID) ~= "table" then entry.deltaByGUID = {} end
+    entry.deltaByGUID[guid] = (number(entry.deltaByGUID[guid]) or 0) + increase
 end
 
 function atlas.recordImportedStatistic(id, guid, increase)
@@ -147,18 +209,43 @@ function atlas.recordImportedStatistic(id, guid, increase)
     local entries = importedEntries()
     local entry = entries and entries[id]
     if type(entry) ~= "table" or not number(entry.total) or incompatibleCounter(id) then return end
-    if type(entry.deltaByGUID) ~= "table" then entry.deltaByGUID = {} end
-    entry.deltaByGUID[guid] = (number(entry.deltaByGUID[guid]) or 0) + increase
+    addImportedDelta(entry, guid, increase)
 end
 
-function atlas.recordImportedAttempt(mount, guid)
+function atlas.recordImportedAttempt(mount, guid, npc)
     if atlas.usesKillAPI(mount) then return end
-    atlas.recordImportedStatistic(mount.id, guid, 1)
+    local variants = atlas.rarityFactionRewardVariants(mount.id)
+    if not variants then
+        atlas.recordImportedStatistic(mount.id, guid, 1)
+        return
+    end
+    if type(guid) ~= "string" or atlas.isCharacterSuppressed(guid) or incompatibleCounter(mount.id) then return end
+    local characters = type(MountAtlasAccountDB) == "table" and MountAtlasAccountDB.characters
+    local character = type(characters) == "table" and characters[guid]
+    if type(character) ~= "table" then return end
+    for _, variant in ipairs(variants) do
+        if variant.npcs[1] == npc then
+            -- Local evidence must survive clearing Rarity and may precede any import.
+            if type(character.factionRewardAttempts) ~= "table" then character.factionRewardAttempts = {} end
+            local attempts = character.factionRewardAttempts
+            attempts[variant.item] = (number(attempts[variant.item]) or 0) + 1
+            return
+        end
+    end
 end
 
 function atlas.removeImportedCharacterDelta(guid)
-    for _, entry in pairs(importedEntries() or {}) do
-        if type(entry) == "table" and type(entry.deltaByGUID) == "table" then entry.deltaByGUID[guid] = nil end
+    for id, entry in pairs(importedEntries() or {}) do
+        if type(entry) == "table" then
+            if type(entry.deltaByGUID) == "table" then entry.deltaByGUID[guid] = nil end
+            local variants = type(entry.factionHistory) == "table" and atlas.rarityFactionRewardVariants(id)
+            if variants then
+                local counts = factionLocalCounts(variants)
+                for item, history in pairs(entry.factionHistory) do
+                    history.overlap = math.min(counts[item] or 0, number(history.overlap) or 0)
+                end
+            end
+        end
     end
     local db = importData()
     local collections = db and type(db.collections) == "table" and db.collections or {}
@@ -202,7 +289,7 @@ function atlas.rarityImportSummary()
     return { status = db.status, count = db.count or count, skipped = db.skipped or 0,
         unattributed = db.unattributed or 0, time = db.time,
         profile = db.profile, updated = db.updated, unchanged = db.unchanged, skipReasons = db.skipReasons,
-        skipEntries = db.skipEntries }
+        skipEntries = db.skipEntries, changes = db.changes }
 end
 
 local function collectStatistics(snapshots)
@@ -229,25 +316,47 @@ local function collectStatistics(snapshots)
     return characters
 end
 
-local function mergeStatistics(projected, known, stageOwners, imported)
+local function savedStatistics(characters, key)
+    local total
+    for _, record in pairs(characters) do
+        local value = type(record) == "table" and type(record.statistics) == "table" and number(record.statistics[key])
+        if value then total = (total or 0) + value end
+    end
+    return total
+end
+
+local function mergeStatistics(plan)
     local characters = MountAtlasAccountDB.characters
-    for guid, source in pairs(projected) do
+    local merged = {}
+    for guid, source in pairs(plan.snapshots) do
         local record = characters[guid]
         if type(record) ~= "table" then record = {}; characters[guid] = record end
         if type(record.statistics) ~= "table" then record.statistics = {} end
         if type(record.kills) ~= "table" then record.kills = {} end
         for id, value in pairs(source.values) do
             local previous = number(record.statistics[id])
-            record.statistics[id] = math.max(previous or 0, value)
-            local changed = record.statistics[id] ~= previous
-            if known[id] then imported[id] = imported[id] or changed end
-            for owner in pairs(stageOwners[id] or {}) do imported[owner] = imported[owner] or changed end
+            local total = math.max(previous or 0, value)
+            if plan.known[id] or plan.stageOwners[id] then
+                local snapshot = merged[id]
+                if not snapshot then
+                    local before = savedStatistics(characters, id)
+                    snapshot = { before = before, after = before }
+                    if plan.candidates[id] or plan.stages[id] then
+                        snapshot.beforeAttempts = atlas.withImportedAttempts({ id = id }, atlas.savedStatisticAttempts(id))
+                    end
+                    merged[id] = snapshot
+                end
+                snapshot.after = (snapshot.after or 0) + total - (previous or 0)
+                snapshot.changed = snapshot.changed or previous ~= total
+            end
+            record.statistics[id] = total
         end
         if not record.name and type(source.name) == "string" then record.name = source.name end
         if not record.realm and type(source.realm) == "string" then record.realm = source.realm end
         if not record.level and source.level and source.level > 0 then record.level = source.level end
         if atlas.seedImportedStatistics then atlas.seedImportedStatistics(guid, source.statistics) end
     end
+    return merged
 end
 
 local methods = { NPC = true, BOSS = true, ENCOUNTER = true, ZONE = true }
@@ -301,6 +410,12 @@ local function buildIndex(step)
     local stagesByItem, stageOwners, relatedItems = {}, {}, {}
     for id, definitions in pairs(atlas.attemptStages or {}) do
         if known[id] then
+            local reward = definitions.reward
+            if isTimeRiftMount(id) and reward and identifier(reward.item) then byItem[reward.item] = known[id] end
+            local factions = atlas.rarityFactionRewardVariants(id)
+            if factions then
+                for _, variant in ipairs(factions) do byItem[variant.item] = known[id] end
+            end
             for _, role in ipairs({ "reward", "item" }) do
                 local definition = definitions[role]
                 if definition and number(definition.item) then relatedItems[definition.item] = true end
@@ -330,6 +445,15 @@ local function sortedIDs(owners)
     return ids
 end
 
+local function matchesFactionReward(source, variants, itemID, spellMount, mount)
+    if source.type ~= "MOUNT" or source.method ~= "NPC" or not itemID
+        or (source.spellId ~= nil and spellMount ~= mount) then return false end
+    for _, variant in ipairs(variants) do
+        if variant.item == itemID and (source.npcs == nil or idList(source.npcs) == idList(variant.npcs)) then return true end
+    end
+    return false
+end
+
 local function collectCandidates(sources, known, bySpell, byItem, stagesByItem, stageOwners, relatedItems)
     local candidates, stageCandidates, foundAttempts, collections = {}, {}, {}, {}
     local islandHistory = {}
@@ -340,7 +464,10 @@ local function collectCandidates(sources, known, bySpell, byItem, stagesByItem, 
         local success = type(source) == "table" and successAttempts(source)
         if incoming or success then
             local itemID = identifier(source.itemId)
-            local mount = bySpell[identifier(source.spellId)] or byItem[itemID]
+            local spellMount = bySpell[identifier(source.spellId)]
+            local itemMount = byItem[itemID]
+            local strictlyMapped = itemMount and (atlas.rarityFactionRewardVariants(itemMount.id) or isTimeRiftMount(itemMount.id))
+            local mount = strictlyMapped and itemMount or spellMount or itemMount
             if not mount and itemID and C_MountJournal.GetMountFromItem then
                 local ok, id = pcall(C_MountJournal.GetMountFromItem, itemID)
                 if ok then mount = known[identifier(id)] end
@@ -350,6 +477,7 @@ local function collectCandidates(sources, known, bySpell, byItem, stagesByItem, 
             -- A cage/egg can use the mount's existing NPC counter. Its displayed
             -- loot basis is not the unit of the verified reward attempt.
             local reward = definitions and definitions.reward
+            local factions = mount and atlas.rarityFactionRewardVariants(mount.id)
             local award = success and not needsMultiple(reward) and not (reward and reward.unverifiedEligibility)
             local collection = source.type == "MOUNT" and source.method == "COLLECTION"
             local itemSet = collection and definitions and collectionID(definitions.item)
@@ -366,6 +494,9 @@ local function collectCandidates(sources, known, bySpell, byItem, stagesByItem, 
             elseif reward and reward.unverifiedEligibility then
                 if not estimate then reason = "unverified" end
             elseif incompatibleCounter(mount.id) then reason = "incompatible"
+            elseif factions then
+                if not matchesFactionReward(source, factions, itemID, spellMount, mount) then reason = "unit_mismatch"
+                elseif not incoming then reason = "unverified" end
             elseif collection then
                 if not incoming or not itemSet or itemSet ~= idList(source.collectedItemId) then reason = "unit_mismatch" end
             elseif mount.journalOnly and not atlas.usesKillAPI(mount) then reason = "untracked"
@@ -374,7 +505,13 @@ local function collectCandidates(sources, known, bySpell, byItem, stagesByItem, 
             elseif not incoming and not award then reason = "multiple_items" end
             local accepted = not reason
             if accepted and not mixedIsland then
-                if collection then
+                if factions then
+                    -- Both Rarity records teach the same spell, but each has its
+                    -- own creature and item. Copies of one record share a counter.
+                    local counts = candidates[mount.id] or {}
+                    candidates[mount.id] = counts
+                    counts[itemID] = math.max(counts[itemID] or 0, incoming)
+                elseif collection then
                     -- These counts measure items held, including a historical maximum
                     -- for aggregate collections. A collection completion is not a drop.
                     local previous = collections[mount.id]
@@ -389,7 +526,8 @@ local function collectCandidates(sources, known, bySpell, byItem, stagesByItem, 
                     end
                 end
             end
-            for key, entry in pairs(stagesByItem[itemID] or {}) do
+            local compatibleStageSource = not factions and not (mount and isTimeRiftMount(mount.id))
+            for key, entry in pairs(compatibleStageSource and stagesByItem[itemID] or {}) do
                 if not incompatibleCounter(key) and (source.type == "MOUNT" or (entry.role == "item" and source.type == "ITEM")) then
                     for _, variant in ipairs(entry.definition.variants or { entry.definition }) do
                         if (variant.method or entry.definition.method) == source.method then
@@ -449,7 +587,57 @@ end
 
 local function emptyResult(status)
     return { status = status, count = 0, updated = 0, unchanged = 0, skipped = 0,
-        unattributed = 0, skipReasons = {}, skipEntries = {} }
+        unattributed = 0, skipReasons = {}, skipEntries = {}, changes = {} }
+end
+
+local function stageDetails(id, key)
+    local definitions = atlas.attemptStages and atlas.attemptStages[id]
+    if not definitions then return end
+    for _, role in ipairs({ "reward", "item" }) do
+        local definition = definitions[role]
+        if definition and definition.key == key then return definition.item, role end
+    end
+end
+
+local function recordChange(imported, id, changed, kind, before, after, key, item)
+    local row = imported[id]
+    if not changed then
+        imported[id] = row or false
+        return
+    end
+    if not row then
+        row = { id = id, values = {} }
+        imported[id] = row
+    end
+    local stageItem, role
+    if key then stageItem, role = stageDetails(id, key) end
+    local value = { kind = kind, before = before, after = after, key = key, item = item or stageItem, role = role }
+    row.values[#row.values + 1] = value
+    return value
+end
+
+local function beforeImport(statistic, previous)
+    if statistic and statistic.changed then return statistic.beforeAttempts end
+    return previous
+end
+
+local changeOrder = { reward = 1, island = 2, stage = 3, collection = 4, acquisition = 5, statistics = 6 }
+
+local function mergeFactionHistory(entry, incoming, localCounts)
+    if type(entry) ~= "table" then entry = {} end
+    if type(entry.factionHistory) ~= "table" then entry.factionHistory = {} end
+    for item, count in pairs(incoming) do
+        local history = entry.factionHistory[item] or {}
+        local source = number(history.source) or 0
+        if count > source then
+            -- A higher snapshot can include new local kills of this creature.
+            -- Keep the coverage for repeats and leave the other faction untouched.
+            history.overlap = math.min(localCounts[item], (number(history.overlap) or 0) + count - source)
+            history.source = count
+        end
+        entry.factionHistory[item] = history
+    end
+    return entry
 end
 
 local function commitImport(plan)
@@ -465,7 +653,17 @@ local function commitImport(plan)
 
     -- Apply without yielding. The imported floor must include genuine attempts
     -- recorded since the previous import, including during index preparation.
-    mergeStatistics(plan.snapshots, plan.known, plan.stageOwners, imported)
+    -- Record the saved statistic separately before a reward or stage counter
+    -- takes it into account as part of its existing history.
+    local statistics = mergeStatistics(plan)
+    for key, snapshot in pairs(statistics) do
+        if plan.known[key] then
+            recordChange(imported, key, snapshot.changed, "statistics", snapshot.before, snapshot.after, key)
+        end
+        for id in pairs(plan.stageOwners[key] or {}) do
+            recordChange(imported, id, snapshot.changed, "statistics", snapshot.before, snapshot.after, key)
+        end
+    end
     for id, incoming in pairs(plan.islandHistory) do
         local entry, source = islandImport(db, id)
         local raw, delta, baseline = atlas.localIslandAttempts(plan.known[id], entry and entry.baseline, not entry)
@@ -482,30 +680,43 @@ local function commitImport(plan)
         end
         islandHistory[id] = entry
         local total = islandTotal(raw, entry.source, delta, number(entry.overlap) or 0)
-        imported[id] = imported[id] or total > previous
+        recordChange(imported, id, total > previous, "island", previous, total)
     end
     for id, incoming in pairs(plan.candidates) do
         local mount = plan.known[id]
         local _, _, reward = incompatibleCounter(id)
         local estimate = reviewedEncounter(reward)
         local raw = not estimate and atlas.rawKills(mount) or nil
-        local previous = atlas.withImportedAttempts(mount, raw)
-        local total = math.max(incoming, previous or 0)
-        replacements[id] = { total = total, deltaByGUID = {}, source = incoming, encounterEstimate = estimate or nil }
+        local previous, total
+        if type(incoming) == "table" then
+            local localCounts = factionLocalCounts(atlas.rarityFactionRewardVariants(id))
+            previous = factionAttempts(entries[id], number(raw), localCounts)
+            replacements[id] = mergeFactionHistory(entries[id], incoming, localCounts)
+            total = factionAttempts(replacements[id], number(raw), localCounts)
+        else
+            previous = atlas.withImportedAttempts(mount, raw)
+            total = math.max(incoming, previous or 0)
+            replacements[id] = { total = total, deltaByGUID = {}, source = incoming, encounterEstimate = estimate or nil }
+        end
         if atlas.usesKillAPI(mount) and total > (raw or 0) then unattributed = unattributed + 1 end
-        imported[id] = imported[id] or previous ~= total
+        local value = recordChange(imported, id, previous ~= total, "reward", beforeImport(statistics[id], previous), total)
+        if value and estimate then value.estimate = true end
     end
     for id, incoming in pairs(plan.collections) do
         local mount = plan.known[id]
-        local previous, baseline = atlas.rarityImportedCollection(mount)
-        local _, delta, current = atlas.rawItemCollection(mount, baseline, true)
+        local quantity, baseline = atlas.rarityImportedCollection(mount)
+        local raw, delta, current = atlas.rawItemCollection(mount, baseline, true)
+        local previous = quantity and math.max(raw or 0, quantity + delta) or raw
+        local total = previous
         -- Rarity's latest bag snapshot may already contain our new receipts.
         -- Rebase only when it raises the existing imported floor plus receipts.
-        local changed = not previous or incoming.quantity > previous + delta
+        local changed = not quantity or incoming.quantity > quantity + delta
         if changed then
             collections[id] = { items = incoming.items, quantity = incoming.quantity, baseline = current }
+            total = math.max(raw or 0, incoming.quantity)
         end
-        imported[id] = imported[id] or changed
+        local definition = atlas.attemptStages[id].item
+        recordChange(imported, id, changed, "collection", previous, total, definition.key, definition.item)
     end
     for key, incoming in pairs(plan.stages) do
         local raw = atlas.rawStageAttempts(key)
@@ -513,15 +724,19 @@ local function commitImport(plan)
         local total = math.max(incoming, previous or 0)
         local ids = sortedIDs(plan.stageOwners[key])
         replacements[key] = { total = total, deltaByGUID = {}, source = incoming, mountIDs = ids }
-        for _, id in ipairs(ids) do imported[id] = imported[id] or previous ~= total end
+        for _, id in ipairs(ids) do
+            recordChange(imported, id, previous ~= total, "stage", beforeImport(statistics[key], previous), total, key)
+        end
     end
     for key, found in pairs(plan.awards) do
         local previous = atlas.acquisitionAttempts and atlas.acquisitionAttempts(key)
-        local saved = atlas.rememberAcquisition and atlas.rememberAcquisition(key, found.attempts, found.item)
-        local added = type(saved) == "table" and not previous
-        if added then saved.source = "rarity" end
+        if not previous and atlas.rememberAcquisition then atlas.rememberAcquisition(key, found.attempts, found.item) end
+        local saved = atlas.acquisitionAttempts and atlas.acquisitionAttempts(key)
+        if saved and not previous then saved.source = "rarity" end
         local ids = sortedIDs(found.owners)
-        for _, id in ipairs(ids) do imported[id] = imported[id] or added end
+        for _, id in ipairs(ids) do
+            recordChange(imported, id, saved and not previous, "acquisition", nil, saved and saved.attempts, key, found.item)
+        end
         -- A confirmed award can survive a reset of Rarity's lifetime counter.
         -- Retain it in the summary without inventing a lifetime attempt total.
         if not entries[found.counterKey] and not replacements[found.counterKey] then
@@ -530,10 +745,19 @@ local function commitImport(plan)
     end
 
     local result = emptyResult("empty")
-    for _, changed in pairs(imported) do
-        if changed then result.updated = result.updated + 1
-        else result.unchanged = result.unchanged + 1 end
+    for _, row in pairs(imported) do
+        if row then
+            table.sort(row.values, function(a, b)
+                if a.kind ~= b.kind then return changeOrder[a.kind] < changeOrder[b.kind] end
+                return tostring(a.key or "") < tostring(b.key or "")
+            end)
+            result.changes[#result.changes + 1] = row
+        else
+            result.unchanged = result.unchanged + 1
+        end
     end
+    table.sort(result.changes, function(a, b) return a.id < b.id end)
+    result.updated = #result.changes
     result.count = result.updated + result.unchanged
     if result.count > 0 then result.status = "imported" end
     result.profile, result.time = plan.profile, GetServerTime()
@@ -545,6 +769,7 @@ local function commitImport(plan)
     db.updated, db.unchanged = result.updated, result.unchanged
     db.status, db.count = result.status, result.count
     db.skipReasons, db.skipEntries = result.skipReasons, result.skipEntries
+    db.changes = result.changes
     MountAtlasAccountDB.rarityImport = db
     return result
 end

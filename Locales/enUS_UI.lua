@@ -136,6 +136,8 @@ atlas.addTranslations("enUS", {
     ["Сумки, банк персонажа и банк отряда"] = "Bags, character bank, and Warband bank",
     ["Попыток: %s"] = "Attempts: %s",
     ["Попытки:"] = "Attempts:",
+    ["Завершено подходящих разломов"] = "Eligible rifts completed",
+    ["Открыто ящиков"] = "Boxes opened",
     ["Попыток с добычей"] = "Loot attempts",
     ["Убийств босса"] = "Boss kills",
     ["Учтено убийств"] = "Recorded kills",

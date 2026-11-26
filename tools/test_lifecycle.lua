@@ -803,9 +803,11 @@ do
     local lootSlotsWithoutSource = 0
     local sceneTime, covenant = now, 0
     local bagCount, bagReads, requests, boxSpell = 3, 0, 0, nil
+    local starterCount
     local character = {}
     local account = { settings = {}, characters = { player = character } }
     local env = setmetatable({ MountAtlasAccountDB = account, MountAtlasDB = { lastAttempts = {} } }, { __index = _G })
+    env._G, env.LOOT_ITEM_SELF = env, "You receive loot: %s."
     env.CreateFrame = function()
         return { RegisterEvent = function() end, RegisterUnitEvent = function() end,
             SetScript = function(_, _, callback) handlers[#handlers + 1] = callback end }
@@ -817,11 +819,19 @@ do
     env.GetTime = function() return sceneTime end
     env.GetServerTime = env.GetTime
     env.C_Map = { GetBestMapForUnit = function() return 2413 end }
+    local chatTimers = {}
+    env.C_Timer = { After = function(delay, callback)
+        if delay == .2 then chatTimers[#chatTimers + 1] = callback else C_Timer.After(delay, callback) end
+    end }
+    local function flushLootChat()
+        while #chatTimers > 0 do table.remove(chatTimers, 1)() end
+    end
     env.C_QuestLog = { IsQuestFlaggedCompletedOnAccount = function(id) return id == 90474 end }
     env.C_Covenants = { GetActiveCovenantID = function() return covenant end }
     env.C_Item = {
         GetItemCount = function(id, bank)
             if id == 900001 and not bank then bagReads = bagReads + 1; return bagCount end
+            if id == 187282 and not bank then return starterCount end
         end,
         GetItemSpell = function(id) if id == 900001 then return "Container spell", boxSpell end end,
         RequestLoadItemDataByID = function() requests = requests + 1 end,
@@ -837,7 +847,7 @@ do
         attemptNodeNames = catalog.attemptNodeNames, currentAttemptCharacter = function() return character end,
         addTranslations = function() end, usesKillAPI = function() return false end,
         L = function(value) return value end, getLocale = function() return "ruRU" end }
-    for _, id in ipairs({ 400, 1395, 1426, 2159, 2749 }) do
+    for _, id in ipairs({ 400, 1395, 1426, 1493, 2159, 2749 }) do
         if id ~= 1426 then testAtlas.mounts[#testAtlas.mounts + 1] = { id = id } end
         testAtlas.attemptStages[id] = catalog.attemptStages[id]
     end
@@ -903,11 +913,13 @@ do
     source = "Creature-0-1-2-3-12345-000000002"
     event("LOOT_READY")
     equal(testAtlas.rawStageAttempts("item:255826"), 2, "known collection rate still counts")
+    flushLootChat()
     equal(#messages, 1, "known collection rate still announces")
     testAtlas.attemptStages[2749].item.rate = nil
     testAtlas.attemptStages[2749].item.required = 1
     source = "Creature-0-1-2-3-12345-000000003"
     event("LOOT_READY")
+    flushLootChat()
     equal(#messages, 2, "ordinary unknown-rate drop still announces")
     testAtlas.attemptStages[2749].item.required = 500
 
@@ -931,8 +943,11 @@ do
     event("LOOT_READY")
     event("LOOT_OPENED", false, false)
     equal(testAtlas.rawStageAttempts("mount:1426"), 1, "loot source identifies a cache without opening cast or tooltip")
-    equal(#messages, before + 1, "cache attempt announces once")
+    flushLootChat()
+    equal(#messages, before, "cache chat waits while the loot window is open")
     event("LOOT_CLOSED")
+    flushLootChat()
+    equal(#messages, before + 1, "cache attempt announces once after collection")
     source = "GameObject-0-1-2-3-354175-000000002"
     event("LOOT_OPENED", false, false)
     equal(testAtlas.rawStageAttempts("mount:1426"), 1, "the cache respects its daily limit before the catalog opens")
@@ -953,8 +968,9 @@ do
     source = "GameObject-0-1-2-3-354175-000000002"
     event("LOOT_OPENED", false, false)
     equal(testAtlas.rawStageAttempts("mount:1426"), 2, "opening retains localized chest name across unrelated tooltips")
-    equal(#messages, before + 2, "late exact GUID does not duplicate a tooltip-based notification")
     event("LOOT_CLOSED")
+    flushLootChat()
+    equal(#messages, before + 2, "late exact GUID does not duplicate a tooltip-based notification")
     event("PLAYER_ENTERING_WORLD")
     env.MountAtlasDB.lastAttempts = {}
     event("LOOT_OPENED", false, false)
@@ -993,6 +1009,7 @@ do
     equal(testAtlas.rawStageAttempts("mount:1426"), 2, "exact GUID overrides a misleading tooltip")
     equal(testAtlas.rawStageAttempts("mount:2159"), 1, "alternate Awakened Cache object shares the same attempt counter")
     event("LOOT_CLOSED")
+    flushLootChat()
 
     account.settings.chatMessages = false
     source = "GameObject-0-1-2-3-354175-000000003"
@@ -1180,6 +1197,7 @@ do
     event("LOOT_OPENED", true, false)
     event("LOOT_CLOSED")
     equal(testAtlas.rawStageAttempts(cacheKey), previousAttempts + 1, "repeated events count the chest only once")
+    flushLootChat()
     equal(#messages, previousMessages + 1, "the cached title path announces the attempt once")
 
     hoverCache()
@@ -1266,7 +1284,307 @@ do
     hoverCache()
     openWithRestrictedTarget("Cast-cache-restricted-target")
     equal(testAtlas.rawStageAttempts(cacheKey), previousAttempts + 3, "a typed cursor sample identifies a chest when the cast target is restricted")
-    print("PawAtlas attempt events passed: collection messages, figurines, cache identity and deduplication")
+
+    local key = "item:187282"
+    local target, lootable, sequence = nil, false, 0
+    env.UnitGUID = function(unit)
+        if unit == "target" then return target end
+        if unit == "player" then return "player" end
+    end
+    env.UnitIsDead, env.UnitCanAttack = function() return true end, function() return true end
+    env.UnitIsPlayer, env.UnitClassification = function() return false end, function() return "rare" end
+    env.CanLootUnit = function(guid) return guid == target and lootable, guid == target and lootable end
+    local receiptTimers = {}
+    env.C_Timer.After = function(delay, callback)
+        if delay == .1 then receiptTimers[#receiptTimers + 1] = callback
+        elseif delay == .2 then chatTimers[#chatTimers + 1] = callback end
+    end
+    account.settings.chatMessages = false
+    account.settings.mountCollectionMessageFormat = "{название} #{попытки}"
+    local function openCorpse(held, knownSource, readyOnly)
+        sequence = sequence + 1
+        account.acquisitionAttempts = nil
+        character.stageAttempts[key] = 5
+        covenant, starterCount, lootable = 1, held, true
+        cursorName, tooltip, lootSlotsWithoutSource = nil, nil, 1
+        target = ("Creature-0-1-2-3-180032-%09d"):format(sequence)
+        source = knownSource and target or nil
+        event("LOOT_READY", true)
+        if not readyOnly then event("LOOT_OPENED", true, false) end
+    end
+    local function receiveStarter()
+        event("CHAT_MSG_LOOT", "You receive loot: |Hitem:187282|h[Intact Aquilon Core]|h.",
+            nil, nil, nil, nil, nil, nil, nil, nil, nil, sequence)
+        table.remove(receiptTimers, 1)()
+    end
+    local function closeCorpse(depleted)
+        lootable = not depleted
+        event("LOOT_CLOSED")
+        flushLootChat()
+    end
+    openCorpse(0)
+    starterCount = 1
+    receiveStarter()
+    equal(testAtlas.acquisitionAttempts(key), nil, "an early receipt waits for confirmation of the fallback corpse")
+    closeCorpse(true)
+    equal(testAtlas.rawStageAttempts(key), 6, "a unique starter received before close still credits the eligible attempt")
+    equal(testAtlas.acquisitionAttempts(key).attempts, 6, "a successful receipt freezes the confirmed attempt")
+    assert(messages[#messages]:find("#6", 1, true), "early receipt announces its confirmed count")
+    event("LOOT_CLOSED")
+    equal(testAtlas.rawStageAttempts(key), 6, "duplicate close cannot credit the same corpse twice")
+
+    openCorpse(0)
+    closeCorpse(true)
+    starterCount = 1
+    receiveStarter()
+    equal(testAtlas.acquisitionAttempts(key).attempts, 6, "a receipt after close uses this corpse's recorded attempt")
+
+    openCorpse(0, true)
+    equal(testAtlas.rawStageAttempts(key), 6, "the exact GUID path still records before the loot window closes")
+    starterCount = 1
+    receiveStarter()
+    closeCorpse(true)
+    equal(testAtlas.acquisitionAttempts(key).attempts, 6, "the exact GUID and the receipt still settle once")
+
+    openCorpse(1)
+    starterCount = 0
+    receiveStarter()
+    closeCorpse(true)
+    equal(testAtlas.rawStageAttempts(key), 5, "already holding a unique starter prevents the attempt even if bags change")
+    equal(testAtlas.acquisitionAttempts(key), nil, "an ineligible attempt cannot freeze an old count")
+
+    openCorpse(0)
+    receiveStarter()
+    closeCorpse(false)
+    equal(testAtlas.rawStageAttempts(key), 5, "receipt cannot substitute for confirmed loot depletion")
+    equal(testAtlas.acquisitionAttempts(key), nil, "a cancelled loot window cannot freeze an old count")
+    assert(not messages[#messages]:find("#5", 1, true), "an unresolved receipt omits the old count")
+
+    openCorpse(0)
+    covenant = 2
+    closeCorpse(true)
+    receiveStarter()
+    equal(testAtlas.rawStageAttempts(key), 5, "a stock snapshot cannot bypass the starter's covenant")
+    equal(testAtlas.acquisitionAttempts(key), nil, "wrong-covenant loot cannot claim a count")
+
+    openCorpse(0, true, true)
+    sceneTime = sceneTime + 4
+    receiveStarter()
+    equal(testAtlas.acquisitionAttempts(key), nil, "a receipt beyond the source window cannot borrow an earlier count")
+    openCorpse(0, true, true)
+    starterCount = 1
+    receiveStarter()
+    equal(testAtlas.acquisitionAttempts(key).attempts, 6, "the next LOOT_READY-only attempt has its own receipt context")
+    closeCorpse(true)
+
+    openCorpse(0)
+    receiveStarter()
+    testAtlas.resetAttemptStageSession()
+    closeCorpse(true)
+    equal(testAtlas.rawStageAttempts(key), 5, "session reset clears a pending fallback corpse")
+    equal(testAtlas.acquisitionAttempts(key), nil, "a receipt from a reset session cannot freeze history")
+    print("PawAtlas attempt events passed: collection messages, figurines, cache identity, and unique NPC loot")
+end
+
+do
+    local mount = { id = 1426, npcs = { 170832, 170833, 170834, 170835, 170836 } }
+    local key, councilQuest, cacheQuest = "mount:1426", 60933, 60977
+    local current, other = "Player-cache-1", "Player-cache-2"
+    local character, now, source, unnamedLootSlots = current, 1000, nil, 0
+    local restricted = {}
+    local flags = { [current] = { [cacheQuest] = true }, [other] = { [cacheQuest] = false } }
+    local account = { characters = { [current] = {}, [other] = {} }, plan = { ["1426"] = true },
+        settings = { chatMessages = false } }
+    local stageFrames = {}
+    local env = setmetatable({
+        MountAtlasAccountDB = account,
+        MountAtlasDB = { lastAttempts = {}, planMigrated = true },
+        IsLoggedIn = function() return true end,
+        GetTime = function() return now end,
+        GetServerTime = function() return now end,
+        UnitGUID = function(unit) if unit == "player" then return character end end,
+        IsFishingLoot = function() return false end,
+        GetNumLootItems = function() return source and 1 or unnamedLootSlots end,
+        GetLootSourceInfo = function() return source, 1 end,
+        C_Map = { GetBestMapForUnit = function() return 1533 end },
+        C_DateAndTime = { GetSecondsUntilDailyReset = function() return 3600 end },
+        C_QuestLog = { IsQuestFlaggedCompleted = function(id) return flags[character][id] end },
+        C_Timer = { After = function(_, callback) callback() end },
+        issecretvalue = function(value) return value == restricted end,
+    }, { __index = _G })
+    env._G = env
+    env.CreateFrame = function()
+        local instance = setmetatable({ events = {} }, { __index = frame })
+        stageFrames[#stageFrames + 1] = instance
+        return instance
+    end
+    local probe = { mounts = {}, killStatistics = {},
+        addTranslations = function() end, getLocale = function() return "enUS" end,
+        L = function(value) return value end, usesKillAPI = function() return false end,
+        currentAttemptCharacter = function() return account.characters[character] end,
+        mountByID = function(id) if id == mount.id then return mount end end,
+        refreshBossLockouts = function() end, isWarbandCharacterHidden = function() return false end }
+    for _, path in ipairs({ "Data/JournalData.lua", "Data/LootSources.lua", "Core/WarbandPlan.lua", "Core/AttemptStages.lua" }) do
+        setfenv(assert(loadfile(path)), env)("PawAtlas", probe)
+    end
+    equal(probe.attemptStages[mount.id].reward.lootQuestID, cacheQuest, "the stage uses the cache's own loot quest")
+    probe.initializeAttemptStages()
+    local function event(name, ...)
+        for _, instance in ipairs(stageFrames) do
+            if instance.events[name] then instance.onEvent(instance, name, ...) end
+        end
+    end
+    local function login(guid)
+        character = guid
+        env.MountAtlasDB = { lastAttempts = {}, planMigrated = true }
+        event("PLAYER_ENTERING_WORLD", true, false)
+    end
+    local function nextDay()
+        now = now + 3601
+        flags[character][cacheQuest] = false
+        event("QUEST_LOG_UPDATE")
+    end
+    local function count(expected, scenario)
+        equal(probe.rawStageAttempts(key), expected, scenario)
+    end
+
+    local opportunity = probe.planOpportunityProgress(mount, current)
+    equal(opportunity.totalAttempts, 1, "the five Council members share one cache opportunity")
+    equal(opportunity.completedAttempts, 1, "the planner reads a completed cache without an opening event")
+    login(current)
+    count(0, "a cache looted before login is not a new attempt")
+    equal(probe.planCharacterStatus(mount, current), "attempt", "an already-complete cache closes today's planner opportunity")
+    probe.capturePlanSnapshot(true)
+    login(other)
+    flags[other][councilQuest] = true
+    event("QUEST_TURNED_IN", councilQuest)
+    event("QUEST_LOG_UPDATE")
+    count(0, "completing the Council does not count opening the cache")
+    equal(probe.planCharacterStatus(mount, other), "available", "the Council quest does not close the cache opportunity")
+    equal(probe.planCharacterStatus(mount, current), "attempt", "the offline character retains its own cache lock")
+
+    event("LOOT_OPENED", false, false)
+    flags[other][cacheQuest] = true
+    event("LOOT_CLOSED")
+    event("QUEST_LOG_UPDATE")
+    event("LOOT_CLOSED")
+    count(1, "manual loot with unreadable source counts once from the cache quest")
+    equal(probe.planCharacterStatus(mount, other), "attempt", "the cache quest closes this character's opportunity")
+    equal((account.characters[current].stageAttempts or {})[key], nil, "the new attempt belongs only to the character who looted")
+
+    nextDay()
+    equal(probe.planCharacterStatus(mount, other), "available", "the reset opens today's cache opportunity")
+    source = "GameObject-0-1-2-3-354175-000000001"
+    event("LOOT_READY", true)
+    count(2, "the exact GUID still records the opening before the cache quest arrives")
+    flags[other][cacheQuest] = true
+    event("QUEST_LOG_UPDATE")
+    event("LOOT_OPENED", true, false)
+    event("LOOT_CLOSED")
+    count(2, "a quest update following a known GUID does not double-count the cache")
+
+    nextDay()
+    source = nil
+    flags[other][cacheQuest] = true
+    event("LOOT_READY", true)
+    count(3, "early autoloot can confirm a cache with no visible GUID")
+    source = "GameObject-0-1-2-3-354175-000000002"
+    event("LOOT_OPENED", true, false)
+    event("LOOT_CLOSED")
+    event("QUEST_LOG_UPDATE")
+    count(3, "a GUID revealed after quest confirmation does not duplicate autoloot")
+
+    nextDay()
+    source, flags[other][cacheQuest] = nil, true
+    event("LOOT_OPENED", true, false)
+    count(4, "a cache with no preceding loot-ready event is detected at loot opening")
+    event("LOOT_CLOSED")
+
+    nextDay()
+    source, unnamedLootSlots = nil, 1
+    local target = probe.attemptStages[mount.id].reward.nodes[1]
+    event("UNIT_SPELLCAST_SENT", "player", target, "Cast-ascended-title", 3365)
+    event("LOOT_READY", false)
+    event("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-ascended-title", 3365)
+    event("LOOT_OPENED", false, false)
+    count(5, "the exact opening name still records a cache with no GUID")
+    unnamedLootSlots, flags[other][cacheQuest] = 0, true
+    event("LOOT_CLOSED")
+    event("QUEST_LOG_UPDATE")
+    count(5, "a flag following an opening identified by name does not duplicate it")
+
+    nextDay()
+    flags[other][cacheQuest] = true
+    event("QUEST_LOG_UPDATE")
+    event("QUEST_LOG_UPDATE")
+    count(6, "a quest log transition alone counts once")
+
+    nextDay()
+    source, flags[other][cacheQuest] = nil, restricted
+    event("PLAYER_ENTERING_WORLD", false, false)
+    event("QUEST_LOG_UPDATE")
+    equal(probe.planCharacterStatus(mount, other), "unknown", "restricted data do not promise an available cache")
+    flags[other][cacheQuest] = true
+    event("QUEST_LOG_UPDATE")
+    count(6, "a restricted world-entry baseline cannot establish a new opening")
+    equal(probe.planCharacterStatus(mount, other), "attempt", "a readable completed flag closes the opportunity without crediting an attempt")
+
+    nextDay()
+    flags[other][cacheQuest] = nil
+    event("PLAYER_ENTERING_WORLD", false, false)
+    flags[other][cacheQuest] = true
+    event("LOOT_OPENED", true, false)
+    event("LOOT_CLOSED")
+    count(6, "unavailable quest data cannot stand in for an observed incomplete flag")
+
+    nextDay()
+    flags[other][cacheQuest] = true
+    event("PLAYER_ENTERING_WORLD", false, false)
+    event("QUEST_LOG_UPDATE")
+    count(6, "re-entering the world with an already completed quest does not backfill an attempt")
+    nextDay()
+    flags[other][cacheQuest] = restricted
+    event("QUEST_LOG_UPDATE")
+    flags[other][cacheQuest] = true
+    event("QUEST_LOG_UPDATE")
+    count(7, "a brief unreadable result during play preserves the last known incomplete flag")
+
+    nextDay()
+    local daily = env.C_DateAndTime.GetSecondsUntilDailyReset
+    local lockKey = "stage:" .. key .. ":daily"
+    local oldExpiry = env.MountAtlasDB.lastAttempts[lockKey]
+    env.C_DateAndTime.GetSecondsUntilDailyReset = nil
+    env.C_DateAndTime.GetSecondsUntilWeeklyReset = function() return 604800 end
+    source = "GameObject-0-1-2-3-354175-000000003"
+    event("LOOT_READY", true)
+    flags[other][cacheQuest] = true
+    event("LOOT_CLOSED")
+    count(8, "the exact opening and the flag share credit even with no daily reset time")
+    equal(env.MountAtlasDB.lastAttempts[lockKey], oldExpiry, "a missing daily reset cannot install a weekly lock")
+    env.C_DateAndTime.GetSecondsUntilDailyReset = daily
+    event("QUEST_LOG_UPDATE")
+    count(8, "delayed daily reset data cannot replay the opening")
+    equal(env.MountAtlasDB.lastAttempts[lockKey], now + 3600, "late reset data completes the original daily lock")
+
+    nextDay()
+    local messages = {}
+    account.characters[other].stageAttempts[key] = 10
+    account.settings.chatMessages, account.settings.chatMessageFormat = true, "#{attempts} {probability}"
+    env.DEFAULT_CHAT_FRAME = { AddMessage = function(_, line) messages[#messages + 1] = line end }
+    env.C_MountJournal = { GetMountInfoByID = function()
+        return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, false
+    end }
+    source = nil
+    event("LOOT_OPENED", true, false)
+    flags[other][cacheQuest] = true
+    event("QUEST_LOG_UPDATE")
+    count(11, "the eleventh opening is already saved before loot chat")
+    equal(#messages, 0, "the quest confirmation does not interrupt autoloot messages")
+    event("LOOT_CLOSED")
+    event("QUEST_LOG_UPDATE")
+    equal(#messages, 1, "the flag-only opening announces once with a closed catalog")
+    assert(messages[1]:find("#11", 1, true) and messages[1]:find("43.12%", 1, true))
+    print("PawAtlas Ascended cache passed: personal quest, planner, both loot orders, reset and unavailable data")
 end
 
 do
@@ -1645,6 +1963,7 @@ do
     local mounted, loaded, chat, timers, handlers = {}, {}, {}, {}, {}
     local islandItems = { [166467] = 1212, [163583] = 1176, [163584] = 1175 }
     local pendingIslandMap, salvageCount = nil, 2
+    local giftCount = 0
     local corpse, npcItemReady
     local time = 0
     local settings = { rewardToast = false, chatMessages = false }
@@ -1670,6 +1989,7 @@ do
     env.C_MountJournal = {
         GetMountFromItem = function(item)
             if item > 1000 and item < 1008 then return item - 1000 end
+            if item == 186657 then return 1501 end
             return islandItems[item]
         end,
         GetMountInfoByID = function(id)
@@ -1677,7 +1997,10 @@ do
         end,
     }
     env.C_Item = {
-        GetItemCount = function(item) if item == 173989 then return salvageCount end end,
+        GetItemCount = function(item)
+            if item == 173989 then return salvageCount end
+            if item == 187029 then return giftCount end
+        end,
         GetItemInfo = function(item) if item == 8202 and npcItemReady then return "Rare reins" end end,
     }
     env.GetNumLootItems = function() return corpse and 1 or 0 end
@@ -1702,7 +2025,7 @@ do
     for _, path in ipairs({ "Data/JournalData.lua", "Data/LootSources.lua" }) do
         assert(loadfile(path))("PawAtlas", catalog)
     end
-    for _, id in ipairs({ 1313, 537, 538, 539, 540 }) do notifications.attemptStages[id] = catalog.attemptStages[id] end
+    for _, id in ipairs({ 1313, 537, 538, 539, 540, 1501 }) do notifications.attemptStages[id] = catalog.attemptStages[id] end
     notifications.islandSalvageMounts = {}
     for _, id in pairs(islandItems) do
         notifications.attemptStages[id] = catalog.attemptStages[id]
@@ -1710,6 +2033,7 @@ do
         loaded[id], mounted[id] = true, false
     end
     notifications.guaranteedRewards, notifications.lootItems = catalog.guaranteedRewards, catalog.lootItems
+    notifications.mountRewardContainerRewards = catalog.mountRewardContainerRewards
     for _, path in ipairs({ "Core/AttemptStages.lua", "UI/Notifications.lua" }) do
         setfenv(assert(loadfile(path)), env)("PawAtlas", notifications)
     end
@@ -1808,16 +2132,24 @@ do
     equal(notifications.itemCollectionCount({ id = 537 }), 13, "distinct bone receipts still advance collection by their quantity")
     settings.chatMessages = false
     settings.mountCollectionMessageFormat = "{название} #{попытки} ({вероятность})"
+    character.stageAttempts["item:174230"] = 1
+    corpse = "Creature-0-1-2-3-157162-000000001"
+    event("LOOT_READY", true)
     receipt("You receive loot: " .. scale .. ".", 501)
     receipt("You receive loot: " .. scale .. ".", 501)
-    character.stageAttempts["item:174230"] = 2
+    event("LOOT_CLOSED")
+    corpse = nil
     advance(.2)
     equal(chat[3], scale .. " #2 (3,96%)", "actual scale drop includes final attempt and shared custom format")
     equal(#chat, 3, "duplicate loot line announces only once")
     local egg = "|Hitem:94295|h[Primal Egg]|h"
-    character.stageAttempts["item:94295"] = 8
+    character.stageAttempts["item:94295"] = 7
+    corpse = "Creature-0-1-2-3-69983-000000001"
+    event("LOOT_READY", true)
     receipt("Another player receives loot: " .. egg .. ".", 502)
     receipt("You receive loot: " .. egg .. ".", 503)
+    event("LOOT_CLOSED")
+    corpse = nil
     advance(.2)
     equal(#chat, 4, "one egg for three mounts announces once and only for self loot")
     assert(chat[4]:find(egg .. " #8", 1, true))
@@ -1867,6 +2199,28 @@ do
     assert(chat[8]:find("Маунт 1176 #2", 1, true))
 
     settings.chatMessages = true
+    loaded[1501], mounted[1501] = true, false
+    local giftLink = "|Hitem:187029|h[Mysterious Gift from Ve'nari]|h"
+    giftCount = 2
+    receipt("You receive item: " .. giftLink .. ".", 15011)
+    receipt("You receive loot: " .. giftLink .. ".", 15012)
+    receipt("You receive loot: |Hitem:94296|h[Cracked Primal Egg]|h.", 15013)
+    receipt("You receive loot: |Hitem:173950|h[Rotting Mire Salvage]|h.", 15014)
+    event("BAG_UPDATE_DELAYED")
+    advance(.3)
+    equal(#chat, 8, "receiving a gift, a mature egg or shared island salvage stays silent")
+    equal(notifications.rawStageAttempts("mount:1501"), 0, "receiving the gift is not an opening")
+    settings.chatMessageFormat = "{mount} #{attempts} ({probability})"
+    event("LOOT_OPENED", true, true)
+    giftCount = 1
+    event("BAG_UPDATE_DELAYED")
+    event("LOOT_CLOSED")
+    event("BAG_UPDATE_DELAYED")
+    advance(.3)
+    equal(notifications.rawStageAttempts("mount:1501"), 1, "the gift was opened exactly once")
+    assert(chat[9]:find("#1 (12,50%)", 1, true), "an unsuccessful gift reports its count and cumulative chance")
+    equal(#chat, 9, "one gift opening produces one attempt message")
+    settings.chatMessageFormat = "{mount} #{attempts}"
     receipt("You receive loot: |Hitem:163584|h[Twilight Avenger]|h.", 509)
     event("LOOT_OPENED", false, true)
     advance(.15)
@@ -1877,7 +2231,8 @@ do
     event("BAG_UPDATE_DELAYED")
     equal(notifications.rawStageAttempts("mount:1175"), 1, "the bag update and loot close count the same opening once")
     equal(notifications.acquisitionAttempts("mount:1175").attempts, 3, "salvage receipt freezes expeditions and the successful open")
-    assert(chat[9]:find("#3", 1, true), "attempt chat reports the combined total")
+    advance(.3)
+    equal(#chat, 9, "successful salvage leaves the winning mount's line to collection chat")
     mounted[1175] = true
     event("NEW_MOUNT_ADDED", 1175)
     advance(.3)
@@ -1896,6 +2251,7 @@ do
         corpse = "Creature-0-1-2-3-8202-00000000" .. serial
         event("LOOT_READY")
         event("LOOT_OPENED", false, false)
+        event("LOOT_CLOSED")
     end
     event("ENCOUNTER_END", 8201, "Dungeon boss", 16, 20, 0)
     equal(notifications.rawStageAttempts("mount:8201"), 0, "failed encounters do not queue chat")
@@ -1913,7 +2269,7 @@ do
     equal(#chat, 11, "a cold staged item name still defers chat")
     npcItemReady = true
     event("ITEM_DATA_LOAD_RESULT", 8202, true)
-    advance(2)
+    advance(2.3)
     equal(chat[12], "Rare reins #1", "first pending corpse keeps its own count")
     equal(chat[13], "Rare reins #2", "second pending corpse keeps its own count")
     equal(#chat, 13, "duplicate encounter and corpse events do not repeat chat")
@@ -1933,6 +2289,19 @@ do
     advance(20)
     equal(notifications.rawStageAttempts("mount:8202"), 4, "muting pending staged boss chat preserves the attempt")
     equal(#chat, 13, "reenabling attempt chat does not replay the canceled line")
+    event("LOOT_OPENED", false, true)
+    giftCount = 0
+    event("BAG_UPDATE_DELAYED")
+    advance(.4)
+    receipt("You receive loot: |Hitem:186657|h[Soulbound Gloomcharger's Reins]|h.", 15015)
+    event("LOOT_CLOSED")
+    advance(.4)
+    mounted[1501] = true
+    event("NEW_MOUNT_ADDED", 1501)
+    advance(.5)
+    equal(notifications.acquisitionAttempts("mount:1501").attempts, 2, "the successful opening is included")
+    equal(#chat, 14, "manual looting produces only the mount announcement for the successful gift")
+    assert(chat[14]:find("Маунт 1501 #2", 1, true))
     print("PawAtlas staged boss chat passed: ownership and item retry, independent totals, event deduplication and opt-out")
 end
 
@@ -2275,7 +2644,11 @@ do
         GetMountInfoByID = function(id) return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, ownership[id] end,
     }
     env.C_Item = { GetItemCount = function(item) if item == 173989 then return bagCount end end }
-    env.C_Timer = { After = function(_, fn) timers[#timers + 1] = fn end }
+    local settleTimers = {}
+    env.C_Timer = { After = function(delay, fn)
+        local queue = delay == .2 and settleTimers or timers
+        queue[#queue + 1] = fn
+    end }
     env.DEFAULT_CHAT_FRAME = { AddMessage = function(_, message) messages[#messages + 1] = message end }
     local probe = { mounts = {}, killStatistics = {},
         attemptStages = { [982] = catalog.attemptStages[982], [1434] = catalog.attemptStages[1434],
@@ -2289,12 +2662,17 @@ do
     setfenv(assert(loadfile("Core/AttemptStages.lua")), env)("PawAtlas", probe)
     probe.initializeAttemptStages()
     local function event(name, ...) callback(nil, name, ...) end
+    local function settle()
+        while #settleTimers > 0 do table.remove(settleTimers, 1)() end
+    end
     local function catch()
         event("LOOT_READY", true)
         event("LOOT_OPENED", true, false)
         event("LOOT_CLOSED")
+        settle()
     end
     local function drainTimers()
+        settle()
         local calls = 0
         while #timers > 0 and calls < 20 do
             calls = calls + 1
@@ -2357,4 +2735,331 @@ do
     equal(messages[5], "Island Thunderscale #4", "second delayed bag line freezes its own expedition total")
     equal(#messages, 5, "late ownership does not duplicate any attempt line")
     print("PawAtlas fishing and salvage chat passed: cold ownership, exact totals, deduplication, retries and cancellation")
+end
+
+do
+    local catalog = { addTranslations = function() end }
+    assert(loadfile("Data/JournalData.lua"))("PawAtlas", catalog)
+    local character = { stageAttempts = { ["mount:1776"] = 2, ["mount:1781"] = 4 } }
+    local previousAward = { attempts = 4, item = 206678, confirmedLoot = true }
+    local account = {
+        characters = { player = character }, settings = { chatMessages = false },
+        acquisitionAttempts = { ["mount:1781"] = previousAward },
+        rarityImport = { entries = { [1781] = { attempts = 99 } } },
+    }
+    local clock, faction, instance, completed, bags = 100, "Alliance", 0, false, 0
+    local source, slotLink, stageCallback, registered, useItem
+    local roster = { [1776] = 206673, [1777] = 206674, [1778] = 206675, [1779] = 206676,
+        [1781] = 206678, [1782] = 206679, [1783] = 206680 }
+    local env = setmetatable({ MountAtlasAccountDB = account }, { __index = _G })
+    env._G = env
+    env.LOOT_ITEM_SELF, env.LOOT_ITEM_PUSHED_SELF = "You receive loot: %s.", "You receive item: %s."
+    env.CreateFrame = function()
+        registered = {}
+        return { RegisterEvent = function(_, event) registered[event] = true end, RegisterUnitEvent = function() end,
+            SetScript = function(_, _, handler) stageCallback = handler end }
+    end
+    env.GetTime = function() return clock end
+    env.GetServerTime = env.GetTime
+    env.GetInstanceInfo = function() return nil, "scenario", nil, nil, nil, nil, nil, instance end
+    env.UnitFactionGroup = function() return faction end
+    env.C_ScenarioInfo = { GetScenarioInfo = function() return { isComplete = completed } end }
+    env.C_Item = { GetItemCount = function(item) if item == 207583 then return bags end end }
+    env.C_Timer = { After = function(_, run) run() end }
+    env.GetNumLootItems = function() return slotLink and 1 or 0 end
+    env.GetLootSlotLink = function() return slotLink end
+    env.GetLootSourceInfo = function() return source, 1 end
+    env.UseItemByName = function() end
+    env.hooksecurefunc = function(name, callback)
+        equal(name, "UseItemByName", "box use hook")
+        useItem = callback
+    end
+    local function restart()
+        local probe = { mounts = {}, killStatistics = {}, attemptStages = {},
+            timeRiftSources = catalog.timeRiftSources, addTranslations = function() end,
+            currentAttemptCharacter = function() return character end,
+            L = function(value) return value end, getLocale = function() return "enUS" end,
+            withImportedAttempts = function(_, raw) return raw + 99 end }
+        for id in pairs(roster) do probe.attemptStages[id] = catalog.attemptStages[id] end
+        setfenv(assert(loadfile("Core/AttemptStages.lua")), env)("PawAtlas", probe)
+        probe.initializeAttemptStages()
+        assert(registered.CRITERIA_COMPLETE and registered.SCENARIO_UPDATE and registered.SCENARIO_COMPLETED)
+        return probe
+    end
+    local function event(name, ...) stageCallback(nil, name, ...) end
+    local function enter(map, isComplete)
+        instance, completed = map, isComplete
+        event("PLAYER_ENTERING_WORLD", false, false)
+    end
+    local function finish(criterion)
+        completed = true
+        event("SCENARIO_UPDATE")
+        event("CRITERIA_COMPLETE", criterion)
+        event("CRITERIA_COMPLETE", criterion)
+    end
+    local function link(id) return "|Hitem:" .. roster[id] .. "|h[mount]|h" end
+    local function receipt(id, pushed)
+        event("CHAT_MSG_LOOT", (pushed and env.LOOT_ITEM_PUSHED_SELF or env.LOOT_ITEM_SELF):format(link(id)))
+    end
+    local function toast(id) event("SHOW_LOOT_TOAST", "item", link(id), 1, 0, 0, true) end
+    local probe = restart()
+    local function progress(id) return probe.timeRiftAttemptProgress({ id = id }) end
+    local function award(id) return probe.acquisitionAttempts("mount:" .. id) end
+
+    enter(2634, true)
+    finish(60692)
+    event("SCENARIO_COMPLETED")
+    equal(progress(1777).finals, 0, "joining a completed scenario does not backfill a finale")
+    enter(0, false)
+    event("CRITERIA_COMPLETE", 60692)
+    equal(progress(1777).finals, 0, "the same criterion outside its instance is ignored")
+    enter(2634, nil)
+    completed = false
+    event("SCENARIO_UPDATE")
+    event("CRITERIA_COMPLETE", 60690)
+    event("SCENARIO_CRITERIA_UPDATE", 60692)
+    equal(progress(1777).finals, 0, "unrelated criteria and increment updates are ignored")
+    finish(60692)
+    equal(progress(1777).finals, 1, "only the eligible Alliance reward gets a Warlands finale")
+    equal(progress(1776).finals, 0, "the opposing faction does not get a Warlands attempt")
+    equal(progress(1779).finals, 0, "other timelines get no attempt")
+    equal(progress(1776).boxes, 2, "existing box openings are preserved without the import floor")
+    probe = restart()
+    enter(2634, true)
+    finish(60692)
+    equal(progress(1777).finals, 1, "reload does not replay an already recorded finale")
+    enter(2586, false)
+    finish(60685)
+    equal(progress(1777).finals, 1, "Azmerloth has no mount attempt")
+
+    faction = "Horde"
+    enter(2634, false)
+    finish(60692)
+    equal(progress(1776).finals, 1, "the next Warlands run credits the Horde reward")
+    equal(progress(1777).finals, 1, "the Alliance counter is isolated")
+    enter(2595, false)
+    receipt(1779, true)
+    equal(probe.mountLootAttemptsPending(1779), false, "a bare pushed item is no proof of a drop")
+    toast(1779)
+    equal(probe.mountLootAttemptsPending(1779), true, "personal toast can wait for the associated finale")
+    finish(60690)
+    equal(award(1779).source, "riftFinal", "a confirmed receipt may precede the finale")
+    equal(award(1779).attempts, 1, "the successful event is included in its own route count")
+
+    enter(2635, false)
+    finish(60688)
+    source, slotLink = "Creature-0-1-2-3-111111-000000001", link(1778)
+    event("LOOT_READY")
+    event("LOOT_OPENED", false, false)
+    receipt(1778)
+    event("LOOT_CLOSED")
+    equal(award(1778), nil, "an unrelated corpse cannot be mistaken for a finale drop")
+    source = "Creature-0-1-2-3-205304-000000002"
+    event("LOOT_READY")
+    event("LOOT_OPENED", false, false)
+    receipt(1778, true)
+    event("LOOT_CLOSED")
+    equal(award(1778).source, "riftFinal", "a pushed receipt from the correct boss loot slot can follow the finale")
+
+    enter(2593, false)
+    finish(60691)
+    equal(award(1781), nil, "an older receipt with no source cannot freeze legitimate Rift history")
+    event("PLAYER_INTERACTION_MANAGER_FRAME_SHOW", 5)
+    receipt(1781, true)
+    toast(1781)
+    event("PLAYER_INTERACTION_MANAGER_FRAME_HIDE", 5)
+    equal(probe.captureMountAcquisition({ id = 1781 }), nil, "buying or learning the reward cannot freeze attempts")
+    enter(0, false)
+    receipt(1781)
+    equal(award(1781), nil, "an unrelated self-receipt does not use old box history")
+    equal(account.acquisitionAttempts["mount:1781"], previousAward, "the ambiguous historical record is preserved")
+
+    source, slotLink, bags = nil, nil, 2
+    event("BAG_UPDATE_DELAYED")
+    equal(progress(1781).boxes, 4, "receiving a box does not record an opening")
+    slotLink = link(1781)
+    event("LOOT_OPENED", false, true)
+    receipt(1781, true)
+    equal(probe.mountLootAttemptsPending(1781), true, "a verified slot receipt may precede consuming the box")
+    bags = 1
+    event("BAG_UPDATE_DELAYED")
+    event("LOOT_CLOSED")
+    event("BAG_UPDATE_DELAYED")
+    equal(progress(1781).boxes, 5, "the bag change and loot close count one opening")
+    equal(progress(1781).finals, 1, "opening the box records no extra finale")
+    equal(award(1781).source, "riftBox", "a genuine box receipt works despite the historical import")
+    equal(award(1781).attempts, 5, "the frozen award shows only openings")
+    equal(award(1781).totalAttempts, 6, "the same award stores the overall attempt number separately")
+    equal(progress(1776).boxes, 3, "the box increments eligible Horde rewards")
+    equal(progress(1777).boxes, 0, "the box does not increment conflicting faction rewards")
+    local aggregate = probe.rewardAttemptProgress({ id = 1781, journalSource = "Vendor: example" })
+    equal(aggregate.attempts, 6, "shared progress sums the two local counters")
+    equal(aggregate.finals, 1, "shared progress retains the finale count")
+    equal(aggregate.boxes, 5, "shared progress retains the box count")
+    equal(aggregate.perAttempt, nil, "unverified drop rates stay unknown")
+    equal(aggregate.cumulative, nil, "shared progress never mixes probability across sources")
+    equal(aggregate.referencePerAttempt, 1 / 500, "the Rift bar uses the Rarity reference rate")
+    equal(aggregate.referenceCumulative, 1 - (1 - 1 / 500) ^ 6, "the Rift bar uses the total across both routes")
+
+    slotLink = link(1783)
+    event("LOOT_OPENED", true, true)
+    bags = 0
+    event("BAG_UPDATE_DELAYED")
+    event("LOOT_OPENED", true, true)
+    event("LOOT_CLOSED")
+    clock = clock + 1
+    receipt(1783)
+    equal(award(1783).source, "riftBox", "a receipt can follow counting and closing the same box")
+    equal(award(1783).attempts, 2, "duplicate loot open events do not inflate the box count")
+
+    bags = 1
+    event("BAG_UPDATE_DELAYED")
+    useItem(207583)
+    bags = 0
+    event("BAG_UPDATE_DELAYED")
+    slotLink = link(1782)
+    event("LOOT_OPENED", false, true)
+    receipt(1782, true)
+    event("LOOT_CLOSED")
+    equal(award(1782).attempts, 3, "the bag decrease may precede the item window after an explicit opening")
+    equal(award(1782).source, "riftBox", "the same opening supplies the source of the reward")
+
+    slotLink = nil
+    enter(2587, false)
+    event("SCENARIO_COMPLETED")
+    equal(progress(1782).finals, 0, "scenario complete notifications require confirmed current completion")
+    completed = true
+    event("SCENARIO_COMPLETED")
+    equal(progress(1782).finals, 1, "the native scenario completion is repeatable without an achievement update")
+    event("CRITERIA_COMPLETE", 60693)
+    enter(2639, false)
+    finish(60689)
+    equal(progress(1782).finals, 1, "Mechagon credits only the corresponding finale")
+    equal(progress(1783).finals, 1, "the Lich King credits only the corresponding finale")
+
+    enter(2634, false)
+    bags = 1
+    event("BAG_UPDATE_DELAYED")
+    event("LOOT_OPENED", true, true)
+    bags = 0
+    event("BAG_UPDATE_DELAYED")
+    finish(60692)
+    toast(1776)
+    equal(award(1776), nil, "overlapping openings and finales cannot prove the source of a personal toast")
+    equal(progress(1776).finals, 2, "an ambiguous award preserves the confirmed finale")
+    equal(progress(1776).boxes, 6, "an ambiguous award preserves the confirmed opening")
+    event("LOOT_CLOSED")
+
+    local chat, timers = {}, {}
+    local ownership = { [1776] = false }
+    for id in pairs(roster) do if id ~= 1776 and id ~= 1777 then ownership[id] = true end end
+    env.C_MountJournal = {
+        GetMountInfoByID = function(id) return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, ownership[id] end,
+        GetMountFromItem = function(item) for id, reward in pairs(roster) do if reward == item then return id end end end,
+    }
+    env.DEFAULT_CHAT_FRAME = { AddMessage = function(_, message) chat[#chat + 1] = message end }
+    env.C_Timer = { After = function(delay, callback)
+        timers[#timers + 1] = { time = clock + delay, callback = callback }
+    end }
+    local function advance(seconds)
+        local target = clock + seconds
+        while true do
+            local nextTimer
+            for i, timer in ipairs(timers) do
+                if timer.time <= target and (not nextTimer or timer.time < timers[nextTimer].time) then nextTimer = i end
+            end
+            if not nextTimer then break end
+            local timer = table.remove(timers, nextTimer)
+            clock = timer.time
+            timer.callback()
+        end
+        clock = target
+    end
+    local function openBox()
+        bags = 1
+        event("BAG_UPDATE_DELAYED")
+        event("LOOT_OPENED", true, true)
+        bags = 0
+        event("BAG_UPDATE_DELAYED")
+    end
+    local function chatCount(index, attempts)
+        assert(chat[index] and chat[index]:find("#" .. attempts .. " [—]", 1, true), chat[index] or "missing Rift chat line")
+    end
+
+    local settings = account.settings
+    settings.chatMessages, settings.chatMessageFormat = true, "{mount} #{attempts} [{probability}]"
+    settings.mountCollectionMessageFormat = "{mount} #{attempts} [{probability}]"
+    faction = "Alliance"
+    enter(0, false)
+    enter(2634, false)
+    finish(60692)
+    advance(3.3)
+    equal(#chat, 0, "temporarily unreadable ownership defers chat from a cold catalog")
+    ownership[1777] = false
+    enter(0, false)
+    openBox()
+    event("BAG_UPDATE_DELAYED")
+    event("LOOT_CLOSED")
+    event("LOOT_CLOSED")
+    advance(9)
+    equal(#chat, 2, "one eligible message per ordinary finale and box, even after duplicate events")
+    chatCount(1, 2)
+    chatCount(2, 3)
+    equal(progress(1776).boxes, 6, "opening a box on Alliance still does not change the Horde count")
+
+    enter(2634, false)
+    event("LOOT_OPENED", false, false)
+    finish(60692)
+    advance(2)
+    equal(#chat, 2, "the finale does not interrupt the loot window")
+    event("LOOT_CLOSED")
+    advance(.5)
+    equal(#chat, 2, "the finale still waits for late personal loot after the window closes")
+    toast(1777)
+    receipt(1777)
+    probe.notifyMountCollected(1777, "Black Gryphon")
+    advance(4)
+    equal(#chat, 3, "the successful finale leaves exactly one collection line")
+    chatCount(3, 4)
+    equal(award(1777).attempts, 3, "the successful finale stores the route count")
+    equal(award(1777).totalAttempts, 4, "the successful finale stores the overall count for chat and toast")
+
+    faction = "Horde"
+    enter(0, false)
+    openBox()
+    event("LOOT_CLOSED")
+    advance(1.5)
+    equal(#chat, 3, "the box waits for delayed personal loot")
+    receipt(1776)
+    probe.notifyMountCollected(1776, "White War Wolf")
+    advance(4)
+    equal(#chat, 4, "the successful box leaves exactly one collection line")
+    chatCount(4, 9)
+    equal(award(1776).attempts, 7, "the successful box stores the route count")
+    equal(award(1776).totalAttempts, 9, "the successful box stores an independent overall count")
+
+    enter(2634, false)
+    finish(60692)
+    settings.chatMessages = false
+    advance(4)
+    settings.chatMessages, settings.mountCollectionChat = true, false
+    enter(0, false)
+    openBox()
+    event("LOOT_CLOSED")
+    advance(.3)
+    equal(#chat, 5, "a muted pending finale is not replayed and collection chat can be disabled separately")
+    chatCount(5, 11)
+    equal(award(1776).totalAttempts, 9, "later attempts cannot alter the frozen success snapshot")
+
+    enter(2634, false)
+    openBox()
+    finish(60692)
+    advance(.3)
+    equal(#chat, 5, "an overlapping finale and opening both wait for the loot window")
+    event("LOOT_CLOSED")
+    advance(.3)
+    equal(#chat, 7, "each confirmed route contributes one new total when its events overlap")
+    chatCount(6, 12)
+    chatCount(7, 13)
+    print("PawAtlas Time Rifts passed: timeline, faction, reload, proven acquisitions and ordered chat without duplicates")
 end

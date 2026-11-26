@@ -256,6 +256,15 @@ atlas.craftReagentInfo = {
 -- container or reagent and must not be replaced with this final-reward rate.
 atlas.guaranteedRewards = {
     -- Reviewed collection/egg rewards; quantities are prerequisites, not odds.
+    -- https://news.blizzard.com/en-us/article/23988136/unite-and-face-the-onslaught-of-the-dreamsurge
+    -- https://www.wowdb.com/items/209419-charred-elemental-remains
+    -- https://ptr.wowdb.com/spells/422739-combine-elemental-remains
+    [1645] = {
+        rate = 1, item = 192807, method = "collection",
+        reagent = { item = 209419, required = 20 },
+        condition = "Добудь останки с лейтенантов пламени в больших порталах «Сон наяву» во время Прилива Снов. Объедини 20 останков, чтобы получить {item:192807:Обновленный магмонт}.",
+        englishCondition = "Loot the remains from Flame Lieutenants in major Waking Dream portals during Dreamsurges. Combine 20 remains to create the {item:192807:Renewed Magmammoth}.",
+    },
     -- https://github.com/zarillion/handynotes-plugins/blob/17bebd289705e3580880d10327416976659d0ef2/plugins/11_TheWarWithin/zones/karesh.lua
     [2602] = {
         rate = 1, item = 246159, method = "collection",
@@ -378,10 +387,11 @@ atlas.guaranteedRewards = {
         condition = "Верни 10 потерянных яиц острокрыла в гнездо в Кортии. Маунт выдаётся после возврата последнего яйца.",
     },
     -- https://github.com/aSnejbjerg/Rarity-Collectors-edition/blob/default/DB/Mounts/Dragonflight.lua
+    -- https://www.wowhead.com/item=204352/leftover-elemental-slime
     [1627] = {
         rate = 1, item = 192785, personal = true, method = "collection",
         reagent = { item = 204352, required = 50 },
-        condition = "Объедини 50 остатков слизи стихий из изначальных бурь в Запретном крае.",
+        condition = "Добудь слизь с финального босса изначальной бури у Ледокаменного хранилища в Запретном крае. Объедини 50 остатков, чтобы получить {item:192785:Липкий улиткоменталь}.",
     },
     -- https://github.com/aSnejbjerg/Rarity-Collectors-edition/blob/default/DB/Mounts/MistsOfPandaria.lua
     [537] = {
@@ -426,9 +436,15 @@ atlas.guaranteedRewards = {
     },
 }
 
--- Alani's deterministic use-item route is absent from Rarity's mount table.
--- Keep the ingredient visible without assigning it a made-up drop rate.
+-- Keep deterministic collection ingredients visible without assigning drop rates.
 atlas.lootItems[517] = { item = 86547, basis = "ingredient", required = 10, name = "Осколок небес", englishName = "Skyshard" }
+atlas.lootItems[1645] = { item = 209419, basis = "ingredient", required = atlas.guaranteedRewards[1645].reagent.required,
+    name = "Обугленные останки элементалей", englishName = "Charred Elemental Remains" }
+local magmammothReagent = atlas.lootItems[1645]
+atlas.attemptStages[1645] = {
+    item = { key = "item:209419", item = magmammothReagent.item, method = "COLLECTION", required = magmammothReagent.required,
+        name = magmammothReagent.name, englishName = magmammothReagent.englishName },
+}
 atlas.lootItems[1672] = { item = 200879, basis = "egg", name = "Яйцо Зенет", englishName = "Zenet Egg" }
 for _, id in ipairs({ 16, 1407, 1449 }) do
     local stages = atlas.attemptStages[id]
@@ -646,7 +662,7 @@ atlas.lootFrequencies = {
 -- https://trueendgame.com/battle-bound-warhound/
 -- Rarity CE v0.3.1: both Arachnoid Harvester NPC aliases use loot quest 55512.
 -- https://github.com/aSnejbjerg/Rarity-Collectors-edition/blob/97bbcd1111332364fbb6c47bf57d052c1abc7aa0/DB/Mounts/BattleForAzeroth.lua
--- The Ascended Council awards one cache (quest60933), not five mount rolls.
+-- Defeating the Ascended Council (quest 60933) reveals one shared cache with its own loot flag (60977).
 atlas.sharedLootLockouts = { [1437] = "theaterOfPain", [1229] = "arachnoidHarvester", [1426] = "ascendedCouncil" }
 
 -- The faction allowed to attack each rare, not the NPC's own allegiance.
@@ -1926,6 +1942,16 @@ atlas.rewardDropRoutes = {
     [2293] = { method = "NPC", item = 229955, boss = "Стимулирующий реагент Мрачных Минеров", englishBoss = "Darkfuse Precipitant", place = "Нижняя Шахта", englishPlace = "Undermine", map = 2346, npc = 231310, sourceKind = "Рарка", placeKind = "Открытый мир", replacesJournalKind = "Квест", references = { "https://www.wowhead.com/npc=231310", "https://github.com/aSnejbjerg/Rarity-Collectors-edition/blob/97bbcd1111332364fbb6c47bf57d052c1abc7aa0/DB/Mounts/TheWarWithin.lua" }, reviewed = "2026-11-07" },
     [2842] = { method = "ENCOUNTER", item = 263222, boss = "Нуллэй", englishBoss = "Nullaeus", place = "Пик мучений", englishPlace = "Torment's Rise", map = 2507, npc = 252101, sourceKind = "Босс", placeKind = "Вылазка", replacesJournalKind = "Достижение", sinceInterface = 120100, previousSource = "achievement", references = { "https://www.wowhead.com/item=263222/arcanovoid-construct", "https://github.com/kevinclement/SimpleArmory/blob/1ed7def50fe844cb440aa6dde2f6ec4b8f3ae5bd/static/data/mounts.json", "https://github.com/aSnejbjerg/Rarity-Collectors-edition/blob/97bbcd1111332364fbb6c47bf57d052c1abc7aa0/DB/Mounts/Midnight.lua" }, reviewed = "2026-11-07" },
 }
+-- The journal lists a Time Rift drop alongside the direct currency purchase.
+for id, rift in pairs(atlas.timeRiftSources or {}) do
+    local location = atlas.dropSourceInfo[id]
+    atlas.rewardDropRoutes[id] = {
+        method = "USE", item = atlas.mountRewardItems[id][1].item,
+        boss = "Порталы времени", englishBoss = "Time Rifts", faction = rift.faction,
+        map = location.map, place = location.place, englishPlace = location.englishPlace, sourceKind = "Добыча",
+    }
+end
+
 atlas.raidLootRewards = {
     [2607] = { item = 246590, references = { "https://www.wowhead.com/guide/collections/midnight-mounts-locations-appearances", "https://www.wowhead.com/news/blizzard-allegedly-removing-mythic-lura-mount-from-boosted-characters-382449" }, quantity = 3, difficultyID = 16, scope = "raid", untilInterface = 130000, condition = "При победе на эпохальной сложности выпадает 3 маунта на рейд. Получение маунта каждым участником не гарантировано.", reviewed = "2026-11-07" },
     [3030] = { item = 275658, boss = "Ула'тек", englishBoss = "Ula'tek", place = "Отравленная бездна", englishPlace = "The Venomous Abyss", map = 2606, maps = { 2606, 2607, 2608, 2609, 2610 }, npc = 268956, sourceKind = "Босс", placeKind = "Рейд", sinceInterface = 120100, references = { "https://worldofwarcraft.blizzard.com/en-us/news/24294369/" }, quantity = 3, difficultyID = 16, scope = "raid", untilInterface = 130000, condition = "При победе на эпохальной сложности выпадает 3 маунта на рейд. Получение маунта каждым участником не гарантировано.", reviewed = "2026-11-07" },

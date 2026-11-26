@@ -179,6 +179,8 @@ add(2817, 1, "Drop: Degentrius\nZone: Magisters' Terrace (Mythic)", 1265784)
 add(1369, 3, "Covenant: Necrolords\nVendor: Su Zettai\nZone: Maldraxxus\nCost: 3000", 332464)
 add(1484, 1, "Covenant: Night Fae\nZone: Ardenweald", 353856)
 add(1395, 1, "|cFFFFD200Ковенант: |rкирии|n|cFFFFD200Зона: |rБастион", 334386)
+add(1645, 1, "|cFFFFD200Источник:|r Приливы Снов", 374278)
+add(1671, 3, "Vendor: Celestine of the Harvest\nZone: Thaldraszus\nCost: 1000|Hitem:207026|h[Dreamsurge Coalescence]|h", 385262)
 add(2950, 1, "Drop: Rotmire\nLocation: Sporefall", 1284973)
 add(2821, 6, '|cFFFFD200Достижение: |r"Гладиатор: 2-й сезон Midnight"|n|cFFFFD200Категория: |rPvP', 1266211)
 add(1351, 1, "|cFFFFD200PvP:|r Shadowlands, 1-й сезон|nСезонная награда", 327407)
@@ -557,6 +559,37 @@ for _, locale in ipairs({ "ruRU", "enUS" }) do
     end
 end
 language = "ruRU"
+do
+    local classify = atlas.classifyMountSource
+    local magmammoth = assert(atlas.mountByID(1645))
+    equal(classify(magmammoth).subtype, "Сбор предметов", "Dreamsurge mount requires item collection")
+    equal(classify(atlas.mountByID(1671)).key, "purchase", "the Dreamsurge Ohuna retains its vendor route")
+    local reward = assert(atlas.guaranteedRewards[magmammoth.id])
+    equal(reward.item, 192807, "combining the remains creates the mount item")
+    equal(reward.reagent.item, 209419, "the requirement is the remains item")
+    equal(reward.reagent.required, 20, "combining requires twenty remains")
+    equal(atlas.lootItems[magmammoth.id].basis, "ingredient", "the item box displays an ingredient")
+    for _, condition in ipairs({ reward.condition, reward.englishCondition }) do
+        assert(atlas.sourceItemLinks(condition):find("|Hitem:192807", 1, true), "the Dreamsurge instructions link to the reward")
+    end
+
+    local stageAtlas = { attemptStages = atlas.attemptStages, killStatistics = {}, addTranslations = function() end,
+        itemDisplayName = atlas.itemDisplayName, itemReferenceName = atlas.itemReferenceName }
+    assert(loadfile("Core/AttemptStages.lua"))("PawAtlas", stageAtlas)
+    local previousItems, held = C_Item, 0
+    C_Item = { GetItemCount = function(id)
+        assert(id == 209419, "inventory progress must read the Dreamsurge remains")
+        return held
+    end }
+    for _, count in ipairs({ 0, 7, 20 }) do
+        held = count
+        local progress = assert(stageAtlas.itemAttemptProgress(magmammoth))
+        equal(progress.collected, held, "current inventory drives Dreamsurge progress")
+        equal(progress.required, 20, "the goal is twenty remains")
+        equal(progress.perAttempt, nil, "inventory progress has no estimated drop chance")
+    end
+    C_Item = previousItems
+end
 for _, row in ipairs(covenantQuests) do
     local id, _, quest = unpack(row)
     local mount = atlas.mountByID(id)
@@ -1766,9 +1799,16 @@ do
     local eggVendor = assert(atlas.vendorSources(protoDrake))[1]
     equal(guaranteed(protoDrake, { vendor = eggVendor }), nil, "buying the Green Proto-Drake egg is not a fixed reward")
     local rift = { id = 1778, spell = 414324, kind = "Добыча",
-        journalSourceRaw = "Source: Time Rifts\nVendor: Sorotis\nZone: Tyrhold Reservoir\nPrice: 3000" }
+        journalSourceRaw = "Drop: Time Rifts\nVendor: Sorotis\nZone: Tyrhold Reservoir\nCost: 3000" }
     equal(assert(guaranteed(rift, { vendor = assert(atlas.vendorSources(rift))[1] })).item, 206675,
         "an independent direct Time Rift purchase is distinct from its random box")
+    for _, id in ipairs({ 1776, 1777, 1778, 1779, 1781, 1782, 1783 }) do
+        local mount = { id = id }
+        local route = assert(atlas.verifiedRewardDropRoute(mount), "missing Time Rift drop tab " .. id)
+        equal(route.item, atlas.attemptStages[id].reward.item, "Time Rift drop tracks the corresponding mount")
+        equal(route.faction, atlas.timeRiftSources[id].faction, "Time Rift faction matches the eligible finale")
+        equal(guaranteed(mount, { verifiedDrop = true }), nil, "Time Rift drop does not inherit the vendor guarantee")
+    end
 
     local vial = { id = 407, kind = "Профессия", spell = 93326 }
     equal(assert(guaranteed(vial, {})).item, 65891, "a recipe with exact mount output is deterministic")

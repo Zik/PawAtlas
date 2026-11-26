@@ -185,6 +185,12 @@ local function field(line)
     return label and label:match("^%s*(.-)%s*$"), value
 end
 
+function atlas.isTimeRiftDropLine(id, label, value)
+    if not (atlas.timeRiftSources and atlas.timeRiftSources[id] and atlas.isDropSourceLabel(label)) then return false end
+    local name = atlas.searchKey(value)
+    return name == "порталы времени" or name == "time rifts"
+end
+
 local function factionHeader(line)
     local text = line:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):match("^%s*(.-)%s*$")
     return factionHeaders[text]
@@ -587,8 +593,11 @@ function atlas.vendorSources(mount)
     end
     for line in (source .. "\n"):gmatch("(.-)\n") do
         if line:match("%S") then
-            paragraph.lines[#paragraph.lines + 1] = line
-            if vendorLabels[field(line)] then paragraph.vendors = paragraph.vendors + 1 end
+            local label, value = field(line)
+            if not atlas.isTimeRiftDropLine(mount.id, label, value) then
+                paragraph.lines[#paragraph.lines + 1] = line
+                if vendorLabels[label] then paragraph.vendors = paragraph.vendors + 1 end
+            end
         else flush() end
     end
     flush()

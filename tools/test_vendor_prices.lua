@@ -19,6 +19,7 @@ local mountsByItem = { [46751] = 320, [19029] = 108, [19030] = 109 }
 C_MountJournal = { GetMountFromItem = function(item) return mountsByItem[item] end }
 local atlas = {
     normalizeSource = function(value) return value end,
+    isDropSourceLabel = function(label) return label == "Drop" or label == "Источник" end,
     searchKey = function(value) return value:lower() end,
     L = function(value) return value end,
     displayName = function(value) return value end,

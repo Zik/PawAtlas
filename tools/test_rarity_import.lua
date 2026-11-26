@@ -19,6 +19,22 @@ local function same(left, right)
     return true
 end
 
+local function change(result, id, kind, before, after, key)
+    equal(#result.changes, result.updated, "one row per updated mount")
+    for _, row in ipairs(result.changes) do
+        if row.id == id then
+            for _, value in ipairs(row.values) do
+                if value.kind == kind and value.key == key then
+                    equal(value.before, before, "change before import for " .. id .. " (" .. kind .. ")")
+                    equal(value.after, after, "change after import for " .. id .. " (" .. kind .. ")")
+                    return value, row
+                end
+            end
+        end
+    end
+    error("missing change for " .. id .. " (" .. kind .. ")")
+end
+
 local player, offline = "Player-current", "Player-offline"
 local time, timers = 1000, {}
 local trackingEvents, stageEvent, lootSource = {}, nil, nil
@@ -144,6 +160,7 @@ local alpha = { groups = {
         { type = "MOUNT", method = "NPC", spellId = 101, attempts = 8, lastAttempts = 90 },
         { type = "MOUNT", method = "NPC", spellId = 101, attempts = 5 },
         { type = "MOUNT", method = "ENCOUNTER", spellId = 103, itemId = 703, attempts = 40, name = "Wrong unit" },
+        { type = "MOUNT", method = "BOSS", spellId = 104, attempts = 18 },
         { type = "MOUNT", method = "NPC", spellId = 105, found = true, realAttempts = 3 },
     },
     items = {
@@ -158,6 +175,7 @@ local beta = { groups = { mounts = {
 } } }
 RarityDB = { profileKeys = { ["Tester - Realm"] = "Alpha" }, profiles = { Alpha = alpha, Beta = beta } }
 
+equal(atlas.kills({ id = 4 }), 4, "current character statistics were observed before importing")
 local accountBefore, characterBefore, rarityBefore = copy(MountAtlasAccountDB), copy(MountAtlasDB), copy(RarityDB)
 assert(atlas.startRarityImport())
 assert(not atlas.startRarityImport(), "second concurrent import started")
@@ -195,15 +213,27 @@ equal(first.skipEntries[1].reason, "incompatible", "skip reason")
 equal(atlas.kills(rare), 8, "duplicate Rarity records use the larger lifetime count")
 equal(atlas.withImportedAttempts({ id = stage.key }, atlas.rawStageAttempts(stage.key)), 10, "shared stage total")
 equal(atlas.rawKills({ id = 4 }), 16, "current and offline game-stat snapshots")
+equal(atlas.kills({ id = 4 }), 18, "the same mount can import additional unassigned history")
 equal(atlas.rawKills({ id = 6 }), nil, "incomplete game-stat snapshot remains unknown")
 equal(atlas.acquisitionAttempts("mount:5").attempts, 3, "frozen award count")
+change(first, 1, "reward", 2, 8)
+local prerequisite = change(first, 2, "stage", 1, 10, stage.key)
+equal(prerequisite.item, stage.item, "attempt source includes its item")
+equal(prerequisite.role, "item", "attempt source is a prerequisite")
+change(first, 7, "stage", 1, 10, stage.key)
+local _, statisticMount = change(first, 4, "statistics", 4, 16, 4)
+change(first, 4, "reward", 4, 18)
+equal(#statisticMount.values, 2, "statistics and lifetime history share one mount row")
+change(first, 5, "acquisition", nil, 3, "mount:5")
 equal(atlas.rarityImportSummary().profile, "Alpha", "stored profile")
 equal(atlas.rarityImportSummary().time, time, "stored import date")
+assert(same(atlas.rarityImportSummary().changes, first.changes), "the complete import details are saved")
 assert(same(rarityBefore, RarityDB), "import changed Rarity saved data")
 
 local again = atlas.importRarity()
 equal(again.updated, 0, "same snapshot has no updates")
 equal(again.unchanged, 5, "same snapshot matches all previous mounts")
+equal(#atlas.rarityImportSummary().changes, 0, "a completed unchanged import replaces the previous changes")
 assert(atlas.startRarityImport())
 local character = MountAtlasAccountDB.characters[player]
 character.kills.rare = character.kills.rare + 1
@@ -225,6 +255,37 @@ equal(larger.profile, "Runtime profile", "runtime profile is preferred")
 equal(larger.updated, 1, "existing award does not count as an update")
 equal(larger.unchanged, 1, "existing award is preserved")
 equal(atlas.kills(rare), 14, "larger compatible Rarity count increases the total")
+change(larger, 1, "reward", 9, 14)
+do
+    local expected = copy(atlas.rarityImportSummary())
+    MountAtlasAccountDB.rarityImport = copy(MountAtlasAccountDB.rarityImport)
+    assert(loadfile("Core/RarityImport.lua"))("PawAtlas", atlas)
+    assert(same(atlas.rarityImportSummary(), expected), "reloading restores the last completed import details")
+
+    local saved = MountAtlasAccountDB.rarityImport
+    local details = saved.changes
+    saved.changes = nil
+    equal(atlas.rarityImportSummary().changes, nil, "old saves have no reconstructed changes")
+    equal(atlas.rarityImportSummary().updated, expected.updated, "old saves keep their import totals")
+    saved.changes = details
+
+    Rarity.db.profile = { groups = {} }
+    equal(run().status, "unavailable", "the profile can become unavailable after an import")
+    Rarity.db.profile = beta
+    assert(same(atlas.rarityImportSummary(), expected), "an unavailable import preserves the last completed details")
+
+    assert(atlas.startRarityImport())
+    atlas.cancelRarityImport()
+    drain()
+    assert(same(atlas.rarityImportSummary(), expected), "a cancelled import preserves the last completed details")
+
+    C_MountJournal.GetMountInfoByID = function() error("test journal failure") end
+    assert(atlas.startRarityImport())
+    drain()
+    C_MountJournal.GetMountInfoByID = getMountInfo
+    equal(atlas.rarityImportProgress().result.status, "error", "a later import can fail during preparation")
+    assert(same(atlas.rarityImportSummary(), expected), "a failed import preserves the last completed details")
+end
 assert(atlas.clearRarityImport())
 equal(atlas.kills(rare), 3, "clear keeps locally recorded attempts")
 equal(atlas.rawStageAttempts(stage.key), 1, "clear keeps locally recorded stage attempts")
@@ -232,12 +293,15 @@ equal(atlas.rawKills({ id = 4 }), 16, "clear retains merged game-stat snapshots"
 equal(atlas.acquisitionAttempts("mount:5"), nil, "clear removes Rarity-only award")
 equal(atlas.acquisitionAttempts("mount:6"), localAward, "clear preserves PawAtlas award")
 equal(atlas.rarityImportSummary().time, nil, "clear removes import metadata")
+equal(atlas.rarityImportSummary().changes, nil, "clear removes the last import details")
 
 Rarity.db.profile = { groups = { items = {} }, accountWideStatistics = { [offline] = { statistics = { [40722] = 6 } } } }
 local stageOnly = run()
 equal(stageOnly.status, "imported", "stats-only stage snapshot is importable")
 equal(stageOnly.updated, 1, "stats-only prerequisite updates its owning mount")
 equal(atlas.rawStageAttempts(mechsuit.key), 6, "stats-only prerequisite attempt total")
+equal(change(stageOnly, 2119, "statistics", nil, 6, mechsuit.key).item, mechsuit.item,
+    "a statistic can be associated with a prerequisite item")
 stageOnly = run()
 equal(stageOnly.updated, 0, "reimporting the prerequisite snapshot does not update the mount")
 equal(stageOnly.unchanged, 1, "reimporting the prerequisite snapshot still matches the mount")
@@ -254,6 +318,18 @@ equal(empty.skipped, 51, "every incompatible source is counted")
 equal(#empty.skipEntries, 50, "saved skip details are bounded")
 equal(atlas.kills(rare), 3, "fractional spell ID does not match the mount")
 equal(atlas.rarityImportSummary().status, "empty", "empty remains distinct after reload")
+equal(#atlas.rarityImportSummary().changes, 0, "a completed empty import has no changes")
+
+do
+    local mounts = {}
+    for id = 20, 100 do mounts[id] = { type = "MOUNT", method = "NPC", spellId = 100 + id, attempts = 2 } end
+    Rarity.db.profile = { groups = { mounts = mounts } }
+    local many = run()
+    equal(many.updated, 81, "import more than 50 changed mounts")
+    for index, row in ipairs(many.changes) do equal(row.id, index + 19, "unique stable mount order") end
+    change(many, 100, "reward", 0, 2)
+    equal(#atlas.rarityImportSummary().changes, 81, "saved changes include every updated mount")
+end
 
 equal(#cageMounts, 3, "all three Rattling Iron Cage mounts are available")
 local cageHistory = { [611] = 18, [622] = 24, [643] = 31 }
@@ -316,6 +392,9 @@ equal(atlas.itemCollectionCount(reportedMounts[2176]), 2, "stack quantity from a
 local reported = run()
 equal(reported.count, 3, "both collection histories and the reviewed Rarity estimate import")
 equal(reported.skipped, 0, "matching imported counters are not skipped")
+equal(change(reported, 304, "reward", nil, 51).estimate, true, "the reviewed Rarity tally is an estimate")
+change(reported, 1507, "collection", nil, 10, catalog.attemptStages[1507].item.key)
+change(reported, 2176, "collection", 2, 10, catalog.attemptStages[2176].item.key)
 equal(atlas.rarityImportedCollection(reportedMounts[2176]), 10, "Alunira's imported item quantity")
 equal(atlas.itemCollectionCount(reportedMounts[2176]), 10, "native loot predating import is not added twice")
 equal(atlas.rarityImportedCollection(reportedMounts[1507]), 10, "Darkmaul's imported item quantity")
@@ -342,6 +421,7 @@ shard.method = "ZONE"
 reported = run()
 equal(reported.updated, 1, "separate Crackling Shard history imports for Alunira")
 equal(reported.skipped, 0, "both Alunira item histories import")
+change(reported, 2176, "stage", 0, 450, catalog.attemptStages[2176].item.key)
 equal(atlas.rarityImportedCollection(reportedMounts[2176]), 10, "item attempts do not replace the item quantity")
 equal(atlas.itemAttemptProgress(reportedMounts[2176]).attempts, 450, "shard attempts use the zone counter")
 equal(atlas.kills(reportedMounts[2176]), 0, "shard and inventory counts are separate from mount kills")
@@ -366,7 +446,9 @@ equal(atlas.itemAttemptProgress(reportedMounts[2176]).collected, 4, "current inv
 reportedProfile.groups.mounts[3].attempts = 12
 equal(run().updated, 0, "Rarity can already include the same native receipts")
 reportedProfile.groups.mounts[3].attempts = 14
-equal(run().updated, 1, "larger Rarity item snapshot replaces the floor")
+local raisedCollection = run()
+equal(raisedCollection.updated, 1, "larger Rarity item snapshot replaces the floor")
+change(raisedCollection, 2176, "collection", 12, 14, catalog.attemptStages[2176].item.key)
 equal(atlas.itemCollectionCount(reportedMounts[2176]), 14, "larger snapshot does not add the same native receipts")
 lootMessage(oneShard, 104)
 equal(atlas.itemCollectionCount(reportedMounts[2176]), 15, "loot advances the rebased item history")
@@ -376,6 +458,15 @@ lootMessage(LOOT_ITEM_SELF:format(itemLink(claw)), 105)
 equal(atlas.itemCollectionCount({ id = 624 }), 1, "shared reagent receipt is tracked for the first mount")
 equal(atlas.itemCollectionCount({ id = 765 }), 1, "shared reagent receipt is tracked once for both mounts")
 equal(MountAtlasAccountDB.characters[player].collectionItems[claw], 1, "the native receipt is keyed by reagent ID")
+do
+    local definitions = catalog.attemptStages[624]
+    table.insert(reportedProfile.groups.mounts, { type = "MOUNT", method = "COLLECTION", spellId = 724,
+        itemId = definitions.reward.item, collectedItemId = claw, attempts = 1 })
+    local confirmed = run()
+    equal(confirmed.updated, 1, "the first matching collection snapshot is saved")
+    change(confirmed, 624, "collection", 1, 1, definitions.item.key)
+    equal(run().updated, 0, "reimport does not report the same collection confirmation again")
+end
 
 local aggregate = catalog.attemptStages[488]
 local components = copy(aggregate.item.collectedItems)
@@ -551,7 +642,9 @@ do
     equal(run().updated, 0, "Rarity's matching new events do not count twice")
     equal(attempts(1212), 28, "a partially overlapping snapshot preserves the extra local attempt")
     sources[1212].attempts = 32
-    equal(run().updated, 1, "a larger snapshot updates only its mount")
+    local raisedIsland = run()
+    equal(raisedIsland.updated, 1, "a larger snapshot updates only its mount")
+    change(raisedIsland, 1212, "island", 28, 32)
     equal(attempts(1212), 32, "larger Rarity snapshots reconcile by their maximum possible overlap")
 
     local removed = "Player-island-alt"
@@ -619,10 +712,13 @@ stageEvent("PLAYER_ENTERING_WORLD")
 local cache = { type = "MOUNT", method = "SPECIAL", spellId = 342335, itemId = 183741, attempts = 3 }
 Rarity.db.profile.groups = { mounts = { [ascended.name] = cache } }
 local function afterNativeCache(instance)
+    local previousMessages = #cacheMessages
     lootSource = "GameObject-0-1-2-3-354175-" .. instance
     stageEvent("LOOT_READY")
     stageEvent("LOOT_OPENED", true, false)
+    equal(#cacheMessages, previousMessages, "recording an opening does not print over its loot")
     stageEvent("LOOT_CLOSED")
+    drain()
 end
 local function cacheAttempts(raw, expected, message)
     equal(atlas.rawStageAttempts(ascendedKey), raw, "local cache attempts")
@@ -654,4 +750,199 @@ cacheAttempts(3, 5, "22.62%")
 equal(run().updated, 0, "a Rarity update after PawAtlas also overlaps on reimport")
 equal(#cacheMessages, 3, "each opening writes its own PawAtlas message once")
 
-print("PawAtlas Rarity import passed: account history, idempotence, profile changes, skips, reset, cages, eggs, collections, events and chest attempts")
+do
+    local spells = { [1199] = 288438, [1203] = 288503, [1205] = 288505 }
+    local previousGetMountInfo = C_MountJournal.GetMountInfoByID
+    C_MountJournal.GetMountInfoByID = function(id)
+        if spells[id] then return "Mount " .. id, spells[id] end
+        return previousGetMountInfo(id)
+    end
+    local previousFaction = UnitFactionGroup
+    local faction = "Alliance"
+    UnitFactionGroup = function() return faction end
+    local mounts, sources, rows = {}, {}, {}
+    for _, mount in ipairs(catalog.rares) do
+        local id = mount.id
+        if spells[id] then
+            atlas.mounts[#atlas.mounts + 1] = mount
+            atlas.attemptStages[id] = catalog.attemptStages[id]
+            atlas.lootItems[id] = catalog.lootItems[id]
+            mounts[id] = mount
+            local variants = assert(atlas.rarityFactionRewardVariants(id))
+            local first = { type = "MOUNT", method = "NPC", spellId = spells[id], itemId = variants[1].item,
+                npcs = variants[1].npcs, attempts = 8, found = true, realAttempts = 7 }
+            local second = { type = "MOUNT", method = "NPC", itemId = variants[2].item,
+                npcs = variants[2].npcs, attempts = 5 }
+            local duplicate = copy(first)
+            duplicate.attempts = 6
+            duplicate.spellId = nil
+            sources[id] = { first, second }
+            for _, row in ipairs({ first, second, duplicate }) do rows[#rows + 1] = row end
+            for _, variant in ipairs(variants) do atlas.lootByNPC[variant.npcs[1]] = { mount } end
+        end
+    end
+    local entries = MountAtlasAccountDB.rarityImport.entries
+    local acquisitions = MountAtlasAccountDB.acquisitionAttempts or {}
+    MountAtlasAccountDB.acquisitionAttempts = acquisitions
+    entries[1199] = { total = 8, source = 8, deltaByGUID = {} }
+    acquisitions["mount:1199"] = { attempts = 7, source = "rarity" }
+    entries[1203] = { total = 17, source = 9, deltaByGUID = { [player] = 1 } }
+    local wrongNPC = copy(sources[1199][1])
+    wrongNPC.npcs, wrongNPC.attempts = sources[1199][2].npcs, 90
+    rows[#rows + 1] = wrongNPC
+    rows[#rows + 1] = { type = "MOUNT", method = "NPC", spellId = spells[1199], attempts = 80 }
+    rows[#rows + 1] = { type = "MOUNT", method = "NPC", spellId = 101, itemId = sources[1199][1].itemId, attempts = 120 }
+
+    Rarity.db.profile = { groups = { mounts = rows } }
+    local merged = run()
+    equal(merged.count, 3, "one result per faction mount")
+    equal(merged.skipReasons.unit_mismatch, 3, "skip spell-only, wrong spell and mismatched NPC records")
+    change(merged, 1199, "reward", 8, 13)
+    change(merged, 1205, "reward", 0, 13)
+    equal(atlas.kills(mounts[1203]), 18, "an older, larger max-floor and delta are still valid lower bounds")
+    equal(atlas.acquisitionAttempts("mount:1199"), nil, "the old Rarity award is a faction-specific count")
+    equal(atlas.acquisitionAttempts("mount:1205"), nil, "one faction's successful roll does not freeze account attempts")
+    equal(run().updated, 0, "the two faction histories and duplicates reimport without growth")
+
+    local kill = sources[1199][1]
+    lootSource = "Creature-0-1-2-3-" .. kill.npcs[1] .. "-201"
+    trackingEvents.LOOT_OPENED("LOOT_OPENED", false, false)
+    equal(atlas.rawKills(mounts[1199]), 1, "creature loot increments the normal local counter")
+    equal(atlas.kills(mounts[1199]), 14, "new eligible local loot is added to both imported histories")
+    Rarity.db.profile.groups.mounts = { sources[1199][2] }
+    equal(run().updated, 0, "a partial import keeps the absent faction and its local attempt")
+    equal(atlas.kills(mounts[1199]), 14, "partial snapshot total")
+    kill.attempts = 9
+    Rarity.db.profile.groups.mounts = { kill, sources[1199][2] }
+    equal(run().updated, 0, "the Rarity snapshot can already include the same kill")
+    equal(atlas.kills(mounts[1199]), 14, "same-faction overlap and reimport are idempotent")
+    equal(run().updated, 0, "repeated coverage does not consume a future kill")
+
+    lootSource = "Creature-0-1-2-3-" .. kill.npcs[1] .. "-202"
+    trackingEvents.LOOT_OPENED("LOOT_OPENED", false, false)
+    equal(atlas.kills(mounts[1199]), 15, "subsequent local loot is still counted")
+    sources[1199][2].attempts = 6
+    Rarity.db.profile.groups.mounts = { sources[1199][2] }
+    change(run(), 1199, "reward", 15, 16)
+    equal(atlas.kills(mounts[1199]), 16, "growth in the other faction cannot consume the local kill")
+    equal(run().updated, 0, "the changed partial snapshot is stable when repeated")
+    kill.attempts = 10
+    Rarity.db.profile.groups.mounts = { kill }
+    equal(run().updated, 0, "the original faction absorbs the outstanding attempt")
+    equal(atlas.kills(mounts[1199]), 16, "reconciled faction total")
+
+    local largeFloor = sources[1203][1]
+    faction = "Horde"
+    lootSource = "Creature-0-1-2-3-" .. largeFloor.npcs[1] .. "-203"
+    trackingEvents.LOOT_OPENED("LOOT_OPENED", false, false)
+    equal(atlas.kills(mounts[1203]), 19, "new loot advances even a historical max floor")
+    largeFloor.attempts = 9
+    Rarity.db.profile.groups.mounts = { largeFloor }
+    equal(run().updated, 0, "a reconciled local kill remains beyond the larger legacy floor")
+    equal(atlas.kills(mounts[1203]), 19, "no local kill is lost when Rarity catches up")
+
+    local alt = "Player-faction-alt"
+    MountAtlasAccountDB.characters[alt] = { kills = { [mounts[1205].countKey or "1205"] = 1 } }
+    atlas.recordImportedAttempt(mounts[1205], alt, sources[1205][2].npcs[1])
+    equal(atlas.kills(mounts[1205]), 14, "a local character contributes to its faction history")
+    assert(atlas.removeAccountCharacter(alt))
+    equal(atlas.kills(mounts[1205]), 13, "removing the character leaves the imported history intact")
+
+    assert(atlas.clearRarityImport())
+    local function lootRare(npc, instance)
+        lootSource = "Creature-0-1-2-3-" .. npc .. "-" .. instance
+        trackingEvents.LOOT_OPENED("LOOT_OPENED", false, false)
+    end
+    faction = "Alliance"
+    local kaldoreiAlliance, kaldoreiHorde = unpack(sources[1205])
+    for instance = 301, 303 do lootRare(kaldoreiAlliance.npcs[1], instance) end
+    equal(atlas.rawKills(mounts[1205]), 3, "local kills accumulate before any import")
+    equal(MountAtlasAccountDB.rarityImport, nil, "local kills do not create a Rarity import")
+    Rarity.db.profile.groups.mounts = { kaldoreiHorde }
+    change(run(), 1205, "reward", 3, 8)
+    equal(atlas.kills(mounts[1205]), 8, "three proven Alliance kills and five Horde kills are independent")
+    equal(run().updated, 0, "the same partial snapshot stays at eight")
+    assert(atlas.clearRarityImport())
+    equal(atlas.kills(mounts[1205]), 3, "clearing the import leaves the local attempts intact")
+    change(run(), 1205, "reward", 3, 8)
+    equal(atlas.rawKills(mounts[1205]), 3, "reimport leaves the raw counter intact")
+
+    local coveredAlt = "Player-faction-covered-alt"
+    local countKey = mounts[1205].countKey or "1205"
+    MountAtlasAccountDB.characters[coveredAlt] = { kills = { [countKey] = 1 } }
+    atlas.recordImportedAttempt(mounts[1205], coveredAlt, kaldoreiHorde.npcs[1])
+    kaldoreiHorde.attempts = 6
+    equal(run().updated, 0, "a new snapshot can cover the alt's local kill")
+    assert(atlas.removeAccountCharacter(coveredAlt))
+    equal(atlas.kills(mounts[1205]), 9, "removing the covered alt keeps import and the other faction's local history")
+    faction = "Horde"
+    lootRare(kaldoreiHorde.npcs[1], 304)
+    equal(atlas.kills(mounts[1205]), 10, "removed coverage cannot consume a later kill")
+    local localKills = MountAtlasAccountDB.characters[player].kills
+    localKills[countKey] = localKills[countKey] + 8
+    equal(atlas.kills(mounts[1205]), 12, "unattributed older local kills remain an independent lower bound")
+    equal(atlas.rawKills(mounts[1205]), 12, "the old raw history remains intact")
+
+    faction = "Alliance"
+    local umberHorde, umberAlliance = unpack(sources[1203])
+    umberHorde.attempts, umberAlliance.attempts = 5, 10
+    Rarity.db.profile.groups.mounts = { umberHorde }
+    change(run(), 1203, "reward", 1, 5)
+    lootRare(umberAlliance.npcs[1], 305)
+    equal(atlas.kills(mounts[1203]), 6, "a new Alliance kill is beyond the Horde-only import")
+    Rarity.db.profile.groups.mounts = { umberAlliance }
+    change(run(), 1203, "reward", 6, 15)
+    equal(atlas.kills(mounts[1203]), 15, "the first Alliance snapshot can already cover the Alliance kill")
+    equal(run().updated, 0, "reimporting the first Alliance snapshot keeps its overlap")
+    UnitFactionGroup = previousFaction
+end
+
+do
+    local ids = { 1776, 1777, 1778, 1779, 1781, 1782, 1783 }
+    local rows, entries, original = {}, MountAtlasAccountDB.rarityImport.entries, {}
+    local records, character = MountAtlasAccountDB.acquisitionAttempts, MountAtlasAccountDB.characters[player]
+    atlas.timeRiftSources = catalog.timeRiftSources
+    for _, id in ipairs(ids) do
+        local definitions = catalog.attemptStages[id]
+        local reward = definitions.reward
+        atlas.mounts[#atlas.mounts + 1] = { id = id, journalOnly = true }
+        atlas.attemptStages[id], atlas.lootItems[id] = definitions, catalog.lootItems[id]
+        rows[#rows + 1] = { type = "MOUNT", method = "USE", itemId = reward.item, items = { 207583 },
+            attempts = 44, realAttempts = 34, found = true }
+        local legacy = { total = 36, source = 36, deltaByGUID = { [player] = 3 } }
+        local receipt = { attempts = 35, source = "rarity", item = reward.item }
+        entries[reward.key], entries[id], records[reward.key] = legacy, copy(legacy), receipt
+        original[id] = { legacy = copy(legacy), receipt = copy(receipt) }
+        character.stageAttempts[reward.key], character.stageAttempts["rift:" .. id] = 2, 1
+    end
+
+    Rarity.db.profile.groups.mounts = rows
+    local rifts = run()
+    equal(rifts.count, 0, "the mixed rift mount histories do not transfer")
+    equal(rifts.skipReasons.incompatible, #ids, "all seven rift rows have the existing incompatible reason")
+    for _, id in ipairs(ids) do
+        local mount = { id = id }
+        local reward = atlas.attemptStages[id].reward
+        local progress = atlas.timeRiftAttemptProgress(mount)
+        equal(progress.finals, 1, "preserve independent local finals")
+        equal(progress.boxes, 2, "preserve independently recorded box openings")
+        equal(atlas.withImportedAttempts({ id = reward.key }, 2), 2, "ignore an old imported stage floor")
+        equal(atlas.kills(mount), 0, "ignore the old imported mount floor")
+        equal(atlas.acquisitionAttempts(reward.key), nil, "skip the mixed success counter")
+        assert(same(original[id].legacy, entries[reward.key]), "the old stage entry remains saved")
+        assert(same(original[id].legacy, entries[id]), "the old mount entry remains saved")
+        assert(same(original[id].receipt, records[reward.key]), "the old reward result remains saved")
+        atlas.rememberAcquisition(reward.key, 1, reward.item, nil, true, nil, "riftFinal", 3)
+        equal(atlas.acquisitionAttempts(reward.key).attempts, 1, "the old mixed history does not hide verified local loot")
+    end
+    assert(atlas.clearRarityImport())
+    for _, id in ipairs(ids) do
+        local reward = atlas.attemptStages[id].reward
+        equal(atlas.acquisitionAttempts(reward.key).attempts, 1, "clearing imports preserves verified rift loot")
+        equal(atlas.timeRiftAttemptProgress({ id = id }).boxes, 2, "clearing imports preserves local box openings")
+    end
+    assert(atlas.clearAttemptStatistics())
+    equal(character.factionRewardAttempts, nil, "an explicit full statistics reset clears native source attribution")
+end
+
+print("PawAtlas Rarity import passed: account history, faction history, time rifts, idempotence, profile changes, skips, reset, cages, eggs, collections, events and chest attempts")

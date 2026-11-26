@@ -150,6 +150,7 @@ end
 
 local function setupResizeHandle(frame)
     local handle = CreateFrame("Button", nil, frame)
+    frame.resizeHandle = handle
     handle:SetSize(14, 14)
     handle:SetFrameLevel(frame:GetFrameLevel() + 5)
     local marks = {}
@@ -175,11 +176,13 @@ local function setupResizeHandle(frame)
     handle:SetScript("OnEnter", function()
         for _, stroke in ipairs(marks) do stroke:SetColorTexture(unpack(ui.gold)) end
     end)
-    handle:SetScript("OnLeave", function()
+    local function clearHover()
         for _, stroke in ipairs(marks) do stroke:SetColorTexture(unpack(ui.muted)) end
-    end)
+    end
+    handle:SetScript("OnLeave", clearHover)
+    handle:SetScript("OnHide", clearHover)
     handle:SetScript("OnMouseDown", function(_, button)
-        if button ~= "LeftButton" or frame.dragging or frame.resizing then return end
+        if button ~= "LeftButton" or not frame:IsResizable() or frame.dragging or frame.resizing then return end
         local left, top, bottom = frame:GetLeft(), frame:GetTop(), frame:GetBottom()
         if not (left and top and bottom) then return end
         local minimumW, maximumW, minimumH, maximumH = atlas.expeditionSizeLimits()
@@ -198,7 +201,12 @@ local function setupResizeHandle(frame)
 end
 
 local function applyPin(frame, pinned)
-    if pinned then stopMoving(frame) end
+    if pinned then
+        stopResizing(frame)
+        stopMoving(frame)
+    end
+    frame:SetResizable(not pinned)
+    frame.resizeHandle:SetShown(not pinned)
     ui.setIcon(frame.lockIcon, pinned and "Lock" or "Unlock")
     frame.lockIcon:SetDesaturated(true)
     frame.lockIcon:SetVertexColor(unpack(pinned and ui.gold or ui.muted))
@@ -371,7 +379,6 @@ function atlas.createExpeditionWindow(name, onTargetClick)
     frame:SetFrameStrata("LOW")
     frame:SetClampedToScreen(true)
     frame:SetMovable(true)
-    frame:SetResizable(true)
     frame:EnableMouse(true)
     frame.background = CreateFrame("Frame", nil, frame)
     frame.background:SetAllPoints(frame)

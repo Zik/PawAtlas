@@ -592,6 +592,7 @@ function atlas.clearAttemptStatistics()
         if type(character) == "table" then
             character.kills, character.statistics, character.stageAttempts = {}, {}, {}
             character.collectionItems = nil
+            character.factionRewardAttempts = nil
             character.islandExpeditionCompletions = nil
             character.bonusRolls = nil
             character.migrated = true
@@ -697,7 +698,7 @@ function atlas.dropProbability(mount, savedAttempts)
     return perAttempt, math.max(0, math.min(1, cumulative)), attempts
 end
 
-local function incrementLocal(mount, credited)
+local function incrementLocal(mount, credited, lootNPC)
     local record = characterCounts()
     local key = mount.countKey or tostring(mount.id)
     local count = record and record.kills[key]
@@ -706,9 +707,9 @@ local function incrementLocal(mount, credited)
     if record then
         record.kills[key] = count + 1
         credited[mount.id] = true
-        if atlas.recordImportedAttempt then atlas.recordImportedAttempt(mount, UnitGUID("player")) end
+        if atlas.recordImportedAttempt then atlas.recordImportedAttempt(mount, UnitGUID("player"), lootNPC) end
     end
-    if record and atlas.notifyMountAttempt then atlas.notifyMountAttempt(mount) end
+    if record and atlas.notifyMountAttempt then atlas.notifyMountAttempt(mount, lootNPC ~= nil) end
 end
 
 local function resetAt(frequency)
@@ -816,7 +817,7 @@ local function recordLoot(fallbackGUID)
                     retryStatistics = true
                 elseif (not atlas.isMountAttemptEligible or atlas.isMountAttemptEligible(mount, npc))
                     and (not expires or not active(previous, now)) then
-                    incrementLocal(mount, credited)
+                    incrementLocal(mount, credited, npc)
                     if expires then limits[key] = expires end
                     changed = true
                 end

@@ -106,6 +106,149 @@ local function makeReminderList(parent, x, label)
     return list
 end
 
+local function integrationLink(parent, label, color, onClick, withIcon)
+    local link = CreateFrame("Button", nil, parent)
+    link:SetHeight(28)
+    local caption = ui.text(link, 0, 0, 0, 28, 14, label, color)
+    caption:SetWordWrap(false)
+    local icon = withIcon and link:CreateTexture(nil, "ARTWORK")
+    if icon then ui.place(icon, link, 0, 5, 18, 18) end
+    local line = link:CreateTexture(nil, "ARTWORK")
+    line:SetPoint("BOTTOMLEFT", link, "BOTTOMLEFT")
+    line:SetPoint("BOTTOMRIGHT", link, "BOTTOMRIGHT")
+    line:SetHeight(1)
+    local selected, hovered = false, false
+    local function paint()
+        local tint = selected and ui.gold or hovered and ui.paper or color
+        caption:SetTextColor(unpack(tint))
+        line:SetColorTexture(unpack(tint))
+        line:SetShown(selected or (hovered and link:IsEnabled()))
+    end
+    function link:setActive(active)
+        selected = active
+        paint()
+    end
+    function link:fit(showIcon)
+        if icon then icon:SetShown(showIcon) end
+        local inset = showIcon and 21 or 0
+        local width = math.ceil(caption:GetUnboundedStringWidth()) + 2
+        caption:ClearAllPoints()
+        ui.place(caption, self, inset, 0, width, 28)
+        self:SetWidth(inset + width)
+    end
+    link:SetHitRectInsets(-3, -3, 0, 0)
+    link:SetScript("OnClick", onClick)
+    link:SetScript("OnEnter", function() hovered = link:IsEnabled(); paint() end)
+    local function leave() hovered = false; paint() end
+    link:SetScript("OnLeave", leave)
+    link:SetScript("OnHide", leave)
+    link:SetScript("OnDisable", leave)
+    link:fit(withIcon)
+    paint()
+    return link, icon
+end
+
+local function makeImportSummary(parent)
+    local overlay, dialog = ui.journalDialog(parent, "MountAtlasImportSummary", 610, 380, true)
+    ui.text(dialog, 22, 12, 232, 32, 20, "Сводка", ui.gold)
+    local count = ui.text(dialog, 258, 14, 284, 28, 13, "", ui.muted)
+    count:SetJustifyH("RIGHT")
+    ui.action(dialog, 553, 12, 35, 30, nil, "Close", function() overlay:Hide() end)
+    ui.fill(dialog, 22, 51, 566, 1, ui.rule)
+    ui.text(dialog, 24, 57, 342, 22, 13, "Маунт", ui.muted)
+    local function column(frame, x, y, height, label, color)
+        local text = ui.text(frame, x, y, 82, height, 14, label, color)
+        text:SetJustifyH("RIGHT")
+        return text
+    end
+    column(dialog, 388, 57, 22, "Было", ui.muted)
+    column(dialog, 478, 57, 22, "Стало", ui.muted)
+    local list = ui.scrollingList(dialog, 22, 84, 566, 44, 6)
+    local function hideTooltip(row)
+        if GameTooltip:IsOwned(row) then GameTooltip:Hide() end
+    end
+    local function showTooltip(row)
+        if not (row.name:IsShown() and row.name:IsTruncated()) and not row.metric:IsTruncated() then
+            hideTooltip(row)
+            return
+        end
+        GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
+        ui.tooltipTitle(row.name:GetText())
+        ui.tooltipLine(row.metric:GetText(), ui.muted[1], ui.muted[2], ui.muted[3], true)
+        GameTooltip:Show()
+    end
+    for _, row in ipairs(list.rows) do
+        row:ClearHighlightTexture()
+        row.icon, row.iconBorder = ui.squareIcon(row, 2, 4, 32)
+        row.name = ui.text(row, 44, 1, 313, 20, 15, "", ui.paper)
+        row.name.atlasGameText = true
+        row.metric = ui.text(row, 44, 20, 313, 18, 12, "", ui.muted)
+        row.name:SetMaxLines(1)
+        row.metric:SetMaxLines(1)
+        row.before = column(row, 366, 0, 39, "", ui.muted)
+        row.after = column(row, 456, 0, 39, "", ui.mint)
+        ui.fill(row, 0, 39, 558, 1, ui.rule):SetAlpha(.55)
+        row:SetScript("OnEnter", showTooltip)
+        row:SetScript("OnLeave", hideTooltip)
+        row:SetScript("OnHide", hideTooltip)
+    end
+    function list:onClick() end
+    local labels = { reward = "Попытки", island = "Попытки", stage = "Попытки",
+        collection = "Сбор предметов", acquisition = "Попытка получения", statistics = "Статистика персонажей" }
+    function list:render(row, entry, index)
+        local value = entry.value
+        local metric = L(labels[value.kind])
+        if value.item and (value.role == "item" or value.kind == "collection" or value.kind == "stage") then
+            local definition = (atlas.attemptStages[entry.id] or {})[value.role or "item"]
+            local itemName = C_Item.GetItemInfo(value.item)
+            if not itemName and definition and definition.item == value.item then itemName = atlas.dataName(definition) end
+            if itemName ~= entry.name then metric = metric .. " · " .. (itemName or atlas.itemReferenceName(value.item)) end
+        end
+        if value.estimate then metric = metric .. " · " .. L("Приблизительно") end
+        local first = index == self.offset + 1 or self.items[index - 1].id ~= entry.id
+        row.name:SetText(entry.name)
+        row.name:SetShown(first)
+        row.icon:SetTexture(entry.icon or 132261)
+        row.icon:SetShown(first)
+        row.iconBorder:SetShown(first)
+        row.metric:ClearAllPoints()
+        row.metric:SetPoint("TOPLEFT", row, "TOPLEFT", 44, first and -20 or -10)
+        row.metric:SetText(metric)
+        row.before:SetText(value.before == nil and "—" or tostring(value.before))
+        row.after:SetText(tostring(value.after))
+        row.after:SetTextColor(unpack(value.before == value.after and ui.paper or ui.mint))
+        if row:IsVisible() and row:IsMouseOver() then showTooltip(row) end
+    end
+    function overlay:open(changes)
+        local mounts = {}
+        for _, change in ipairs(changes) do
+            local id = change.id
+            local name, _, icon = C_MountJournal.GetMountInfoByID(id)
+            local mount = atlas.mountByID(id)
+            mounts[#mounts + 1] = { id = id, name = name or (mount and atlas.displayMountName(mount)) or L("Маунт") .. " #" .. id,
+                icon = icon or (mount and mount.icon), values = change.values }
+        end
+        table.sort(mounts, function(a, b)
+            if a.name == b.name then return a.id < b.id end
+            return a.name < b.name
+        end)
+        list.items = {}
+        for _, mount in ipairs(mounts) do
+            for _, value in ipairs(mount.values) do
+                list.items[#list.items + 1] = { id = mount.id, name = mount.name, icon = mount.icon, value = value }
+            end
+        end
+        count:SetText(L("Обновлено маунтов: %d", #mounts))
+        local listHeight = 44 * math.min(#list.items, 6)
+        list:SetHeight(listHeight)
+        dialog:SetHeight(105 + listHeight)
+        list.offset = 0
+        list:redraw()
+        self:Show()
+    end
+    return overlay
+end
+
 function atlas.makeSettings(parent)
     local panel = CreateFrame("Frame", "MountAtlasSettings", parent)
     panel:Hide()
@@ -184,9 +327,11 @@ function atlas.makeSettings(parent)
     local characterCount = ui.text(account, 0, 99, 280, 34, 22, "", ui.gold)
     characterCount:SetMaxLines(1)
     ui.text(integrations, 0, 87, 440, 26, 17, "Rarity", ui.gold)
-    local importResult = ui.text(integrations, 0, 169, 550, 30, 15, "", ui.muted)
+    local importResult = ui.text(integrations, 0, 155, 410, 28, 14, "", ui.muted)
     importResult:SetMaxLines(1)
-    local importDetails = ui.place(CreateFrame("Frame", nil, integrations), integrations, 300, 204, 406, 249)
+    local integrationOptions = CreateFrame("Frame", nil, integrations)
+    integrationOptions:SetSize(706, 192)
+    local importDetails = ui.place(CreateFrame("Frame", nil, integrations), integrations, 0, 186, 406, 249)
     importDetails:SetFrameLevel(integrations:GetFrameLevel() + 8)
     importDetails:EnableMouse(true)
     ui.dropdownSurface(importDetails)
@@ -212,18 +357,28 @@ function atlas.makeSettings(parent)
         row.name:SetText(name and name:gsub("|", "||") or "—")
         row.reason:SetText(skipReasons[entry.reason] or skipReasons.incompatible)
     end
-    local detailsButton = ui.action(integrations, 570, 169, 136, 30, "Подробности", nil, function()
+    local detailsButton = integrationLink(integrations, "Подробности", ui.paper, function()
         importDetails:SetShown(not importDetails:IsShown())
     end)
     importDetails:SetScript("OnShow", function() detailsButton:setActive(true) end)
     importDetails:SetScript("OnHide", function() detailsButton:setActive(false) end)
     importDetails:Hide()
     detailsButton:Hide()
+    local summary, changes
+    local summaryButton = integrationLink(integrations, "Сводка", ui.paper, function()
+        if not changes then return end
+        importDetails:Hide()
+        if not summary then summary = makeImportSummary(panel) end
+        summary:open(changes)
+    end)
+    summaryButton:Hide()
     local shownEntries, shownSkipped
     local refreshImport, clearImportButton, clearAcceptButton, clearImportOnly
-    local importButton = ui.action(integrations, 0, 120, 224, 38, "Импорт из Rarity", nil, function()
+    local importButton = integrationLink(integrations, "Импорт из Rarity", ui.paper, function()
         if atlas.startRarityImport then atlas.startRarityImport(refreshImport) end
     end)
+    importButton:SetPoint("TOPLEFT", integrations, "TOPLEFT", 0, -117)
+    ui.fill(integrations, importButton:GetWidth() + 10, 124, 1, 14, ui.rule)
     refreshImport = function(state)
         state = state or (atlas.rarityImportProgress and atlas.rarityImportProgress())
         local running = state and state.running
@@ -239,6 +394,12 @@ function atlas.makeSettings(parent)
             clearAcceptButton:SetAlpha(canClearImport and 1 or .55)
         end
         local result = not running and (state and state.result or (atlas.rarityImportSummary and atlas.rarityImportSummary()))
+        local report = result
+        if report and (report.status == "error" or report.status == "unavailable") then report = atlas.rarityImportSummary() end
+        local nextChanges = report and report.changes
+        if changes ~= nextChanges and summary then summary:Hide() end
+        changes = nextChanges
+        summaryButton:SetShown(type(changes) == "table" and #changes > 0)
         local skipped = result and result.skipped or 0
         local entries = result and result.skipEntries or nil
         if shownEntries ~= entries or shownSkipped ~= skipped then
@@ -268,6 +429,17 @@ function atlas.makeSettings(parent)
             end
             importResult:SetText(message)
         end
+        local resultWidth = math.min(importResult:GetWidth(), math.ceil(importResult:GetUnboundedStringWidth()))
+        local x = resultWidth + 18
+        summaryButton:ClearAllPoints()
+        summaryButton:SetPoint("TOPLEFT", integrations, "TOPLEFT", x, -155)
+        if summaryButton:IsShown() then x = x + summaryButton:GetWidth() + 18 end
+        detailsButton:ClearAllPoints()
+        detailsButton:SetPoint("TOPLEFT", integrations, "TOPLEFT", x, -155)
+        importDetails:ClearAllPoints()
+        importDetails:SetPoint("TOPLEFT", integrations, "TOPLEFT", math.min(x, 300), -186)
+        integrationOptions:ClearAllPoints()
+        integrationOptions:SetPoint("TOPLEFT", integrations, "TOPLEFT", 0, resultWidth > 0 and -197 or -157)
     end
     local function showImportTooltip(self)
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
@@ -349,11 +521,17 @@ function atlas.makeSettings(parent)
         refreshImport()
         clearConfirm:Show()
     end
-    clearImportButton = ui.action(integrations, 470, 120, 236, 38, "Удалить импорт Rarity", nil, function() showClearConfirmation(true) end)
+    clearImportButton = integrationLink(integrations, "Удалить импорт Rarity", ui.muted, function() showClearConfirmation(true) end)
+    clearImportButton:SetPoint("LEFT", importButton, "RIGHT", 22, 0)
     ui.action(account, 480, 26, 226, 34, "Очистить всю статистику", nil, function() showClearConfirmation(false) end)
     clearConfirm:SetScript("OnHide", function() clearImportOnly = nil end)
     account:SetScript("OnHide", function() confirm:Hide(); clearConfirm:Hide() end)
-    integrations:SetScript("OnHide", function() clearConfirm:Hide(); importDetails:Hide() end)
+    integrations:HookScript("OnShow", function() refreshImport() end)
+    integrations:SetScript("OnHide", function()
+        clearConfirm:Hide()
+        importDetails:Hide()
+        if summary then summary:Hide() end
+    end)
     local characters = ui.scrollingList(account, 0, 170, 706, 42, 7)
     local function showVisibilityTooltip(button)
         local record = button:GetParent().item
@@ -384,7 +562,7 @@ function atlas.makeSettings(parent)
         row.visibility:ClearHighlightTexture()
         local eye = row.visibility:CreateTexture(nil, "ARTWORK")
         eye:SetPoint("CENTER")
-        eye:SetSize(18, 18)
+        eye:SetSize(22, 22)
         eye:SetVertexColor(.65, .65, .65)
         row.visibility.glyph = eye
         row.visibility:HookScript("OnEnter", showVisibilityTooltip)
@@ -412,8 +590,8 @@ function atlas.makeSettings(parent)
         if GameTooltip:IsOwned(row.visibility) then showVisibilityTooltip(row.visibility) end
     end
     atlas.refreshAccountSettings = function()
+        if integrations:IsVisible() then refreshImport() end
         if not account:IsVisible() then return end
-        refreshImport()
         characterCount:SetText(L("Учтено персонажей: %d", atlas.accountCharacterCount()))
         characters.items = atlas.accountCharacters(true)
         characters:redraw()
@@ -571,24 +749,31 @@ function atlas.makeSettings(parent)
         control:HookScript("OnHide", hide)
     end
     settingTooltip(gameTooltips, "Подсказки в игре", "Показывать в игровых подсказках информацию PawAtlas: связанного маунта, учтённые попытки и статус «В плане» или «В коллекции».")
-    ui.fill(integrations, 0, 222, 706, 1, ui.rule):SetAlpha(.65)
-    ui.text(integrations, 0, 234, 690, 26, 17, "Интерфейс", ui.gold)
-    local minimap = ui.accountCheckbox(integrations, 0, 272, 338, "Значок миникарты", "minimapIcon")
+    ui.fill(integrationOptions, 0, 0, 706, 1, ui.rule):SetAlpha(.65)
+    ui.text(integrationOptions, 0, 12, 690, 26, 17, "Интерфейс", ui.gold)
+    local minimap = ui.accountCheckbox(integrationOptions, 0, 50, 338, "Значок миникарты", "minimapIcon")
     settingTooltip(minimap, "Значок миникарты", "ЛКМ — открыть / закрыть")
     minimap:SetScript("OnClick", function(self) atlas.setMinimapButtonShown(self:GetChecked() == true) end)
     atlas.refreshMinimapSetting = function(shown) minimap:SetChecked(shown) end
-    local compartment = ui.accountCheckbox(integrations, 368, 272, 338, "Меню модификаций", "addonCompartment")
+    local compartment = ui.accountCheckbox(integrationOptions, 368, 50, 338, "Меню модификаций", "addonCompartment")
     settingTooltip(compartment, "Меню модификаций", "ЛКМ — открыть / закрыть")
     compartment:SetScript("OnClick", function(self) atlas.setAddonCompartmentEnabled(self:GetChecked() == true) end)
-    ui.fill(integrations, 0, 322, 706, 1, ui.rule):SetAlpha(.65)
-    ui.text(integrations, 0, 334, 690, 26, 17, "Метки на карте", ui.gold)
-    local function chooseWaypoint(provider)
-        atlas.setWaypointProvider(provider)
-        atlas.refreshIntegrationSettings()
+    ui.fill(integrationOptions, 0, 100, 706, 1, ui.rule):SetAlpha(.65)
+    ui.text(integrationOptions, 0, 112, 690, 26, 17, "Метки на карте", ui.gold)
+    local function waypointChoice(label, provider)
+        return integrationLink(integrationOptions, label, ui.muted, function()
+            atlas.setWaypointProvider(provider)
+            atlas.refreshIntegrationSettings()
+        end, true)
     end
-    local wowWaypoints = ui.action(integrations, 0, 370, 158, 33, "Метки WoW", nil, function() chooseWaypoint("wow") end)
-    local tomTomWaypoints = ui.action(integrations, 169, 370, 158, 33, "TomTom", nil, function() chooseWaypoint("tomtom") end)
-    local waypointStatus = ui.text(integrations, 342, 366, 356, 40, 14, "", ui.muted)
+    local wowWaypoints, wowWaypointIcon = waypointChoice("Метки WoW", "wow")
+    wowWaypoints:SetPoint("TOPLEFT", integrationOptions, "TOPLEFT", 0, -146)
+    ui.setIcon(wowWaypointIcon, "Place")
+    local tomTomWaypoints, tomTomWaypointIcon = waypointChoice("TomTom", "tomtom")
+    tomTomWaypoints:SetPoint("LEFT", wowWaypoints, "RIGHT", 20, 0)
+    local waypointStatus = ui.text(integrationOptions, 0, 0, 398, 40, 14, "", ui.muted)
+    waypointStatus:ClearAllPoints()
+    waypointStatus:SetPoint("LEFT", tomTomWaypoints, "RIGHT", 20, 0)
     waypointStatus:SetMaxLines(2)
     atlas.refreshIntegrationSettings = function()
         compartment:SetChecked(atlas.addonCompartmentEnabled())
@@ -597,6 +782,11 @@ function atlas.makeSettings(parent)
         wowWaypoints:setActive(preference == "wow")
         tomTomWaypoints:setActive(preference == "tomtom")
         tomTomWaypoints:SetEnabled(available)
+        local logo = C_AddOns.DoesAddOnExist("TomTom") and C_AddOns.GetAddOnMetadata("TomTom", "IconTexture")
+        local hasLogo = type(logo) == "string" and logo ~= ""
+        tomTomWaypointIcon:SetTexture(hasLogo and logo or nil)
+        tomTomWaypoints:SetAlpha(available and 1 or .55)
+        tomTomWaypoints:fit(hasLogo)
         waypointStatus:SetText(available and "" or preference == "tomtom" and "TomTom недоступен. Используются метки WoW."
             or "TomTom недоступен")
     end

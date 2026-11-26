@@ -683,9 +683,11 @@ local function received(id, retry, fromLoot, skipToast, announceCollection)
     if announceCollection then atlas.notifyMountCollected(id, name) end
     if skipToast then return end
     if not readable(icon) or (type(icon) ~= "number" and type(icon) ~= "string") then icon = 132261 end
-    local acquired
-    for _, mount in ipairs(atlas.mounts) do
-        if mount.id == id then acquired = atlas.captureMountAcquisition(mount); break end
+    local acquired = atlas.acquisitionAttempts("mount:" .. id)
+    if not acquired then
+        for _, mount in ipairs(atlas.mounts) do
+            if mount.id == id then acquired = atlas.captureMountAcquisition(mount); break end
+        end
     end
     if fromLoot and collected ~= true then
         -- Keep the loot-to-learn deduplication across reloads and characters.
@@ -694,7 +696,7 @@ local function received(id, retry, fromLoot, skipToast, announceCollection)
         notifications[id] = true
         MountAtlasAccountDB.mountLootNotifications = notifications
     end
-    pending[#pending + 1] = { name = name, icon = icon, attempts = acquired and acquired.attempts }
+    pending[#pending + 1] = { name = name, icon = icon, attempts = acquired and (acquired.totalAttempts or acquired.attempts) }
     nextReward()
 end
 
