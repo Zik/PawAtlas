@@ -1,9 +1,9 @@
-# PawAtlas 0.3.27
+# PawAtlas 0.3.28
 
 ## RU
 
-🐾 Небольшие улучшения интерфейса.
+🐾 Небольшие исправления.
 
 ## EN
 
-🐾 Minor UI improvements.
+🐾 Minor fixes.

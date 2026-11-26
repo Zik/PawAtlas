@@ -77,13 +77,15 @@ local stage = { key = "mount:4", method = "ENCOUNTER", encounters = { 401 } }
 local stageRare = { key = "mount:6", method = "NPC", npcs = { 601 } }
 local statisticCatalog = {}
 assert(loadfile("Data/JournalData.lua"))("PawAtlas", statisticCatalog)
+local gorespineStage = statisticCatalog.attemptStages[1373].reward
+local gorespine = { id = 1373, countKey = "1373", name = gorespineStage.name, npcs = gorespineStage.npcs }
 local atlas = {
-    mounts = { boss, oldBoss, rare, { id = 4, journalOnly = true } },
-    attemptStages = { [4] = { reward = stage }, [6] = { reward = stageRare } },
+    mounts = { boss, oldBoss, rare, { id = 4, journalOnly = true }, gorespine },
+    attemptStages = { [4] = { reward = stage }, [6] = { reward = stageRare }, [1373] = { reward = gorespineStage } },
     killStatistics = { [1040] = { 12763 } },
     killStatisticSources = statisticCatalog.killStatisticSources,
-    lootByNPC = { [601] = { rare } },
-    lootFrequencies = {},
+    lootByNPC = { [601] = { rare }, [162690] = { gorespine } },
+    lootFrequencies = { [1373] = "daily" },
     lootItems = {},
     lootFrequency = function() return "weekly" end,
 }
@@ -211,6 +213,234 @@ equal(#snapshots, 2, "mass loot captures one planner snapshot")
 
 fire("UPDATE_INSTANCE_INFO")
 equal(snapshots[#snapshots], true, "raid data marks snapshots ready")
+
+do
+    local chat, timers = {}, {}
+    local previousTime = now
+    local oldGUID, oldDead, oldAttack, oldIsPlayer = UnitGUID, UnitIsDead, UnitCanAttack, UnitIsPlayer
+    local oldClassification, oldCanLoot, oldFishing = UnitClassification, CanLootUnit, IsFishingLoot
+    local oldSecret = issecretvalue
+    local oldJournal, oldFrame, oldAfter, oldDailyReset = C_MountJournal, DEFAULT_CHAT_FRAME, C_Timer.After, C_DateAndTime.GetSecondsUntilDailyReset
+    local settings = MountAtlasAccountDB.settings
+    local oldChat, oldFormat = settings.chatMessages, settings.chatMessageFormat
+    local target, mouseover, dead, hostile, playerTarget, hasLoot, canLoot, ownership
+    UnitGUID = function(unit)
+        if unit == "target" then return target end
+        if unit == "mouseover" then return mouseover end
+        return oldGUID(unit)
+    end
+    UnitIsDead = function(unit) return unit == "target" and dead end
+    UnitCanAttack = function(unit, other) return unit == "player" and other == "target" and hostile end
+    UnitIsPlayer = function(unit) return unit == "target" and playerTarget end
+    UnitClassification = function() return "rare" end
+    IsFishingLoot = function() return false end
+    local restrictedLoot = {}
+    issecretvalue = function(value) return value == restrictedLoot or (oldSecret and oldSecret(value)) end
+    CanLootUnit = function(guid)
+        if guid == target then return hasLoot, canLoot end
+    end
+    C_MountJournal = { GetMountInfoByID = function(id)
+        equal(id, gorespine.id, "only the attempted mount needs an ownership lookup")
+        return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, ownership
+    end }
+    DEFAULT_CHAT_FRAME = { AddMessage = function(_, line) chat[#chat + 1] = line end }
+    C_Timer.After = function(delay, callback)
+        if delay > 0 then timers[#timers + 1] = callback else oldAfter(delay, callback) end
+    end
+    C_DateAndTime.GetSecondsUntilDailyReset = function() return 3600 end
+    settings.chatMessages, settings.chatMessageFormat = true, "{mount} #{attempts}"
+
+    local first = "Creature-0-1-2-3-162690-000000001"
+    local second = "Creature-0-1-2-3-162690-000000002"
+    local other = "Creature-0-1-2-3-601-000000004"
+    local function selectCorpse(guid)
+        target, mouseover, dead, hostile, playerTarget = guid, guid, true, true, false
+        hasLoot, canLoot = true, true
+    end
+    local function finishAutoloot(fromItem, slots)
+        massLoot = slots or {}
+        fire("LOOT_OPENED", true, fromItem)
+        fire("LOOT_CLOSED")
+    end
+    local function autoloot(slots, fromItem, drained)
+        massLoot = slots
+        fire("LOOT_READY", true)
+        if drained then hasLoot, canLoot = false, false end
+        finishAutoloot(fromItem == true)
+    end
+
+    selectCorpse(first)
+    autoloot({ {} })
+    equal(atlas.rawKills(gorespine), 0, "matching target and cursor cannot credit another world loot window")
+
+    massLoot = { {} }
+    fire("LOOT_READY", true)
+    hasLoot, canLoot = nil, nil
+    finishAutoloot(false)
+    equal(atlas.rawKills(gorespine), 0, "unavailable loot state cannot prove the selected corpse was looted")
+
+    selectCorpse(first)
+    massLoot = { {} }
+    fire("LOOT_READY", true)
+    hasLoot, canLoot = restrictedLoot, restrictedLoot
+    fire("UNIT_LOOT", first, restrictedLoot)
+    finishAutoloot(false)
+    equal(atlas.rawKills(gorespine), 0, "restricted loot state cannot prove an attempt")
+
+    selectCorpse(first)
+    canLoot = restrictedLoot
+    autoloot({ {} }, false, true)
+    equal(atlas.rawKills(gorespine), 0, "depletion requires known personal loot access before it")
+
+    selectCorpse(first)
+    massLoot = { {} }
+    fire("LOOT_READY", true)
+    hasLoot, canLoot = false, false
+    fire("UNIT_LOOT", first, false)
+    fire("LOOT_CLOSED")
+    equal(atlas.rawKills(gorespine), 0, "depletion still needs a confirmed world loot window")
+
+    selectCorpse(first)
+    massLoot = { {}, {} }
+    fire("LOOT_READY", true)
+    fire("LOOT_READY", true)
+    equal(atlas.rawKills(gorespine), 0, "fallback waits for confirmed world loot")
+    hasLoot, canLoot = false, false
+    finishAutoloot(false)
+    fire("LOOT_CLOSED")
+    equal(atlas.rawKills(gorespine), 1, "autoloot credits the target corpse when source GUIDs are missing and slots are already clear")
+    equal(atlas.rawStageAttempts(gorespineStage.key), 0, "Gorespine keeps a single counter in Tracking")
+    equal(#chat, 0, "cold ownership defers the attempt message")
+    equal(#timers, 1, "the saved attempt schedules one chat retry")
+    ownership = false
+    timers[1]()
+    equal(chat[1], "Кровоспин #1", "the saved attempt announces without opening the catalog")
+
+    selectCorpse("Creature-0-1-2-3-162690-000000009")
+    autoloot({ {} }, false, true)
+    equal(atlas.rawKills(gorespine), 1, "a second corpse cannot bypass the daily limit")
+    equal(#chat, 1, "repeat delivery and a locked opening produce no additional message")
+    settings.chatMessages = false
+    now = now + 3601
+    selectCorpse(first)
+    autoloot({ { first, 1 } })
+    equal(atlas.rawKills(gorespine), 1, "the precise GUID cannot recredit the same corpse after the daily reset")
+
+    selectCorpse(second)
+    autoloot({ {} }, true, true)
+    equal(atlas.rawKills(gorespine), 1, "a container from the bag cannot use the corpse fallback")
+    selectCorpse(second)
+    autoloot({}, false, true)
+    equal(atlas.rawKills(gorespine), 1, "a loot window with no slots does not prove a corpse was looted")
+    selectCorpse(second)
+    massLoot = { {} }
+    fire("LOOT_READY", true)
+    hasLoot, canLoot = false, false
+    finishAutoloot(false, { { "GameObject-0-1-2-3-354175-000000021", 1 } })
+    equal(atlas.rawKills(gorespine), 1, "a different exact world source overrides a pending corpse fallback")
+
+    selectCorpse(second)
+    dead = false
+    autoloot({ {} }, false, true)
+    equal(atlas.rawKills(gorespine), 1, "pickpocketing a live target cannot count a corpse attempt")
+    selectCorpse(second)
+    dead, hostile = true, false
+    autoloot({ {} }, false, true)
+    equal(atlas.rawKills(gorespine), 1, "a non-attackable unit cannot stand in for a loot source")
+    selectCorpse(second)
+    canLoot = false
+    autoloot({ {} }, false, true)
+    equal(atlas.rawKills(gorespine), 1, "a corpse the player cannot loot is not evidence for the fallback")
+    selectCorpse(second)
+    mouseover = other
+    autoloot({ {} }, false, true)
+    equal(atlas.rawKills(gorespine), 1, "different target and mouseover GUIDs cannot identify one corpse")
+
+    selectCorpse(second)
+    massLoot = { {} }
+    fire("LOOT_READY", true)
+    selectCorpse(first)
+    fire("PLAYER_TARGET_CHANGED")
+    selectCorpse(second)
+    fire("PLAYER_TARGET_CHANGED")
+    hasLoot, canLoot = false, false
+    finishAutoloot(false)
+    equal(atlas.rawKills(gorespine), 1, "returning to a previous target cannot reuse stale loot evidence")
+
+    target, mouseover = nil, nil
+    autoloot({ {} })
+    equal(atlas.rawKills(gorespine), 1, "an empty source list without a corpse cannot add an attempt")
+    autoloot({ { second, 1, other, 1 }, { second, 1, other, 1 } })
+    equal(atlas.rawKills(gorespine), 2, "precise area loot counts a new corpse once without a target")
+    equal(atlas.rawStageAttempts(stageRare.key), 4, "the same area loot reaches stage-only mounts")
+
+    selectCorpse("Creature-0-1-2-3-601-000000005")
+    massLoot = {}
+    fire("LOOT_OPENED", true, false)
+    massLoot = { {} }
+    fire("LOOT_READY", true)
+    hasLoot, canLoot = false, false
+    fire("LOOT_CLOSED")
+    equal(atlas.rawStageAttempts(stageRare.key), 5, "stage-only mounts count when world confirmation arrives before the slots")
+
+    now = now + 3601
+    local third = "Creature-0-1-2-3-162690-000000003"
+    selectCorpse(third)
+    mouseover = nil
+    autoloot({ {} })
+    equal(atlas.rawKills(gorespine), 2, "a selected corpse alone does not identify the source of world loot")
+    massLoot = { {} }
+    fire("LOOT_READY", true)
+    massLoot = {}
+    fire("LOOT_OPENED", true, false)
+    equal(atlas.rawKills(gorespine), 2, "keyboard interaction waits for the selected corpse to lose loot")
+    hasLoot, canLoot = nil, nil
+    fire("UNIT_LOOT", other, false)
+    fire("LOOT_CLOSED")
+    equal(atlas.rawKills(gorespine), 2, "another corpse losing loot cannot confirm the selected target")
+
+    selectCorpse(third)
+    mouseover = nil
+    massLoot = { {} }
+    fire("LOOT_READY", true)
+    massLoot = {}
+    fire("LOOT_OPENED", true, false)
+    fire("UNIT_LOOT", third, false)
+    fire("LOOT_CLOSED")
+    equal(atlas.rawKills(gorespine), 2, "the selected corpse remaining lootable invalidates a depletion event")
+
+    massLoot = { {} }
+    fire("LOOT_READY", true)
+    massLoot = {}
+    fire("LOOT_OPENED", true, false)
+    hasLoot, canLoot = nil, nil
+    fire("UNIT_LOOT", third, false)
+    fire("UNIT_LOOT", third, true)
+    fire("LOOT_CLOSED")
+    equal(atlas.rawKills(gorespine), 2, "a later native lootable update cancels an earlier depletion event")
+
+    selectCorpse(third)
+    mouseover = nil
+    massLoot = { {} }
+    fire("LOOT_READY", true)
+    massLoot = {}
+    fire("LOOT_OPENED", true, false)
+    hasLoot, canLoot = nil, nil
+    fire("UNIT_LOOT", third, false)
+    fire("LOOT_CLOSED")
+    fire("UNIT_LOOT", third, false)
+    fire("LOOT_CLOSED")
+    equal(atlas.rawKills(gorespine), 3, "keyboard interaction can confirm the same selected corpse")
+
+    now, massLoot = previousTime, nil
+    UnitGUID, UnitIsDead, UnitCanAttack, UnitIsPlayer = oldGUID, oldDead, oldAttack, oldIsPlayer
+    UnitClassification, CanLootUnit, IsFishingLoot = oldClassification, oldCanLoot, oldFishing
+    issecretvalue = oldSecret
+    C_MountJournal, DEFAULT_CHAT_FRAME, C_Timer.After, C_DateAndTime.GetSecondsUntilDailyReset = oldJournal, oldFrame, oldAfter, oldDailyReset
+    settings.chatMessages, settings.chatMessageFormat = oldChat, oldFormat
+    print("PawAtlas creature loot passed: area loot, corpse fallback, deduplication, daily lock and chat")
+end
+
 do
     local chat, lookups, known = {}, 0, {}
     local settings = MountAtlasAccountDB.settings
@@ -920,6 +1150,122 @@ do
         equal(testAtlas.rawStageAttempts("mount:1426"), 6 + index, "a later LOOT_OPENED cannot recount confirmed autoloot")
         event("LOOT_CLOSED")
     end
+
+    -- The world-cursor title can disappear as soon as the player clicks the chest.
+    -- Start and loot events still arrive while the catalog is closed.
+    account.settings.chatMessages = true
+    env.GameTooltip = { IsShown = function() return tooltip ~= nil end }
+    sceneTime = sceneTime + 3601
+    local cacheKey = "mount:1426"
+    local previousAttempts, previousMessages = testAtlas.rawStageAttempts(cacheKey), #messages
+    local function hoverCache()
+        cursorType, cursorName = env.Enum.TooltipDataType.Object, nearChest
+        event("CURSOR_CHANGED")
+    end
+    local function startWithHiddenCursor(guid, castBarID)
+        cursorName = nil
+        event("UNIT_SPELLCAST_START", "player", guid, 3365, castBarID)
+    end
+
+    hoverCache()
+    startWithHiddenCursor("Cast-cache-autoloot")
+    event("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-cache-autoloot", 3365)
+    lootSlotsWithoutSource = 2
+    event("LOOT_READY", true)
+    equal(testAtlas.rawStageAttempts(cacheKey), previousAttempts, "cursor fallback needs world-loot confirmation")
+    lootSlotsWithoutSource = 0
+    event("LOOT_OPENED", true, false)
+    equal(testAtlas.rawStageAttempts(cacheKey), previousAttempts + 1, "cached object title identifies the chest when autoloot clears the slots")
+    event("LOOT_READY", true)
+    event("LOOT_OPENED", true, false)
+    event("LOOT_CLOSED")
+    equal(testAtlas.rawStageAttempts(cacheKey), previousAttempts + 1, "repeated events count the chest only once")
+    equal(#messages, previousMessages + 1, "the cached title path announces the attempt once")
+
+    hoverCache()
+    startWithHiddenCursor("Cast-cache-daily-lock")
+    event("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-cache-daily-lock", 3365)
+    lootSlotsWithoutSource = 2
+    event("LOOT_OPENED", false, false)
+    equal(testAtlas.rawStageAttempts(cacheKey), previousAttempts + 1, "the cached title path respects the daily lock")
+    event("LOOT_CLOSED")
+
+    sceneTime = sceneTime + 3601
+    hoverCache()
+    startWithHiddenCursor("Cast-item-after-cache-hover")
+    event("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-item-after-cache-hover", 3365)
+    event("LOOT_READY", true)
+    event("LOOT_OPENED", true, true)
+    event("LOOT_CLOSED")
+    equal(testAtlas.rawStageAttempts(cacheKey), previousAttempts + 1, "item-container loot cannot use a recent chest title")
+
+    for _, cursor in ipairs({ { 2, nearChest }, { env.Enum.TooltipDataType.Object, "Other chest" } }) do
+        hoverCache()
+        cursorType, cursorName = unpack(cursor)
+        event("CURSOR_CHANGED")
+        startWithHiddenCursor("Cast-after-cursor-change")
+        event("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-after-cursor-change", 3365)
+        event("LOOT_OPENED", false, false)
+        event("LOOT_CLOSED")
+        equal(testAtlas.rawStageAttempts(cacheKey), previousAttempts + 1, "a newer cursor target replaces the cached chest title")
+    end
+
+    hoverCache()
+    sceneTime = sceneTime + 30
+    startWithHiddenCursor("Cast-after-old-cache-hover")
+    event("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-after-old-cache-hover", 3365)
+    event("LOOT_OPENED", false, false)
+    event("LOOT_CLOSED")
+    equal(testAtlas.rawStageAttempts(cacheKey), previousAttempts + 1, "an old cursor title cannot identify the chest")
+
+    hoverCache()
+    startWithHiddenCursor("Cast-cache-with-other-source")
+    event("UNIT_SPELLCAST_SUCCEEDED", "player", "Cast-cache-with-other-source", 3365)
+    event("LOOT_READY")
+    source = "GameObject-0-1-2-3-465242-000000009"
+    event("LOOT_OPENED", false, false)
+    event("LOOT_CLOSED")
+    equal(testAtlas.rawStageAttempts(cacheKey), previousAttempts + 1, "a different object GUID overrides the cached chest title")
+
+    local restrictedGUID = {}
+    env.issecretvalue = function(value) return value == restrictedGUID end
+    source = nil
+    hoverCache()
+    startWithHiddenCursor(restrictedGUID, 7)
+    event("LOOT_OPENED", false, false)
+    event("UNIT_SPELLCAST_INTERRUPTED", "player", restrictedGUID, 3365, "Creature-0-1-2-3-12345-000000007", 8)
+    equal(testAtlas.rawStageAttempts(cacheKey), previousAttempts + 1, "world loot waits for a successful opening")
+    event("UNIT_SPELLCAST_SUCCEEDED", "player", restrictedGUID, 3365, 7)
+    equal(testAtlas.rawStageAttempts(cacheKey), previousAttempts + 2, "cast bar ID confirms the same opening when the GUID is restricted")
+    event("LOOT_CLOSED")
+
+    sceneTime = sceneTime + 3601
+    hoverCache()
+    startWithHiddenCursor(restrictedGUID, 9)
+    event("UNIT_SPELLCAST_INTERRUPTED", "player", restrictedGUID, 3365, "Creature-0-1-2-3-12345-000000007", 9)
+    event("UNIT_SPELLCAST_SUCCEEDED", "player", restrictedGUID, 3365, 9)
+    event("LOOT_OPENED", false, false)
+    event("LOOT_CLOSED")
+    equal(testAtlas.rawStageAttempts(cacheKey), previousAttempts + 2, "interruption clears an opening identified by cast bar ID")
+
+    local restrictedTarget = {}
+    env.issecretvalue = function(value) return value == restrictedTarget end
+    local function openWithRestrictedTarget(guid)
+        event("UNIT_SPELLCAST_SENT", "player", restrictedTarget, guid, 3365)
+        startWithHiddenCursor(guid)
+        event("UNIT_SPELLCAST_SUCCEEDED", "player", guid, 3365)
+        event("LOOT_READY", true)
+        equal(testAtlas.rawStageAttempts(cacheKey), previousAttempts + 2, "a restricted cast target still needs world loot")
+        event("LOOT_OPENED", true, false)
+        event("LOOT_CLOSED")
+    end
+    tooltip = nearChest
+    openWithRestrictedTarget("Cast-cache-untyped-cursor")
+    equal(testAtlas.rawStageAttempts(cacheKey), previousAttempts + 2, "an untyped tooltip cannot replace a restricted cast target")
+    tooltip = nil
+    hoverCache()
+    openWithRestrictedTarget("Cast-cache-restricted-target")
+    equal(testAtlas.rawStageAttempts(cacheKey), previousAttempts + 3, "a typed cursor sample identifies a chest when the cast target is restricted")
     print("PawAtlas attempt events passed: collection messages, figurines, cache identity and deduplication")
 end
 

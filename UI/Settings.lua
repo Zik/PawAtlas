@@ -1,6 +1,7 @@
 local addonName, atlas = ...
 local ui = atlas.ui
 local L = atlas.L
+local controls = "Interface\\AddOns\\PawAtlas\\Media\\Controls\\"
 local projectURL = "https://github.com/Zik/PawAtlas"
 local projectPopup = "PAWATLAS_PROJECT_URL"
 StaticPopupDialogs[projectPopup] = {
@@ -383,15 +384,9 @@ function atlas.makeSettings(parent)
         row.visibility:ClearHighlightTexture()
         local eye = row.visibility:CreateTexture(nil, "ARTWORK")
         eye:SetPoint("CENTER")
-        eye:SetSize(16, 17)
-        eye:SetAtlas("friends-icon-eye")
+        eye:SetSize(18, 18)
+        eye:SetVertexColor(.65, .65, .65)
         row.visibility.glyph = eye
-        local slash = row.visibility:CreateTexture(nil, "OVERLAY")
-        slash:SetPoint("CENTER")
-        slash:SetSize(19, 2)
-        slash:SetColorTexture(unpack(ui.muted))
-        slash:SetRotation(math.pi / 4)
-        row.visibility.slash = slash
         row.visibility:HookScript("OnEnter", showVisibilityTooltip)
         row.visibility:HookScript("OnLeave", hideVisibilityTooltip)
         row.visibility:HookScript("OnHide", hideVisibilityTooltip)
@@ -413,8 +408,7 @@ function atlas.makeSettings(parent)
         ui.setCharacterClassIcon(row.icon, record)
         row.realm:SetText(record.realm)
         row.level:SetText(record.level or "—")
-        row.visibility.glyph:SetAlpha(hidden and .5 or 1)
-        row.visibility.slash:SetShown(hidden)
+        row.visibility.glyph:SetTexture(controls .. (hidden and "VisibilityOff.tga" or "VisibilityOn.tga"))
         if GameTooltip:IsOwned(row.visibility) then showVisibilityTooltip(row.visibility) end
     end
     atlas.refreshAccountSettings = function()

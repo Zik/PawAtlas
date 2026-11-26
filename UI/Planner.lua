@@ -19,8 +19,10 @@ local function setRosterIcon(icon, character)
         icon:SetWidth(size)
         ui.setCharacterClassIcon(icon, character)
     else
-        icon:SetWidth(size * 23 / 31)
-        icon:SetAtlas("warbands-icon", false)
+        icon:SetWidth(size * 43 / 49)
+        -- Trim the transparent padding of the first campfire cell in UIWarbandsIcons2x.
+        icon:SetTexture(5855107)
+        icon:SetTexCoord(2 / 128, 45 / 128, 4 / 64, 53 / 64)
     end
 end
 

@@ -10,7 +10,8 @@ local mountsByID = {}
 local interactions, archaeology, visits, gossipOpen = {}, {}, {}, {}
 local ready, lootCounted, itemLootUntil, enteredWorld = false, false, 0, false
 local itemLootOpen, itemLootSettled = false, false
-local cast, lastNode, notificationGuard
+local cast, lastNode, openingHover, notificationGuard
+local creatureLoot
 local recentEvents = {}
 local pendingStageMessages = {}
 local pendingAcquisitions = {}
@@ -404,7 +405,7 @@ function atlas.isMountAttemptEligible(mount, npc)
 end
 
 function atlas.shouldCountCreatureLoot()
-    if safe(IsFishingLoot) == true then return false end
+    if itemLootOpen or next(interactions) or safe(IsFishingLoot) == true then return false end
     return not (cast and cast.expires > now() and cast.kind ~= "Fishing")
 end
 
@@ -1207,6 +1208,8 @@ end
 
 local function beginBlockedInteraction(kind)
     interactions[kind] = true
+    openingHover = nil
+    if creatureLoot then creatureLoot = false end
     pendingUses, itemLootUntil, itemLootOpen, itemLootSettled = {}, 0, false, false
 end
 
@@ -1295,9 +1298,9 @@ local function worldCursorObjectName()
     if objectType and C_TooltipInfo and C_TooltipInfo.GetWorldCursor then
         local ok, data = pcall(C_TooltipInfo.GetWorldCursor)
         if ok and readable(data) and data == nil then return end
-        if ok and readableTable(data) and readable(data.type) and data.type == objectType and readableTable(data.lines) then
-            local title = data.lines[1]
-            if readableTable(title) then return cleanNodeName(title.leftText), true end
+        if ok and readableTable(data) and readable(data.type) and data.type == objectType then
+            local title = readableTable(data.lines) and data.lines[1]
+            return readableTable(title) and cleanNodeName(title.leftText) or nil, true, true
         end
         return nil, true
     end
@@ -1312,20 +1315,25 @@ local function nodeName()
     end
 end
 
-local function openingStartName()
+local function openingStartName(requireWorldObject)
     local node, hasCursorData = worldCursorObjectName()
     if hasCursorData then return node end
+    if openingHover and openingHover.expires >= now() then return openingHover.name, true end
+    if requireWorldObject then return end
     if GameTooltip and GameTooltip.IsShown and not safe(GameTooltip.IsShown, GameTooltip) then return end
     return nodeName()
 end
 
 local function lootSources(slots)
-    local creatures, objects, knownObject = {}, {}, false
+    local creatures, objects, knownObject, hasSource = {}, {}, false, false
     for slot = 1, slots do
         local sources = GetLootSourceInfo and { GetLootSourceInfo(slot) } or {}
         for i = 1, #sources, 2 do
             local guid = sources[i]
-            if readable(guid) and type(guid) == "string" then
+            if not readable(guid) then
+                hasSource = true
+            elseif type(guid) == "string" and guid ~= "" then
+                hasSource = true
                 local kind, id = guid:match("^(%a+)%-%d+%-%d+%-%d+%-%d+%-(%d+)%-")
                 id = tonumber(id)
                 if kind == "Creature" or kind == "Vehicle" then
@@ -1337,7 +1345,71 @@ local function lootSources(slots)
             end
         end
     end
-    return creatures, objects, knownObject
+    return creatures, objects, knownObject, hasSource
+end
+
+local function observeCreatureLoot(slots, hasSource, worldLootOpened, nativeFishing)
+    -- A late source can identify the loot even if the first event could not.
+    if creatureLoot == false then return end
+    if hasSource or nativeFishing ~= false or (cast and cast.expires > now()) then
+        creatureLoot = false
+        return
+    end
+    if not creatureLoot then creatureLoot = {} end
+    creatureLoot.worldLootOpened = creatureLoot.worldLootOpened or worldLootOpened
+    if slots == 0 and not creatureLoot.guid then return end
+    local guid = safe(UnitGUID, "target")
+    local mouseover = safe(UnitGUID, "mouseover")
+    local _, _, cursorObject = worldCursorObjectName()
+    if cursorObject or (mouseover and mouseover ~= guid) or (creatureLoot.guid and creatureLoot.guid ~= guid) then
+        creatureLoot = false
+        return
+    end
+    if creatureLoot.guid then return end
+    local npc = type(guid) == "string" and (guid:match("^Creature%-%d+%-%d+%-%d+%-%d+%-(%d+)%-")
+        or guid:match("^Vehicle%-%d+%-%d+%-%d+%-%d+%-(%d+)%-"))
+    local classification = npc and safe(UnitClassification, "target")
+    if not npc or type(classification) ~= "string" or classification == "minus"
+        or safe(UnitIsDead, "target") ~= true or safe(UnitCanAttack, "player", "target") ~= true
+        or safe(UnitIsPlayer, "target") ~= false then
+        creatureLoot = false
+        return
+    end
+    local hasLoot, canLoot = safe(CanLootUnit, guid)
+    if hasLoot ~= true or not readable(canLoot) or canLoot ~= true then
+        creatureLoot = false
+        return
+    end
+    creatureLoot.guid, creatureLoot.npc = guid, tonumber(npc)
+end
+
+local function recordStageCreatureLoot(creatures, character, time)
+    local target = next(creatures) and safe(UnitGUID, "target")
+    for guid, npc in pairs(creatures) do
+        local expires = character.stageLootGUIDs[guid]
+        if not number(expires) or expires <= time then
+            local minor = target == guid and safe(UnitClassification, "target") == "minus"
+            if not minor then
+                local changed = apply("NPC", function(v) return contains(v.npcs, npc) end, nil, npc, character)
+                local zoneChanged = apply("ZONE", function() return true end, nil, nil, character)
+                if changed or zoneChanged then character.stageLootGUIDs[guid] = time + 86400 end
+            end
+        end
+    end
+end
+
+local function finishCreatureLoot()
+    local loot = creatureLoot
+    creatureLoot = nil
+    if not loot or not loot.worldLootOpened or not loot.guid or not atlas.shouldCountCreatureLoot()
+        or safe(UnitGUID, "target") ~= loot.guid then return end
+    -- Hovering over a corpse does not identify the source of a loot window.
+    -- Require the loot available on that corpse to run out during this window.
+    local hasLoot = safe(CanLootUnit, loot.guid)
+    if hasLoot ~= false and not (hasLoot == nil and loot.depleted) then return end
+    if atlas.recordCreatureLoot then atlas.recordCreatureLoot(loot.guid) end
+    local character = record()
+    if character then recordStageCreatureLoot({ [loot.guid] = loot.npc }, character, serverTime()) end
 end
 
 local function onNodeLoot(character, objects, knownObject, fromCreature, time, worldLootOpened, hasSlots)
@@ -1353,7 +1425,7 @@ local function onNodeLoot(character, objects, knownObject, fromCreature, time, w
         cast.lootHasSlots = cast.lootHasSlots or hasSlots
     end
     -- A name confirmed at START also works with autoloot at LOOT_READY.
-    -- A dispatch name alone needs LOOT_OPENED to distinguish item containers.
+    -- A dispatch or earlier hover name needs explicit world loot.
     local namedOpening = opening and cast.finished and cast.lootHasSlots and (cast.namedAtStart or cast.lootOpened)
         and not cast.lootCreature and cast.node
     if not lootCounted and (knownObject or namedOpening) then
@@ -1386,11 +1458,15 @@ local function onNodeLoot(character, objects, knownObject, fromCreature, time, w
 end
 
 local function onLoot(worldLootOpened)
-    if not ready or blocked() then return end
+    if not ready or blocked() or itemLootOpen then return end
     local slots = safe(GetNumLootItems)
-    if not number(slots) then return end
-    local creatures, objects, knownObject = lootSources(slots)
+    if not number(slots) then
+        creatureLoot = false
+        return
+    end
+    local creatures, objects, knownObject, hasSource = lootSources(slots)
     local nativeFishing = safe(IsFishingLoot)
+    observeCreatureLoot(slots, hasSource, worldLootOpened, nativeFishing)
     -- Never use a stale fishing cast to reinterpret a known loot source.
     local fallbackFishing = nativeFishing == nil and cast and cast.kind == "Fishing" and cast.expires > now()
         and not next(creatures) and not knownObject
@@ -1414,18 +1490,7 @@ local function onLoot(worldLootOpened)
         lastLootPrune = time
     end
     if onNodeLoot(character, objects, knownObject, next(creatures) ~= nil, time, worldLootOpened, slots > 0) then return end
-    local target = next(creatures) and safe(UnitGUID, "target")
-    for guid, npc in pairs(creatures) do
-        local expires = character.stageLootGUIDs[guid]
-        if not number(expires) or expires <= time then
-            local minor = target == guid and safe(UnitClassification, "target") == "minus"
-            if not minor then
-                local changed = apply("NPC", function(v) return contains(v.npcs, npc) end, nil, npc, character)
-                local zoneChanged = apply("ZONE", function() return true end, nil, nil, character)
-                if changed or zoneChanged then character.stageLootGUIDs[guid] = time + 86400 end
-            end
-        end
-    end
+    recordStageCreatureLoot(creatures, character, time)
 end
 
 local function onEncounter(encounter, difficulty)
@@ -1503,8 +1568,18 @@ local function onMouseover()
     if changed then character.stageLootGUIDs[key] = serverTime() + 86400 end
 end
 
-local function onCast(unit, guid, spell, phase, target)
-    if unit ~= "player" or not readable(spell) or not number(spell) then return end
+local function readableCastGUID(guid)
+    return readable(guid) and type(guid) == "string" and guid ~= ""
+end
+
+local function sameCast(guid, castBarID)
+    if not cast then return false end
+    if cast.guid and readableCastGUID(guid) then return cast.guid == guid end
+    return cast.barID ~= nil and readable(castBarID) and cast.barID == castBarID
+end
+
+local function onCast(unit, guid, spell, phase, target, castBarID)
+    if not readable(unit) or unit ~= "player" or not number(spell) then return end
     local finished, sent = phase == "finished", phase == "sent"
     if finished and itemSpells[spell] then markUse(itemSpells[spell]) end
     local kind = atlas.attemptSpells and atlas.attemptSpells[spell]
@@ -1512,10 +1587,12 @@ local function onCast(unit, guid, spell, phase, target)
     local opening = isOpening(kind)
     if sent and not opening then return end
     if kind then
-        local hasGUID = readable(guid) and type(guid) == "string" and guid ~= ""
-        local emptyTarget = sent and readable(target) and target == ""
+        local barID = opening and readable(castBarID) and castBarID or nil
+        local restrictedTarget = sent and not readable(target)
+        local emptyTarget = sent and not restrictedTarget and target == ""
         -- Keep the identity sampled for this cast even after its tooltip disappears.
-        if cast and cast.spell == spell and hasGUID and cast.guid == guid and cast.expires > now() then
+        if sameCast(guid, barID) and cast.spell == spell and cast.expires > now() then
+            if barID ~= nil then cast.barID = barID end
             cast.expires = now() + (kind == "Fishing" and 35 or 8)
             if opening and finished then
                 cast.finished = true
@@ -1531,28 +1608,28 @@ local function onCast(unit, guid, spell, phase, target)
                 end
                 cast.sent = true
             elseif opening and not sent and not cast.started then
-                local node
-                if cast.node or cast.canReadStart then node = openingStartName() end
+                local node, fromHover
+                if cast.node or cast.canReadStart then node, fromHover = openingStartName(cast.restrictedTarget) end
                 if cast.canReadStart then cast.node = node end
-                cast.namedAtStart = node ~= nil and node == cast.node
+                cast.namedAtStart = not cast.restrictedTarget and not fromHover and node ~= nil and node == cast.node
                 cast.started = true
             end
         else
-            local node, hasCursorData
+            local node, hasCursorData, fromHover
             if sent then
                 node = cleanNodeName(target)
                 if emptyTarget then node, hasCursorData = worldCursorObjectName() end
             elseif opening then
-                if not finished then node = openingStartName() end
+                if not finished then node, fromHover = openingStartName() end
             else
                 node = nodeName()
                 if not node and lastNode and now() - lastNode.time <= 5 then node = lastNode.name end
             end
-            cast = { kind = kind, spell = spell, guid = hasGUID and guid or nil,
+            cast = { kind = kind, spell = spell, guid = readableCastGUID(guid) and guid or nil, barID = barID,
                 expires = now() + (kind == "Fishing" and 35 or 8), node = node, pool = isPool(node),
                 sent = sent, started = not sent and not finished,
-                namedAtStart = opening and not sent and not finished and node ~= nil,
-                canReadStart = emptyTarget and not hasCursorData }
+                namedAtStart = opening and not sent and not finished and not fromHover and node ~= nil,
+                canReadStart = restrictedTarget or (emptyTarget and not hasCursorData), restrictedTarget = restrictedTarget }
         end
     elseif not finished then
         cast = nil
@@ -1572,7 +1649,8 @@ function atlas.resetAttemptStageSession()
     sessionGeneration = sessionGeneration + 1
     pendingUses, visits, gossipOpen = {}, {}, {}
     pendingStageMessages, pendingAcquisitions = {}, {}
-    cast, lastNode, lootCounted = nil, nil, false
+    cast, lastNode, openingHover, lootCounted = nil, nil, nil, false
+    creatureLoot = nil
     itemLootUntil, itemLootOpen, itemLootSettled = 0, false, false
     refreshBagBaseline()
     scanArchaeology(false)
@@ -1605,7 +1683,7 @@ function atlas.initializeAttemptStages()
         "PLAYER_ENTERING_WORLD", "RESEARCH_ARTIFACT_COMPLETE", "TRADE_SKILL_SHOW", "TRADE_SKILL_CLOSE",
         "PLAYER_INTERACTION_MANAGER_FRAME_SHOW", "PLAYER_INTERACTION_MANAGER_FRAME_HIDE", "QUEST_TURNED_IN",
         "ENCOUNTER_END", "BOSS_KILL", "GOSSIP_SHOW", "GOSSIP_CLOSED", "ZONE_CHANGED_NEW_AREA", "UPDATE_MOUSEOVER_UNIT",
-        "ITEM_DATA_LOAD_RESULT", "SHOW_LOOT_TOAST", "CHAT_MSG_LOOT" }) do
+        "ITEM_DATA_LOAD_RESULT", "SHOW_LOOT_TOAST", "CHAT_MSG_LOOT", "PLAYER_TARGET_CHANGED", "UNIT_LOOT" }) do
         events:RegisterEvent(name)
     end
     for _, name in ipairs({ "UNIT_SPELLCAST_SENT", "UNIT_SPELLCAST_START", "UNIT_SPELLCAST_CHANNEL_START", "UNIT_SPELLCAST_SUCCEEDED",
@@ -1618,7 +1696,8 @@ events:SetScript("OnEvent", function(_, event, ...)
     if event == "PLAYER_ENTERING_WORLD" then
         refreshBagBaseline()
         scanArchaeology(false)
-        cast, lastNode, pendingUses, interactions, lootCounted = nil, nil, {}, {}, false
+        cast, lastNode, openingHover, pendingUses, interactions, lootCounted = nil, nil, nil, {}, {}, false
+        creatureLoot = nil
         itemLootUntil, itemLootOpen, itemLootSettled = 0, false, false
         onZone(not enteredWorld)
         enteredWorld = true
@@ -1626,7 +1705,9 @@ events:SetScript("OnEvent", function(_, event, ...)
     elseif event == "LOOT_OPENED" then
         local _, fromItem = ...
         itemLootOpen = readable(fromItem) and fromItem == true and not blocked()
+        if not readable(fromItem) or fromItem ~= false then creatureLoot = false end
         if itemLootOpen then
+            openingHover = nil
             itemLootUntil, itemLootSettled = now() + 3, false
             if cast and isOpening(cast.kind) then cast = nil end
         else onLoot(readable(fromItem) and fromItem == false) end
@@ -1635,9 +1716,16 @@ events:SetScript("OnEvent", function(_, event, ...)
         -- item window or an explicit tracked use needs a follow-up read here.
         if itemLootOpen and not itemLootSettled then scanBags(useStages, true)
         elseif next(pendingUses) then scanBags(pendingUses, true) end
+        finishCreatureLoot()
         itemLootOpen = false
         finalizePendingAcquisitions(false)
-        lootCounted, cast, lastNode = false, nil, nil
+        lootCounted, cast, lastNode, openingHover = false, nil, nil, nil
+    elseif event == "PLAYER_TARGET_CHANGED" then
+        if creatureLoot and creatureLoot.guid and safe(UnitGUID, "target") ~= creatureLoot.guid then creatureLoot = false end
+    elseif event == "UNIT_LOOT" then
+        local guid, hasLoot = ...
+        if creatureLoot and creatureLoot.guid and readable(guid) and guid == creatureLoot.guid
+            and readable(hasLoot) and type(hasLoot) == "boolean" then creatureLoot.depleted = not hasLoot end
     elseif event == "BAG_UPDATE_DELAYED" then
         scanBags(useStages)
         finalizePendingAcquisitions(true)
@@ -1648,19 +1736,26 @@ events:SetScript("OnEvent", function(_, event, ...)
             local item = tonumber(link:match("item:(%d+)"))
             if item then apply("LOOT_TOAST", function(v) return contains(v.toastItems, item) end) end
         end
-    elseif event == "CURSOR_CHANGED" then nodeName()
+    elseif event == "CURSOR_CHANGED" then
+        local name = worldCursorObjectName()
+        openingHover = name and { name = name, expires = now() + 2 } or nil
+        nodeName()
     elseif event == "UNIT_SPELLCAST_SENT" then
         local unit, target, guid, spell = ...
         onCast(unit, guid, spell, "sent", target)
     elseif event == "UNIT_SPELLCAST_START" or event == "UNIT_SPELLCAST_CHANNEL_START" then
-        local unit, guid, spell = ...
-        onCast(unit, guid, spell)
+        local unit, guid, spell, castBarID = ...
+        onCast(unit, guid, spell, nil, nil, castBarID)
+        if readable(unit) and unit == "player" then openingHover = nil end
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
-        local unit, guid, spell = ...
-        onCast(unit, guid, spell, "finished")
+        local unit, guid, spell, castBarID = ...
+        onCast(unit, guid, spell, "finished", nil, castBarID)
     elseif event == "UNIT_SPELLCAST_FAILED" or event == "UNIT_SPELLCAST_FAILED_QUIET" or event == "UNIT_SPELLCAST_INTERRUPTED" then
         local unit, guid = ...
-        if unit == "player" and cast and readable(guid) and guid == cast.guid then cast, lastNode = nil, nil end
+        local castBarID = select(event == "UNIT_SPELLCAST_INTERRUPTED" and 5 or 4, ...)
+        if readable(unit) and unit == "player" and sameCast(guid, castBarID) then
+            cast, lastNode, openingHover = nil, nil, nil
+        end
     elseif event == "TRADE_SKILL_SHOW" then
         beginBlockedInteraction("tradeSkill")
         scanArchaeology(false)

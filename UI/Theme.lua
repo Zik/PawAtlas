@@ -507,6 +507,13 @@ ui.chances = {
     { limit = 100, color = { 1, .79, .36 }, label = "Свыше 60% и до 100%" },
 }
 
+function ui.probabilityColor(fraction)
+    for _, tier in ipairs(ui.chances) do
+        if fraction * 100 <= tier.limit then return tier.color end
+    end
+    return ui.muted
+end
+
 ui.chanceFlavors = {
     "Приключение начинается", "Первый круг почёта", "Тропа уже знакома", "Босс уже узнаёт тебя",
     "Ещё один заход в копилку", "Полпути к легенде о терпении", "Здесь уже можно прописаться",

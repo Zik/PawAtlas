@@ -1,7 +1,7 @@
 local _, atlas = ...
 local ui, L = atlas.ui, atlas.L
 local headerHeight, rowHeight, bottomPadding = 47, 44, 11
-local emptyHeight, inset, textX, statsWidth = 34, 14, 46, 102
+local emptyHeight, inset, textX = 34, 14, 46
 local minWidth, minHeight = 300, headerHeight + rowHeight + bottomPadding
 local autoHeight = minHeight
 atlas.expeditionDefaultWidth = 420
@@ -252,13 +252,6 @@ function atlas.planTargetSummary(mount)
     end
 end
 
-local function chanceColor(probability)
-    for _, tier in ipairs(ui.chances) do
-        if probability * 100 <= tier.limit then return tier.color end
-    end
-    return ui.muted
-end
-
 local function formatStats(stats)
     if not stats then return "", "", ui.muted end
     local attempts = stats.attempts ~= nil and L("Попытки: %s", stats.attempts) or ""
@@ -268,7 +261,7 @@ local function formatStats(stats)
     local cumulative = stats.attempts and stats.attempts > 0 and stats.cumulative
     local probability = cumulative or stats.perAttempt
     if probability == nil then return attempts, "", ui.muted end
-    return attempts, ui.probabilityText(probability, stats.perAttempt == 1), chanceColor(probability)
+    return attempts, ui.probabilityText(probability, stats.perAttempt == 1), ui.probabilityColor(probability)
 end
 
 function atlas.planLootCompletion(mount, guid)
@@ -312,10 +305,10 @@ local function showRowTooltip(row)
         if stats.attempts ~= nil then tooltipStat("Попытки", tostring(stats.attempts), ui.paper) end
         if stats.condition then ui.tooltipSourceText(atlas.sourceInlineLinks(stats.condition))
         elseif stats.perAttempt ~= nil then
-            tooltipStat("За одну попытку", ui.probabilityText(stats.perAttempt, stats.perAttempt == 1), chanceColor(stats.perAttempt))
+            tooltipStat("За одну попытку", ui.probabilityText(stats.perAttempt, stats.perAttempt == 1), ui.probabilityColor(stats.perAttempt))
         end
         if stats.attempts and stats.attempts > 0 and stats.cumulative ~= nil then
-            tooltipStat("Вероятность за все попытки", ui.probabilityText(stats.cumulative, stats.perAttempt == 1), chanceColor(stats.cumulative))
+            tooltipStat("Вероятность за все попытки", ui.probabilityText(stats.cumulative, stats.perAttempt == 1), ui.probabilityColor(stats.cumulative))
         end
         if stats.collected ~= nil and stats.required and stats.required > 0 then
             ui.tooltipLine(("%d / %d"):format(stats.collected, stats.required), unpack(ui.mint))
@@ -480,23 +473,28 @@ function atlas.createExpeditionWindow(name, onTargetClick)
         row.name.atlasGameText = true
         row.name:SetMaxLines(1)
         row.name:SetWordWrap(false)
-        row.attempts = ui.text(row, textX, 23, contentWidth - textX - statsWidth - 14, 14, 12, "", ui.muted)
+        row.attempts = ui.text(row, textX, 23, contentWidth - textX - 8, 14, 12, "", ui.muted)
         row.attempts:SetMaxLines(1)
-        row.value = ui.text(row, contentWidth - statsWidth - 8, 3, statsWidth, 23, 17, "", ui.gold)
+        row.value = ui.text(row, 0, 3, 1, 23, 17, "", ui.gold)
         row.value:ClearAllPoints()
         row.value:SetPoint("TOPRIGHT", row, "TOPRIGHT", -8, -3)
         row.value:SetJustifyH("RIGHT")
         row.value:SetMaxLines(1)
-        row.status = ui.text(row, contentWidth - statsWidth - 8, 25, statsWidth, 15, 11, "", ui.muted)
+        row.value:SetWordWrap(false)
+        row.status = ui.text(row, 0, 25, 1, 15, 11, "", ui.muted)
         row.status:ClearAllPoints()
         row.status:SetPoint("TOPRIGHT", row, "TOPRIGHT", -8, -25)
         row.status:SetJustifyH("RIGHT")
         row.status:SetMaxLines(1)
+        row.status:SetWordWrap(false)
         function row:resize()
-            local contentWidth = self:GetWidth()
-            local hasMetric = (self.value:GetText() or "") ~= "" or self.lootStatus ~= nil
-            self.name:SetWidth(contentWidth - textX - 8 - (hasMetric and statsWidth + 8 or 0))
-            self.attempts:SetWidth(contentWidth - textX - statsWidth - 14)
+            local available = self:GetWidth() - textX - 8
+            local valueWidth = math.min(available - 9, math.ceil(self.value:GetUnboundedStringWidth()) + 2)
+            local statusWidth = math.min(available - 9, math.ceil(self.status:GetUnboundedStringWidth()) + 2)
+            self.value:SetWidth(valueWidth)
+            self.status:SetWidth(statusWidth)
+            self.name:SetWidth(available - ((self.value:GetText() or "") ~= "" and valueWidth + 8 or 0))
+            self.attempts:SetWidth(available - ((self.status:GetText() or "") ~= "" and statusWidth + 8 or 0))
             if self.item then fitRowName(self.name, self.displayName) end
         end
         row:SetScript("OnEnter", showRowTooltip)
@@ -532,12 +530,15 @@ function atlas.createExpeditionWindow(name, onTargetClick)
         row.stats, row.lootStatus, row.complete = stats, status, complete
         row.displayName = atlas.displayMountName(mount)
         row.name:SetTextColor(unpack(frame.pinnedID == mount.id and ui.gold or ui.paper))
-        row.name:SetAlpha(complete and .7 or 1)
+        local textAlpha = complete and .7 or 1
+        row.name:SetAlpha(textAlpha)
         row.attempts:SetText(attempts)
+        row.attempts:SetAlpha(textAlpha)
         row.value:SetText(value)
-        row.value:SetTextColor(unpack(color))
+        row.value:SetTextColor(unpack(complete and ui.muted or color))
+        row.value:SetAlpha(textAlpha)
         row.status:SetText(status or "")
-        row.status:SetTextColor(unpack(complete and ui.mint or ui.muted))
+        row.status:SetAlpha(textAlpha)
         row.icon:SetTexture(icon or 132261)
         row.icon:SetDesaturated(complete == true)
         row.check:SetShown(complete == true)

@@ -321,7 +321,7 @@ do
         page:HookScript("OnHide", function() menu:Hide() end)
         return menu, trigger
     end
-    local menu, toggle = dropdown(26, 107, "Фильтры", 216)
+    local menu, toggle = dropdown(26, 98, "Фильтры", 216)
     for i, knob in ipairs({ 6, 12, 8 }) do
         local y = 7 + (i - 1) * 5
         ui.fill(toggle, 8, y, 15, 1, ui.paper):SetDrawLayer("ARTWORK")
@@ -366,7 +366,7 @@ do
         if mode == "collected" or mode == "name" then return mode end
         return "missing"
     end
-    local sortMenu, sortButton = dropdown(139, 116, "Сортировка", 210, true)
+    local sortMenu, sortButton = dropdown(130, 125, "Сортировка", 210, true)
     for i, width in ipairs({14, 10, 6}) do
         ui.fill(sortButton, 9, 8 + (i - 1) * 4, width, 1, ui.paper):SetDrawLayer("ARTWORK")
     end

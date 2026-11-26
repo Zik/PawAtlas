@@ -169,6 +169,7 @@ function ui.scrollingList(parent, x, y, width, step, capacity, smooth, cornerPad
     slider:SetScript("OnMouseWheel", wheel)
     local function createRow(i)
         local row = ui.button(content, cornerPadding, cornerPadding + (i - 1) * step, width - 8, step - 4, function(self) list:onClick(self.item) end)
+        row:Hide()
         row.listSlot = i
         row:EnableMouseWheel(true)
         row:SetScript("OnMouseWheel", wheel)

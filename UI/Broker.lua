@@ -2,7 +2,7 @@ local _, atlas = ...
 local broker = LibStub("LibDataBroker-1.1")
 local ui, L = atlas.ui, atlas.L
 local title = L("PawAtlas")
-local target, targetName
+local target
 local popup
 local tooltipLines = {}
 local tooltipMeasure = UIParent:CreateFontString(nil, "ARTWORK", "GameTooltipText")
@@ -10,26 +10,32 @@ tooltipMeasure:Hide()
 local function brokerTooltip(tooltip, heading, lines, controls)
     local available = UIParent:GetWidth() * UIParent:GetEffectiveScale() / tooltip:GetEffectiveScale() - 40
     local maximum = math.max(1, math.min(340, available))
+    local rows, width = {}, 1
     local function add(text, color)
         text = ui.safeText(atlas.sourceInlineLinks(text)):gsub("(%d) %%", "%1\194\160%%")
         tooltipMeasure:SetText(text)
-        local wrap = tooltipMeasure:GetStringWidth() > maximum
-        tooltip:AddLine(text, color[1], color[2], color[3], wrap)
-        if wrap then
+        local measured = tooltipMeasure:GetStringWidth()
+        width = math.max(width, math.min(measured, maximum))
+        rows[#rows + 1] = { text = text, color = color, wrap = measured > maximum }
+    end
+    if heading then add(heading, ui.paper) end
+    if #lines > 0 then
+        add(" ", ui.muted)
+        for _, line in ipairs(lines) do add(line, ui.muted) end
+    end
+    if controls then
+        if #rows > 0 then add(" ", ui.muted) end
+        for _, line in ipairs(controls) do add(L(line), ui.muted) end
+    end
+    tooltip:AddLine(title, unpack(ui.gold))
+    tooltip:AddLine(("|TInterface\\Buttons\\WHITE8X8:1:%d:0:0:8:8:0:8:0:8:104:86:54|t"):format(math.ceil(width)))
+    for _, row in ipairs(rows) do
+        tooltip:AddLine(row.text, row.color[1], row.color[2], row.color[3], row.wrap)
+        if row.wrap then
             local name = tooltip:GetName()
             local line = name and _G[name .. "TextLeft" .. tooltip:NumLines()]
             if line then line:SetWidth(maximum) end
         end
-    end
-    add(title, ui.gold)
-    if heading then add(heading, ui.gold) end
-    if #lines > 0 then
-        tooltip:AddLine(" ")
-        for _, line in ipairs(lines) do add(line, ui.paper) end
-    end
-    if controls then
-        tooltip:AddLine(" ")
-        for _, line in ipairs(controls) do add(L(line), ui.paper) end
     end
 end
 local display = broker:NewDataObject("MountAtlas", {
@@ -52,7 +58,7 @@ local display = broker:NewDataObject("MountAtlas", {
         end
     end,
     OnTooltipShow = function(tooltip)
-        brokerTooltip(tooltip, targetName, tooltipLines, {
+        brokerTooltip(tooltip, target and ui.coloredMountName(target), tooltipLines, {
             "ЛКМ — выбрать цель", "ПКМ — открыть атлас", "Shift + ЛКМ — окно слежения",
         })
     end,
@@ -108,12 +114,16 @@ local function manualID(saved)
     end
 end
 
+local function colored(value, color)
+    return CreateColor(unpack(color)):WrapTextInColorCode(tostring(value))
+end
+
 local function targetDisplay(mount, lines)
     if not mount then return title end
 
     local stats = atlas.planTargetSummary(mount)
     local attempts = stats and stats.attempts ~= nil and L("Попытки: %s", stats.attempts)
-    if attempts then lines[#lines + 1] = attempts end
+    if attempts then lines[#lines + 1] = L("Попытки: %s", colored(stats.attempts, ui.paper)) end
     if not stats then
         lines[#lines + 1] = L("Нет данных")
         return lines[#lines]
@@ -122,24 +132,27 @@ local function targetDisplay(mount, lines)
         and ("%d / %d"):format(stats.collected, stats.required)
     if stats.item then lines[#lines + 1] = atlas.displayName(stats.item)
     elseif progress then lines[#lines + 1] = L("Предмет маунта") end
-    if progress then lines[#lines + 1] = progress end
+    if progress then lines[#lines + 1] = colored(progress, ui.mint) end
     local cumulative = stats.attempts and stats.attempts > 0 and stats.cumulative
     local baseChance = stats.perAttempt ~= nil and ui.probabilityText(stats.perAttempt, stats.perAttempt == 1)
     local chance = cumulative and ui.probabilityText(cumulative, stats.perAttempt == 1) or baseChance
     if stats.condition then
-        if chance then lines[#lines + 1] = chance .. " / " .. L("При выполнении условий") end
+        if chance then
+            local value = colored(chance, ui.probabilityColor(cumulative or stats.perAttempt))
+            lines[#lines + 1] = value .. " / " .. L("При выполнении условий")
+        end
         lines[#lines + 1] = L(stats.condition)
     elseif baseChance then
-        lines[#lines + 1] = L("За одну попытку: %s", baseChance)
+        lines[#lines + 1] = L("За одну попытку: %s", colored(baseChance, ui.probabilityColor(stats.perAttempt)))
     elseif not progress then
         lines[#lines + 1] = L("За одну попытку: %s", L("Неизвестен"))
     end
     if cumulative then
-        lines[#lines + 1] = L("Вероятность за все попытки: %s", chance)
+        lines[#lines + 1] = L("Вероятность за все попытки: %s", colored(chance, ui.probabilityColor(cumulative)))
     end
     if stats.rewardCondition then lines[#lines + 1] = L(stats.rewardCondition) end
     local value = progress or chance
-    local text = attempts and value and attempts .. " / " .. value or attempts or value or L("Нет данных")
+    local text = attempts and value and attempts .. "  " .. value or attempts or value or L("Нет данных")
     return text, stats.watchBags
 end
 
@@ -212,7 +225,6 @@ function atlas.queuePlanBrokerStatsRefresh()
         for profileID, candidates in pairs(pendingAttempts) do applyAttempt(profileID, candidates) end
         pendingAttempts = {}
         target = chooseTarget(settings())
-        targetName = target and atlas.displayMountName(target)
         tooltipLines = {}
         local text
         text, watchTargetBags = targetDisplay(target, tooltipLines)

@@ -779,10 +779,14 @@ local function countEncounter(encounter, difficulty)
     if changed or retryStatistics then atlas.queueAttemptRefresh(true) end
 end
 
-local function recordLoot()
+local function recordLoot(fallbackGUID)
     if atlas.shouldCountCreatureLoot and not atlas.shouldCountCreatureLoot() then return end
-    local slots = GetNumLootItems()
-    if not validNumber(slots) or slots == 0 then return end
+    if not readable(fallbackGUID) then return end
+    local slots
+    if not fallbackGUID then
+        slots = GetNumLootItems()
+        if not validNumber(slots) or slots == 0 then return end
+    end
     local now = GetServerTime()
     if not lastLootPrune or now - lastLootPrune >= 60 then
         for guid, expires in pairs(MountAtlasDB.lastLoot) do
@@ -791,46 +795,49 @@ local function recordLoot()
         lastLootPrune = now
     end
     local changed, retryStatistics, credited = false, false, {}
-    for slot = 1, slots do
-        local sources = { GetLootSourceInfo(slot) }
-        for i = 1, #sources, 2 do
-            local guid = sources[i]
-            if readable(guid) and type(guid) == "string" and not active(MountAtlasDB.lastLoot[guid], now) then
-                -- Vehicles can award the same creature loot (for example Felsiege).
-                -- Keep objects, items and player GUIDs out of creature attempts.
-                local npc = creatureID(guid)
-                local confirmed = confirmCreatureStatistics(npcStatistics[npc])
-                local targets = atlas.lootByNPC[npc]
-                if confirmed or targets then MountAtlasDB.lastLoot[guid] = now + 86400 end
-                if targets then
-                    local limits = {}
-                    for _, mount in ipairs(targets) do
-                        local frequency = atlas.lootFrequencies[mount.id]
-                        local expires = resetAt(frequency)
-                        local group = atlas.sharedLootLockouts and atlas.sharedLootLockouts[mount.id]
-                        local key = atlas.lootOpportunityKey and atlas.lootOpportunityKey(mount, npc, frequency or "unknown")
-                            or "npc:" .. (group or npc) .. ":" .. (frequency or "unknown")
-                        local previous = atlas.lootOpportunityExpires and atlas.lootOpportunityExpires(mount, npc, frequency or "unknown")
-                            or MountAtlasDB.lastAttempts[key]
-                        if atlas.usesKillAPI(mount) then
-                            retryStatistics = true
-                        elseif (not atlas.isMountAttemptEligible or atlas.isMountAttemptEligible(mount, npc))
-                            and (not expires or not active(previous, now)) then
-                            incrementLocal(mount, credited)
-                            if expires then limits[key] = expires end
-                            changed = true
-                        end
-                    end
-                    -- Commit after all mounts sharing this corpse have been counted.
-                    for key, expires in pairs(limits) do MountAtlasDB.lastAttempts[key] = expires end
+    local function recordCorpse(guid)
+        -- Vehicles can award the same creature loot (for example Felsiege).
+        local npc = creatureID(guid)
+        if not npc or active(MountAtlasDB.lastLoot[guid], now) then return end
+        local confirmed = confirmCreatureStatistics(npcStatistics[npc])
+        local targets = atlas.lootByNPC[npc]
+        if confirmed or targets then MountAtlasDB.lastLoot[guid] = now + 86400 end
+        if targets then
+            local limits = {}
+            for _, mount in ipairs(targets) do
+                local frequency = atlas.lootFrequencies[mount.id]
+                local expires = resetAt(frequency)
+                local group = atlas.sharedLootLockouts and atlas.sharedLootLockouts[mount.id]
+                local key = atlas.lootOpportunityKey and atlas.lootOpportunityKey(mount, npc, frequency or "unknown")
+                    or "npc:" .. (group or npc) .. ":" .. (frequency or "unknown")
+                local previous = atlas.lootOpportunityExpires and atlas.lootOpportunityExpires(mount, npc, frequency or "unknown")
+                    or MountAtlasDB.lastAttempts[key]
+                if atlas.usesKillAPI(mount) then
+                    retryStatistics = true
+                elseif (not atlas.isMountAttemptEligible or atlas.isMountAttemptEligible(mount, npc))
+                    and (not expires or not active(previous, now)) then
+                    incrementLocal(mount, credited)
+                    if expires then limits[key] = expires end
+                    changed = true
                 end
             end
+            -- Commit after all mounts sharing this corpse have been counted.
+            for key, expires in pairs(limits) do MountAtlasDB.lastAttempts[key] = expires end
+        end
+    end
+    if fallbackGUID then recordCorpse(fallbackGUID)
+    elseif GetLootSourceInfo then
+        for slot = 1, slots do
+            local sources = { GetLootSourceInfo(slot) }
+            for i = 1, #sources, 2 do recordCorpse(sources[i]) end
         end
     end
     if retryStatistics then queueStatisticRetries() end
     if next(credited) and atlas.recordBrokerAttempt then atlas.recordBrokerAttempt(credited) end
     if changed then atlas.queueAttemptRefresh(true) end
 end
+
+atlas.recordCreatureLoot = recordLoot
 
 local function rememberBonusRollPrompt(spell, promptType, _, duration, currency, cost)
     if not atlas.bonusRollSources then return end
