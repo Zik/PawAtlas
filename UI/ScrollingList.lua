@@ -3,7 +3,8 @@ local ui = atlas.ui
 
 -- Reuse the visible rows. Both catalog and planner scroll without constructing
 -- frames for entries outside their window.
-function ui.scrollingList(parent, x, y, width, step, capacity, smooth)
+function ui.scrollingList(parent, x, y, width, step, capacity, smooth, cornerPadding)
+    cornerPadding = cornerPadding or 0
     local height = step * capacity
     local list = ui.place(CreateFrame("Frame", nil, parent), parent, x, y, width, height)
     list.rows, list.items, list.offset = {}, {}, 0
@@ -12,10 +13,10 @@ function ui.scrollingList(parent, x, y, width, step, capacity, smooth)
     if smooth then
         rowCount = capacity + 1
         viewport = CreateFrame("ScrollFrame", nil, list)
-        viewport:SetPoint("TOPLEFT", list, "TOPLEFT")
+        viewport:SetPoint("TOPLEFT", list, "TOPLEFT", -cornerPadding, cornerPadding)
         viewport:SetPoint("BOTTOMRIGHT", list, "BOTTOMRIGHT", -8, 0)
         content = CreateFrame("Frame", nil, viewport)
-        content:SetSize(width - 8, rowCount * step)
+        content:SetSize(width - 8 + cornerPadding, rowCount * step + cornerPadding)
         viewport:SetScrollChild(content)
     end
     local rail = ui.fill(list, width - 3, 0, 2, height - 4, ui.rule)
@@ -58,7 +59,7 @@ function ui.scrollingList(parent, x, y, width, step, capacity, smooth)
             end
             if smooth and row.listSlot ~= slot then
                 row:ClearAllPoints()
-                row:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -(slot - 1) * step)
+                row:SetPoint("TOPLEFT", content, "TOPLEFT", cornerPadding, -cornerPadding - (slot - 1) * step)
                 row.listSlot = slot
             end
             if force or changed then
@@ -70,11 +71,11 @@ function ui.scrollingList(parent, x, y, width, step, capacity, smooth)
         end
     end
 
-    local function setPosition(value, redraw)
+    local function setPosition(value, redraw, rebind)
         position = math.max(0, math.min(value, limit))
         local offset = math.floor(position)
         list.offset = offset
-        if redraw or offset ~= first then bindRows(redraw) end
+        if redraw or rebind or offset ~= first then bindRows(redraw) end
         first = offset
         viewport:SetVerticalScroll((position - offset) * step)
         syncing = true
@@ -82,7 +83,7 @@ function ui.scrollingList(parent, x, y, width, step, capacity, smooth)
         syncing = false
     end
 
-    function list:redraw()
+    function list:redraw(force, rebind)
         local total = #self.items
         limit = math.max(0, total - capacity)
         if smooth then
@@ -103,7 +104,7 @@ function ui.scrollingList(parent, x, y, width, step, capacity, smooth)
             if not smooth then slider:SetValue(self.offset) end
             syncing = false
         end
-        if smooth then setPosition(self.offset ~= first and self.offset or position, true) end
+        if smooth then setPosition(self.offset ~= first and self.offset or position, force ~= false, rebind) end
     end
 
     slider:SetScript("OnValueChanged", function(_, value)
@@ -166,12 +167,43 @@ function ui.scrollingList(parent, x, y, width, step, capacity, smooth)
     list:SetScript("OnMouseWheel", wheel)
     slider:EnableMouseWheel(true)
     slider:SetScript("OnMouseWheel", wheel)
-    for i = 1, rowCount do
-        local row = ui.button(content, 0, (i - 1) * step, width - 8, step - 4, function(self) list:onClick(self.item) end)
+    local function createRow(i)
+        local row = ui.button(content, cornerPadding, cornerPadding + (i - 1) * step, width - 8, step - 4, function(self) list:onClick(self.item) end)
         row.listSlot = i
         row:EnableMouseWheel(true)
         row:SetScript("OnMouseWheel", wheel)
         list.rows[i] = row
+        if list.setupRow then list:setupRow(row) end
+    end
+    for i = 1, rowCount do createRow(i) end
+
+    if smooth then
+        function list:resizeViewport(newWidth, newHeight)
+            if width == newWidth and height == newHeight then return end
+            local widthChanged = width ~= newWidth
+            width, height = newWidth, newHeight
+            capacity = height / step
+            rowCount = math.ceil(capacity) + 1
+            self:SetSize(width, height)
+            content:SetSize(width - 8 + cornerPadding, rowCount * step + cornerPadding)
+            rail:ClearAllPoints()
+            ui.place(rail, self, width - 3, 0, 2, height - 4)
+            slider:ClearAllPoints()
+            ui.place(slider, self, width - 7, 0, 10, height - 4)
+            for i = 1, #self.rows do
+                local row = self.rows[i]
+                if i > rowCount then
+                    row:Hide()
+                    row.item = nil
+                end
+                if widthChanged then
+                    row:SetWidth(width - 8)
+                    if row.resize then row:resize() end
+                end
+            end
+            for i = #self.rows + 1, rowCount do createRow(i) end
+            self:redraw(false, true)
+        end
     end
     return list
 end

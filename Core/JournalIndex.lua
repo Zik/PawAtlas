@@ -674,6 +674,41 @@ local function journalBatch(collection)
         added = {}, removed = {}, changed = collection == nil }
 end
 
+local catalogOrders = {}
+local firstOwned = { missing = false, collected = true }
+
+function atlas.sortedCatalogMounts(mode)
+    if mode ~= "name" and firstOwned[mode] == nil then mode = "missing" end
+    local collection, locale = atlas.collection, atlas.getLocale()
+    if catalogOrders.collection ~= collection or catalogOrders.locale ~= locale then
+        catalogOrders = { collection = collection, locale = locale }
+    end
+    if catalogOrders[mode] then return catalogOrders[mode] end
+
+    local byID, first = collection and collection.byID, firstOwned[mode]
+    local entries = {}
+    for i, mount in ipairs(atlas.mounts) do
+        local group = 1
+        if first ~= nil then
+            local owned = byID and byID[mount.id]
+            if owned == first then group = 1
+            elseif type(owned) == "boolean" then group = 2
+            else group = 3 end
+        end
+        entries[i] = { mount = mount, key = atlas.searchKey(atlas.displayMountName(mount)), group = group }
+    end
+    table.sort(entries, function(a, b)
+        if a.group ~= b.group then return a.group < b.group end
+        if a.key ~= b.key then return a.key < b.key end
+        return a.mount.id < b.mount.id
+    end)
+
+    local mounts = {}
+    for i, entry in ipairs(entries) do mounts[i] = entry.mount end
+    catalogOrders[mode] = mounts
+    return mounts
+end
+
 local function publishJournal(batch)
     if not batch.changed then return false end
     if next(batch.removed) then

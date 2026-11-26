@@ -1,8 +1,10 @@
 local _, atlas = ...
 local ui, L = atlas.ui, atlas.L
-local width, headerHeight, rowHeight, maxRows = 420, 47, 44, 5
+local headerHeight, rowHeight, bottomPadding = 47, 44, 11
 local emptyHeight, inset, textX, statsWidth = 34, 14, 46, 102
-local rowWidth, bottomPadding = width - 2 * inset, 11
+local minWidth, minHeight = 300, headerHeight + rowHeight + bottomPadding
+local autoHeight = minHeight
+atlas.expeditionDefaultWidth = 420
 atlas.expeditionTransparencyMax = 100
 local tracker, queued, statsQueued
 local windows = {}
@@ -50,13 +52,71 @@ end
 local function applyPosition(frame)
     local saved = settings()
     local position = saved and saved.expeditionPosition
-    frame:ClearAllPoints()
+    local screenWidth, screenHeight = UIParent:GetSize()
+    local x, y = 24, 168
     if type(position) == "table" and type(position.x) == "number" and position.x >= 0 and position.x <= 1
         and type(position.y) == "number" and position.y >= 0 and position.y <= 1 then
-        frame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", position.x * UIParent:GetWidth(), -position.y * UIParent:GetHeight())
-    else
-        frame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 24, -168)
+        x, y = position.x * screenWidth, position.y * screenHeight
     end
+    x = math.max(0, math.min(x, screenWidth - frame:GetWidth()))
+    y = math.max(0, math.min(y, screenHeight - frame:GetHeight()))
+    frame:ClearAllPoints()
+    frame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", x, -y)
+end
+
+function atlas.expeditionSizeLimits()
+    local screenWidth, screenHeight = UIParent:GetSize()
+    return minWidth, math.max(minWidth, math.floor(screenWidth - 16)),
+        minHeight, math.max(minHeight, math.floor(screenHeight - 16))
+end
+
+local function dimension(value, default, minimum, maximum)
+    if type(value) ~= "number" or value ~= value then value = default end
+    return math.max(minimum, math.min(maximum, math.floor(value + .5)))
+end
+
+function atlas.expeditionSize()
+    local saved = settings()
+    local minimumW, maximumW, minimumH, maximumH = atlas.expeditionSizeLimits()
+    return dimension(saved and saved.expeditionWidth, atlas.expeditionDefaultWidth, minimumW, maximumW),
+        dimension(saved and saved.expeditionHeight, autoHeight, minimumH, maximumH)
+end
+
+local function applySize(frame, width, height)
+    if frame.resizing then return end
+    frame:SetSize(width, height)
+    if frame == tracker then applyPosition(frame)
+    elseif frame.position and frame:IsShown() and not frame.dragging then frame:position() end
+end
+
+local function applySharedSize()
+    local width, height = atlas.expeditionSize()
+    for _, frame in ipairs(windows) do applySize(frame, width, height) end
+    if atlas.refreshExpeditionSizeSettings then atlas.refreshExpeditionSizeSettings(width, height) end
+end
+
+function atlas.setExpeditionSize(width, height)
+    local currentWidth, currentHeight = atlas.expeditionSize()
+    local minimumW, maximumW, minimumH, maximumH = atlas.expeditionSizeLimits()
+    local saved = settings(true)
+    if width ~= nil then saved.expeditionWidth = dimension(width, currentWidth, minimumW, maximumW) end
+    if height ~= nil then saved.expeditionHeight = dimension(height, currentHeight, minimumH, maximumH) end
+    applySharedSize()
+end
+
+function atlas.resetExpeditionSize()
+    local saved = settings()
+    if saved then saved.expeditionWidth, saved.expeditionHeight = nil, nil end
+    applySharedSize()
+end
+
+function atlas.updateExpeditionAutoHeight(count)
+    local newHeight = headerHeight + math.max(1, count) * rowHeight + bottomPadding
+    if newHeight == autoHeight then return end
+    local _, previousHeight = atlas.expeditionSize()
+    autoHeight = newHeight
+    local _, height = atlas.expeditionSize()
+    if height ~= previousHeight then applySharedSize() end
 end
 
 local function stopMoving(frame)
@@ -73,6 +133,68 @@ local function stopMoving(frame)
         y = math.max(0, math.min(1, ((UIParent:GetTop() or screenHeight) - y) / screenHeight)),
     }
     applyPosition(frame)
+end
+
+local function stopResizing(frame)
+    local initialSize = frame.resizing
+    if not initialSize then return end
+    frame:StopMovingOrSizing()
+    frame:SetUserPlaced(false)
+    local width, height = frame:GetSize()
+    local newWidth = math.abs(width - initialSize.width) >= .5 and width or nil
+    local newHeight = math.abs(height - initialSize.height) >= .5 and height or nil
+    if newWidth or newHeight then atlas.setExpeditionSize(newWidth, newHeight) end
+    frame.resizing = nil
+    frame:SetSize(atlas.expeditionSize())
+end
+
+local function setupResizeHandle(frame)
+    local handle = CreateFrame("Button", nil, frame)
+    handle:SetSize(14, 14)
+    handle:SetFrameLevel(frame:GetFrameLevel() + 5)
+    local marks = {}
+    for i = 1, 3 do
+        local stroke = handle:CreateTexture(nil, "OVERLAY")
+        stroke:SetSize(16 - i * 4, 1)
+        stroke:SetColorTexture(unpack(ui.muted))
+        marks[i] = stroke
+    end
+    function frame:setResizeFromTop(fromTop)
+        if self.resizeFromTop == fromTop then return end
+        self.resizeFromTop = fromTop
+        local corner = fromTop and "TOPRIGHT" or "BOTTOMRIGHT"
+        handle:ClearAllPoints()
+        handle:SetPoint(corner, self, corner, -2, fromTop and -2 or 2)
+        for i, stroke in ipairs(marks) do
+            stroke:ClearAllPoints()
+            stroke:SetPoint("CENTER", handle, corner, -8 + i * 2, (fromTop and -1 or 1) * (9 - i * 2))
+            stroke:SetRotation((fromTop and -1 or 1) * math.pi / 4)
+        end
+    end
+    frame:setResizeFromTop(false)
+    handle:SetScript("OnEnter", function()
+        for _, stroke in ipairs(marks) do stroke:SetColorTexture(unpack(ui.gold)) end
+    end)
+    handle:SetScript("OnLeave", function()
+        for _, stroke in ipairs(marks) do stroke:SetColorTexture(unpack(ui.muted)) end
+    end)
+    handle:SetScript("OnMouseDown", function(_, button)
+        if button ~= "LeftButton" or frame.dragging or frame.resizing then return end
+        local left, top, bottom = frame:GetLeft(), frame:GetTop(), frame:GetBottom()
+        if not (left and top and bottom) then return end
+        local minimumW, maximumW, minimumH, maximumH = atlas.expeditionSizeLimits()
+        local screenBottom = UIParent:GetBottom() or 0
+        local screenWidth, screenHeight = UIParent:GetSize()
+        local horizontalSpace = (UIParent:GetLeft() or 0) + screenWidth - left
+        local verticalSpace = frame.resizeFromTop and (screenBottom + screenHeight - bottom) or (top - screenBottom)
+        frame:SetResizeBounds(minimumW, minimumH, math.max(minimumW, math.min(maximumW, horizontalSpace)),
+            math.max(minimumH, math.min(maximumH, verticalSpace)))
+        frame.resizing = { width = frame:GetWidth(), height = frame:GetHeight() }
+        frame:StartSizing(frame.resizeFromTop and "TOPRIGHT" or "BOTTOMRIGHT")
+    end)
+    handle:SetScript("OnMouseUp", function(_, button)
+        if button == "LeftButton" then stopResizing(frame) end
+    end)
 end
 
 local function applyPin(frame, pinned)
@@ -250,21 +372,37 @@ end
 function atlas.createExpeditionWindow(name, onTargetClick)
     local frame = CreateFrame("Frame", name, UIParent)
     frame:Hide()
-    frame:SetSize(width, headerHeight + emptyHeight + bottomPadding)
+    local width, height = atlas.expeditionSize()
+    local rowWidth = width - 2 * inset
+    frame:SetSize(width, height)
     frame:SetFrameStrata("LOW")
     frame:SetClampedToScreen(true)
     frame:SetMovable(true)
+    frame:SetResizable(true)
     frame:EnableMouse(true)
     frame.background = CreateFrame("Frame", nil, frame)
     frame.background:SetAllPoints(frame)
     frame.background:SetFrameLevel(frame:GetFrameLevel())
-    ui.journalPanel(frame.background, .65)
-    ui.fill(frame, inset, headerHeight - 6, rowWidth, 1, ui.rule):SetDrawLayer("ARTWORK")
+    ui.journalPanel(frame.background, 0)
+    local divider = ui.fill(frame, inset, headerHeight - 6, rowWidth, 1, ui.rule)
+    divider:SetDrawLayer("ARTWORK")
 
     local grip = ui.place(CreateFrame("Frame", nil, frame), frame, 0, 0, width - 34, headerHeight)
     grip:EnableMouse(true)
     grip:RegisterForDrag("LeftButton")
-    ui.brandIcon(grip, 16, 11, 21)
+    local paw = ui.place(CreateFrame("Button", nil, grip), grip, 11, 6, 31, 31)
+    paw:RegisterForClicks("LeftButtonUp")
+    local icon = ui.brandIcon(paw, 5, 5, 21)
+    paw:SetHighlightTexture(icon:GetTexture(), "ADD")
+    local highlight = paw:GetHighlightTexture()
+    highlight:ClearAllPoints()
+    highlight:SetAllPoints(icon)
+    highlight:SetAlpha(.3)
+    paw:SetScript("OnClick", function(_, button)
+        if button ~= "LeftButton" then return end
+        if frame ~= tracker then frame:Hide() end
+        MountAtlasWindow:Show()
+    end)
     frame.title = ui.text(grip, 45, 6, width - 91, 31, 17, "", ui.gold)
     frame.title.atlasGameText = true
     frame.title:SetMaxLines(1)
@@ -285,13 +423,15 @@ function atlas.createExpeditionWindow(name, onTargetClick)
     grip:SetScript("OnHide", hideTitleTooltip)
     grip:SetScript("OnDragStart", function()
         local _, pinned = atlas.expeditionSettings()
-        if pinned then return end
+        if pinned or frame.resizing then return end
         hideTitleTooltip()
         frame.dragging = true
         frame:StartMoving()
     end)
     grip:SetScript("OnDragStop", function() stopMoving(frame) end)
-    local lock = ui.place(CreateFrame("Button", nil, frame), frame, width - 37, 9, 26, 26)
+    local lock = CreateFrame("Button", nil, frame)
+    lock:SetSize(26, 26)
+    lock:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -11, -9)
     frame.lockIcon = ui.icon(lock, 5, 5, 16, "Unlock")
     lock:SetScript("OnClick", function()
         local _, pinned = atlas.expeditionSettings()
@@ -310,18 +450,20 @@ function atlas.createExpeditionWindow(name, onTargetClick)
     end
     lock:SetScript("OnLeave", leaveLock)
     lock:SetScript("OnHide", leaveLock)
-    frame:SetScript("OnHide", stopMoving)
+    setupResizeHandle(frame)
+    frame:SetScript("OnHide", function(self)
+        stopResizing(self)
+        stopMoving(self)
+    end)
     function frame:setTitle(name)
         self.title:SetText(name)
         if GameTooltip:IsShown() and GameTooltip:IsOwned(grip) then showTitleTooltip() end
     end
     frame.empty = ui.text(frame, 22, headerHeight, width - 44, emptyHeight, 15, L("В плане: %d", 0), ui.muted)
-    frame.more = ui.text(frame, inset, headerHeight + maxRows * rowHeight, rowWidth, 20, 12, "", ui.muted)
-    frame.more:SetJustifyH("RIGHT")
-    local list = ui.scrollingList(frame, inset, headerHeight, rowWidth, rowHeight, maxRows, true)
-    local contentWidth = list.rows[1]:GetWidth()
+    local list = ui.scrollingList(frame, inset, headerHeight, rowWidth, rowHeight, 1, true)
     frame.list = list
-    for _, row in ipairs(list.rows) do
+    function list:setupRow(row)
+        local contentWidth = row:GetWidth()
         row:SetScript("OnClick", function(self)
             if not self.item then return end
             if onTargetClick then onTargetClick(frame, self.item); return end
@@ -334,23 +476,34 @@ function atlas.createExpeditionWindow(name, onTargetClick)
         row.check = ui.icon(iconSlot, 22, 22, 14, "ObjectiveComplete")
         row.check:SetDrawLayer("OVERLAY")
         row.check:Hide()
-        row.name = ui.text(row, textX, 3, contentWidth - textX - 20, 20, 15, "", ui.paper)
+        row.name = ui.text(row, textX, 3, contentWidth - textX - 8, 20, 15, "", ui.paper)
         row.name.atlasGameText = true
         row.name:SetMaxLines(1)
         row.name:SetWordWrap(false)
         row.attempts = ui.text(row, textX, 23, contentWidth - textX - statsWidth - 14, 14, 12, "", ui.muted)
         row.attempts:SetMaxLines(1)
         row.value = ui.text(row, contentWidth - statsWidth - 8, 3, statsWidth, 23, 17, "", ui.gold)
+        row.value:ClearAllPoints()
+        row.value:SetPoint("TOPRIGHT", row, "TOPRIGHT", -8, -3)
         row.value:SetJustifyH("RIGHT")
         row.value:SetMaxLines(1)
         row.status = ui.text(row, contentWidth - statsWidth - 8, 25, statsWidth, 15, 11, "", ui.muted)
+        row.status:ClearAllPoints()
+        row.status:SetPoint("TOPRIGHT", row, "TOPRIGHT", -8, -25)
         row.status:SetJustifyH("RIGHT")
         row.status:SetMaxLines(1)
-        row.arrow = ui.text(row, contentWidth - 17, 0, 14, rowHeight, 14, "›", ui.gold)
+        function row:resize()
+            local contentWidth = self:GetWidth()
+            local hasMetric = (self.value:GetText() or "") ~= "" or self.lootStatus ~= nil
+            self.name:SetWidth(contentWidth - textX - 8 - (hasMetric and statsWidth + 8 or 0))
+            self.attempts:SetWidth(contentWidth - textX - statsWidth - 14)
+            if self.item then fitRowName(self.name, self.displayName) end
+        end
         row:SetScript("OnEnter", showRowTooltip)
         row:SetScript("OnLeave", hideRowTooltip)
         row:SetScript("OnHide", hideRowTooltip)
     end
+    for _, row in ipairs(list.rows) do list:setupRow(row) end
     local resetTimer, refreshAt
     local function cancelResetTimer()
         if resetTimer then resetTimer:Cancel() end
@@ -377,9 +530,7 @@ function atlas.createExpeditionWindow(name, onTargetClick)
         local attempts, value, color = formatStats(stats)
         local status, complete, expires = atlas.planLootCompletion(mount, frame.characterGUID)
         row.stats, row.lootStatus, row.complete = stats, status, complete
-        local hasMetric = value ~= "" or status ~= nil
-        row.name:SetWidth(contentWidth - textX - 20 - (hasMetric and statsWidth or 0))
-        fitRowName(row.name, atlas.displayMountName(mount))
+        row.displayName = atlas.displayMountName(mount)
         row.name:SetTextColor(unpack(frame.pinnedID == mount.id and ui.gold or ui.paper))
         row.name:SetAlpha(complete and .7 or 1)
         row.attempts:SetText(attempts)
@@ -390,7 +541,7 @@ function atlas.createExpeditionWindow(name, onTargetClick)
         row.icon:SetTexture(icon or 132261)
         row.icon:SetDesaturated(complete == true)
         row.check:SetShown(complete == true)
-        row.arrow:SetShown(not hasMetric)
+        row:resize()
         refreshAtReset(expires)
         if GameTooltip:IsShown() and GameTooltip:IsOwned(row) then showRowTooltip(row) end
     end
@@ -407,17 +558,19 @@ function atlas.createExpeditionWindow(name, onTargetClick)
         end
         self.profileID, self.pinnedID = profileID, pinnedID
         list.items = mounts
-        local visible = math.min(#mounts, maxRows)
-        list:SetHeight(visible * rowHeight)
-        list:SetShown(visible > 0)
-        self.empty:SetShown(visible == 0)
-        self.more:SetShown(#mounts > maxRows)
-        self.more:SetText(("+%d"):format(math.max(0, #mounts - maxRows)))
-        local height = headerHeight + (visible == 0 and emptyHeight or visible * rowHeight)
-            + (#mounts > maxRows and 20 or 0) + bottomPadding
-        if self:GetHeight() ~= height then self:SetHeight(height) end
+        list:SetShown(#mounts > 0)
+        self.empty:SetShown(#mounts == 0)
         self:refreshRows()
     end
+    local function updateLayout(_, newWidth, newHeight)
+        divider:SetWidth(newWidth - 2 * inset)
+        grip:SetWidth(newWidth - 34)
+        frame.title:SetWidth(newWidth - 91)
+        frame.empty:SetWidth(newWidth - 44)
+        list:resizeViewport(newWidth - 2 * inset, newHeight - headerHeight - bottomPadding)
+    end
+    updateLayout(frame, width, height)
+    frame:SetScript("OnSizeChanged", updateLayout)
     windows[#windows + 1] = frame
     local _, pinned, percent = atlas.expeditionSettings()
     applyPin(frame, pinned)
@@ -433,12 +586,13 @@ function atlas.refreshExpeditionTracker()
         if tracker then tracker:Hide() end
         return
     end
+    local planID = atlas.activePlanID()
+    local targets, pendingJournal = atlas.planTargets(true, planID)
+    atlas.updateExpeditionAutoHeight(#targets)
     if not tracker then
         tracker = atlas.createExpeditionWindow("MountAtlasExpeditionTracker")
         applyPosition(tracker)
     end
-    local planID = atlas.activePlanID()
-    local targets, pendingJournal = atlas.planTargets(true, planID)
     if pendingJournal then events:RegisterEvent(journalEvent)
     else events:UnregisterEvent(journalEvent) end
     if #targets > 0 then events:RegisterEvent(bagsEvent)
@@ -461,10 +615,11 @@ events:RegisterEvent("DISPLAY_SIZE_CHANGED")
 events:RegisterEvent("UI_SCALE_CHANGED")
 events:SetScript("OnEvent", function(self, event)
     if event == "DISPLAY_SIZE_CHANGED" or event == "UI_SCALE_CHANGED" then
-        if tracker then
-            stopMoving(tracker)
-            applyPosition(tracker)
+        for _, frame in ipairs(windows) do
+            stopResizing(frame)
+            stopMoving(frame)
         end
+        applySharedSize()
     elseif event == bagsEvent then
         for _, row in ipairs(tracker.list.rows) do
             if row.item and row.stats and row.stats.watchBags then

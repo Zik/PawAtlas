@@ -655,6 +655,39 @@ function atlas.makeSettings(parent)
         if userInput then atlas.setExpeditionTransparency(value) end
         opacityValue:SetText(("%d%%"):format(math.floor(value + .5)))
     end)
+    local function expeditionSizeSlider(name, label, y, minimum, maximum, setValue)
+        ui.text(expeditionSection, 308, y, 338, 26, 16, label, ui.muted)
+        local readout = ui.text(expeditionSection, 644, y + 19, 62, 32, 15, "", ui.gold)
+        readout:SetJustifyH("RIGHT")
+        local slider = settingSlider(expeditionSection, name, 308, y + 25, 318, minimum, maximum, 1)
+        slider:SetHitRectInsets(0, 0, -4, -4)
+        slider:SetScript("OnValueChanged", function(_, value, userInput)
+            if userInput then setValue(value) end
+        end)
+        return slider, readout
+    end
+    local minWidth, maxWidth, minHeight, maxHeight = atlas.expeditionSizeLimits()
+    local expeditionWidth, widthValue = expeditionSizeSlider("MountAtlasExpeditionWidth", "Ширина", 164, minWidth, maxWidth,
+        function(value) atlas.setExpeditionSize(value, nil) end)
+    local expeditionHeight, heightValue = expeditionSizeSlider("MountAtlasExpeditionHeight", "Высота", 232, minHeight, maxHeight,
+        function(value) atlas.setExpeditionSize(nil, value) end)
+    local function refreshExpeditionDimension(slider, readout, minimum, maximum, value)
+        local currentMin, currentMax = slider:GetMinMaxValues()
+        if currentMin ~= minimum or currentMax ~= maximum then slider:SetMinMaxValues(minimum, maximum) end
+        if slider:GetValue() ~= value then slider:SetValue(value) end
+        readout:SetText(("%d"):format(value))
+    end
+    atlas.refreshExpeditionSizeSettings = function(width, height)
+        local minWidth, maxWidth, minHeight, maxHeight = atlas.expeditionSizeLimits()
+        refreshExpeditionDimension(expeditionWidth, widthValue, minWidth, maxWidth, width)
+        refreshExpeditionDimension(expeditionHeight, heightValue, minHeight, maxHeight, height)
+    end
+    ui.action(expeditionSection, 308, 306, 178, 33, "По умолчанию", nil, function()
+        atlas.resetExpeditionSize()
+    end)
+    expeditionSection:SetScript("OnShow", function()
+        atlas.refreshExpeditionSizeSettings(atlas.expeditionSize())
+    end)
     for _, control in ipairs({ gameTooltips, minimap, compartment, reminders, expedition, expeditionPin }) do
         ui.setFont(control.caption, 16)
         control.caption:SetMaxLines(2)

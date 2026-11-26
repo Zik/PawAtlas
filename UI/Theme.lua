@@ -555,6 +555,7 @@ function ui.windowBorder(frame, w, h, trimScale)
     edge("BOTTOMLEFT", "BOTTOMRIGHT", 0, 1, 0, 0)
     edge("TOPLEFT", "BOTTOMLEFT", 0, -1, 1, 1)
     edge("TOPRIGHT", "BOTTOMRIGHT", -1, -1, 0, 1)
+    if scale == 0 then return end
     for _, anchor in ipairs({ "TOPLEFT", "TOPRIGHT", "BOTTOMLEFT", "BOTTOMRIGHT" }) do
         local dx = anchor:find("LEFT") and 1 or -1
         local dy = anchor:find("TOP") and -1 or 1

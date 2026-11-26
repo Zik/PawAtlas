@@ -87,6 +87,7 @@ end
 
 local function currentTargets(planID)
     local mounts, pending = atlas.planTargets(true, planID)
+    if planID == atlas.activePlanID() then atlas.updateExpeditionAutoHeight(#mounts) end
     local ordered, byID, rank = {}, {}, {}
     for _, mount in ipairs(mounts) do
         if not mount.unavailable and not isCollected(mount.id) then
@@ -263,6 +264,7 @@ local function makePopup()
         local bottom = owner and owner:GetBottom()
         local left = owner and owner:GetLeft()
         if not (top and bottom and left) then
+            self:setResizeFromTop(false)
             self:SetPoint("CENTER", UIParent, "CENTER")
             return
         end
@@ -272,14 +274,19 @@ local function makePopup()
         local x = left * scale - (UIParent:GetLeft() or 0)
         local screenBottom = UIParent:GetBottom() or 0
         x = math.max(0, math.min(x, screenWidth - width))
-        local y = top * scale - screenBottom + 6
-        if y + height <= screenHeight then
-            self:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", x, y)
+        local above = top * scale - screenBottom + 6
+        local below = bottom * scale - screenBottom - 6
+        local spaceAbove = screenHeight - above
+        local fromTop = spaceAbove >= height or (below < height and spaceAbove >= below)
+        self:setResizeFromTop(fromTop)
+        if fromTop then
+            self:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", x, math.max(0, math.min(above, screenHeight - height)))
         else
-            self:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", x, bottom * scale - screenBottom - 6)
+            self:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", x, math.max(height, math.min(below, screenHeight)))
         end
     end
     frame:SetScript("OnEvent", function(self)
+        if self.resizing or self.dragging then return end
         if not self:IsMouseOver() and not (self.owner and self.owner:IsMouseOver()) then self:Hide() end
     end)
     frame:HookScript("OnHide", function(self)
@@ -293,10 +300,10 @@ end
 
 function atlas.openBrokerTargetMenu(owner)
     if popup and popup:IsShown() then popup:Hide(); return end
-    if not popup then popup = makePopup() end
     local profileID = atlas.activePlanID()
     local options = ordered
     if resolveQueued or planID ~= profileID then options = currentTargets(profileID) end
+    if not popup then popup = makePopup() end
     popup:refresh(profileID, options, manualID(settings()))
     if owner and owner.GetTop and owner.IsMouseOver then
         popup.owner = owner

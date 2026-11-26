@@ -31,6 +31,8 @@ atlas.addTranslations("enUS", {
     ["Режим похода"] = "Expedition mode",
     ["Закрепление"] = "Lock position",
     ["Прозрачность"] = "Transparency",
+    ["Ширина"] = "Width",
+    ["Высота"] = "Height",
     ["В плане"] = "In plan",
     ["(%d/%s попыток)"] = "(%d/%s attempts)",
     ["Интеграции"] = "Integrations",

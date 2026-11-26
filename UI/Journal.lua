@@ -228,9 +228,10 @@ ui.tab(frame, 993, 11, 34, 44, nil, "Close", function() frame:Hide() end)
 
 
 local sourceFilter, expansionFilter
-local found = ui.text(page, 222, 70, 68, 22, 12, "", ui.muted)
+local found = ui.text(page, 258, 70, 33, 22, 12, "", ui.muted)
 found:SetJustifyH("RIGHT")
-local catalog = ui.scrollingList(page, 26, 105, 272, 46, 8, true)
+found:SetWordWrap(false)
+local catalog = ui.scrollingList(page, 26, 105, 272, 46, 8, true, 10)
 catalog.loading = true
 catalog.loadingLabel = ui.text(catalog, 8, 20, 248, 40, 15, "Загрузка коллекции…", ui.muted)
 catalog.loadingLabel:SetJustifyH("CENTER")
@@ -291,31 +292,54 @@ local sourceCategories = {
 }
 local sourceMenu, sourceSubtype, frequency = {}, nil, nil
 do
-    local menu = ui.place(CreateFrame("Frame", nil, page), page, 26, 97, 216, 362)
-    menu:SetFrameLevel(page:GetFrameLevel() + 30)
-    menu:EnableMouse(true)
-    ui.dropdownSurface(menu)
-    menu:Hide()
-    local toggle = ui.action(page, 26, 69, 146, 25, "Фильтры", nil, function() menu:SetShown(not menu:IsShown()) end)
-    ui.setFont(toggle.caption, 12)
-    menu:ClearAllPoints()
-    menu:SetPoint("TOPLEFT", toggle, "BOTTOMLEFT", 0, -5)
-    ui.dropdownArrow(toggle, 125, 8, 11)
+    local openMenu
+    local function dropdown(x, width, label, menuWidth, alignRight)
+        local menu = CreateFrame("Frame", nil, page)
+        menu:SetWidth(menuWidth)
+        menu:SetFrameLevel(page:GetFrameLevel() + 30)
+        menu:EnableMouse(true)
+        ui.dropdownSurface(menu)
+        menu:Hide()
+        local trigger = ui.action(page, x, 69, width, 25, label, nil, function() menu:SetShown(not menu:IsShown()) end)
+        ui.setFont(trigger.caption, 12)
+        ui.place(trigger.caption, trigger, 23, 0, width - 40, 25)
+        trigger.caption:SetWordWrap(false)
+        ui.dropdownArrow(trigger, width - 16, 8, 11)
+        menu:SetPoint(alignRight and "TOPRIGHT" or "TOPLEFT", trigger, alignRight and "BOTTOMRIGHT" or "BOTTOMLEFT", 0, -5)
+        menu:SetScript("OnShow", function(self)
+            if openMenu and openMenu ~= self then openMenu:Hide() end
+            openMenu = self
+            self:RegisterEvent("GLOBAL_MOUSE_DOWN")
+        end)
+        menu:SetScript("OnEvent", function(self)
+            if not self:IsMouseOver() and not trigger:IsMouseOver() then self:Hide() end
+        end)
+        menu:SetScript("OnHide", function(self)
+            self:UnregisterEvent("GLOBAL_MOUSE_DOWN")
+            if openMenu == self then openMenu = nil end
+        end)
+        page:HookScript("OnHide", function() menu:Hide() end)
+        return menu, trigger
+    end
+    local menu, toggle = dropdown(26, 107, "Фильтры", 216)
     for i, knob in ipairs({ 6, 12, 8 }) do
         local y = 7 + (i - 1) * 5
-        ui.fill(toggle, 11, y, 17, 1, ui.paper):SetDrawLayer("ARTWORK")
-        ui.fill(toggle, 11 + knob, y - 1, 3, 3, ui.paper):SetDrawLayer("ARTWORK")
+        ui.fill(toggle, 8, y, 15, 1, ui.paper):SetDrawLayer("ARTWORK")
+        ui.fill(toggle, 8 + knob, y - 1, 3, 3, ui.paper):SetDrawLayer("ARTWORK")
     end
     local y = 4
+    local function optionCheck(button)
+        ui.fill(button, 9, 4, 16, 16, ui.rule)
+        ui.fill(button, 10, 5, 14, 14, ui.ink):SetDrawLayer("BORDER")
+        return ui.check(button, 7, 1)
+    end
     local function row(key, label, select)
         local button = ui.button(menu, 4, y, 208, 23, function()
             select(key)
             refresh()
         end)
         ui.text(button, 35, 0, 164, 23, 13, label)
-        ui.fill(button, 9, 4, 16, 16, ui.rule)
-        ui.fill(button, 10, 5, 14, 14, ui.ink):SetDrawLayer("BORDER")
-        sourceMenu[key] = ui.check(button, 7, 1)
+        sourceMenu[key] = optionCheck(button)
         y = y + 23
     end
     local function separator()
@@ -334,18 +358,39 @@ do
     row("daily", "Ежедневно", function(key) frequency = frequency ~= key and key or nil end)
     row("weekly", "Еженедельно", function(key) frequency = frequency ~= key and key or nil end)
     menu:SetHeight(y + 4)
-    menu:SetScript("OnShow", function(self)
-        self:RegisterEvent("GLOBAL_MOUSE_DOWN")
-    end)
-    menu:SetScript("OnEvent", function(self)
-        if not self:IsMouseOver() and not toggle:IsMouseOver() then self:Hide() end
-    end)
-    menu:SetScript("OnHide", function(self) self:UnregisterEvent("GLOBAL_MOUSE_DOWN") end)
-    page:HookScript("OnHide", function()
-        menu:Hide()
-        menu:UnregisterEvent("GLOBAL_MOUSE_DOWN")
-    end)
     sourceMenu.trigger = toggle
+
+    function catalog:sortMode()
+        local settings = type(MountAtlasAccountDB) == "table" and MountAtlasAccountDB.settings
+        local mode = type(settings) == "table" and settings.catalogSort
+        if mode == "collected" or mode == "name" then return mode end
+        return "missing"
+    end
+    local sortMenu, sortButton = dropdown(139, 116, "Сортировка", 210, true)
+    for i, width in ipairs({14, 10, 6}) do
+        ui.fill(sortButton, 9, 8 + (i - 1) * 4, width, 1, ui.paper):SetDrawLayer("ARTWORK")
+    end
+    local options = { { "missing", "Сначала неполученные" }, { "collected", "Сначала полученные" }, { "name", "По имени" } }
+    for i, option in ipairs(options) do
+        local mode = option[1]
+        local button = ui.button(sortMenu, 4, 4 + (i - 1) * 24, 202, 24, function()
+            sortMenu:Hide()
+            if catalog:sortMode() == mode then return end
+            if type(MountAtlasAccountDB) ~= "table" then MountAtlasAccountDB = {} end
+            if type(MountAtlasAccountDB.settings) ~= "table" then MountAtlasAccountDB.settings = {} end
+            MountAtlasAccountDB.settings.catalogSort = mode
+            refresh()
+        end)
+        ui.text(button, 35, 0, 164, 24, 13, option[2]):SetWordWrap(false)
+        option.check = optionCheck(button)
+    end
+    sortMenu:SetHeight(8 + #options * 24)
+    sortMenu:HookScript("OnShow", function()
+        local mode = catalog:sortMode()
+        for _, option in ipairs(options) do option.check:SetShown(option[1] == mode) end
+        sortButton:setActive(true)
+    end)
+    sortMenu:HookScript("OnHide", function() sortButton:setActive(false) end)
 end
 
 local showEmpty = atlas.emptyCatalog(page, function()
@@ -2522,6 +2567,16 @@ end
 function catalog:onClick(mount)
     if not atlas.mountModifiedClick(mount) then selectMount(mount) end
 end
+function catalog:updateFavorite(row)
+    row.favorite:SetShown(not shared and row.item ~= nil and ui.mountFavorite(row.item.id) == true)
+end
+catalog:RegisterEvent("MOUNT_JOURNAL_SEARCH_UPDATED")
+catalog:SetScript("OnEvent", function(self)
+    if shared or not self:IsVisible() then return end
+    for _, row in ipairs(self.rows) do
+        if row.item then self:updateFavorite(row) end
+    end
+end)
 function atlas.refreshMountQualities()
     if not frame:IsShown() or not page:IsShown() then return end
     catalog:redraw()
@@ -2565,6 +2620,7 @@ function catalog:render(row, mount)
     local owned = atlas.collection and atlas.collection.byID[mount.id] == true
     local planned = not shared and not owned and atlas.isPlanned(mount, atlas.activePlanID())
     row.bookmark:SetShown(owned)
+    self:updateFavorite(row)
     row.tracked:SetShown(planned)
     row.name:SetWidth((owned or planned) and 187 or 209)
     local killed = atlas.isKilled(mount)
@@ -2584,6 +2640,11 @@ function catalog:render(row, mount)
     if GameTooltip:IsOwned(row) then self:refreshRowHistory(row) end
 end
 for _, row in ipairs(catalog.rows) do
+    row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    row:SetScript("OnClick", function(self, button)
+        if button == "RightButton" then ui.openMountMenu(self)
+        else catalog:onClick(self.item) end
+    end)
     row.bg = ui.surface(row, 0, 0, 264, 42, false, "RoundedFill")
     row:GetHighlightTexture():SetAlpha(0)
     row:HookScript("OnEnter", function()
@@ -2606,6 +2667,10 @@ for _, row in ipairs(catalog.rows) do
     row.line:SetDrawLayer("BORDER")
     row.icon, row.iconBorder = ui.squareIcon(row, 5, 3, 36, ui.rule)
     row.icon:SetTexCoord(.07, .93, .07, .93)
+    row.favorite = row:CreateTexture(nil, "OVERLAY")
+    row.favorite:SetAtlas("PetJournal-FavoritesIcon", true)
+    row.favorite:SetPoint("CENTER", row.iconBorder, "TOPLEFT")
+    row.favorite:Hide()
     row.name = ui.text(row, 48, 1, 209, 40, 15, "")
     row.name.atlasGameText = true
     row.bookmark = row:CreateTexture(nil, "ARTWORK")
@@ -2643,6 +2708,7 @@ refresh = function(preferredMount)
         if not preferredMount and not selected and not shared and not catalog.wantsPlan and activeFilter == 1
             and searchQuery.key == "" and not (sourceFilter or sourceSubtype or frequency or expansionFilter) and atlas.mounts[1] then
             preferredMount = atlas.resolveJournalMount(atlas.mounts[1].id)
+            catalog.loadingPreview = preferredMount
         end
         selectMount(preferredMount or selected)
         return
@@ -2653,7 +2719,8 @@ refresh = function(preferredMount)
         catalog.needsRefresh = true
     end
     local queryChanged = lastKey ~= key
-    local filtersChanged = queryChanged or lastFilter ~= activeFilter or lastSourceFilter ~= sourceFilter
+    local sortMode = catalog:sortMode()
+    local filtersChanged = queryChanged or catalog.lastSortMode ~= sortMode or lastFilter ~= activeFilter or lastSourceFilter ~= sourceFilter
         or lastSourceSubtype ~= sourceSubtype or lastFrequency ~= frequency or lastExpansion ~= expansionFilter
     if not filtersChanged and not catalog.needsRefresh and collection == lastCollection then
         selectMount(preferredMount or selected)
@@ -2686,12 +2753,15 @@ refresh = function(preferredMount)
     sourceMenu.daily:SetShown(frequency == "daily")
     sourceMenu.weekly:SetShown(frequency == "weekly")
     sourceMenu.trigger:setActive(not allSources)
-    local matches, wanted, keep = atlas.mounts, preferredMount or selected, false
+    local ordered = atlas.sortedCatalogMounts(sortMode)
+    local matches, wanted, keep = ordered, preferredMount or selected, false
+    if wanted == catalog.loadingPreview and not preferredMount and not catalog.revealAfterLoading then wanted = nil end
+    catalog.loadingPreview = nil
     if not shared and activeFilter == 1 and allSources and searchQuery.key == "" then
         keep = wanted and atlas.mountByID(wanted.id) == wanted
     else
         matches = {}
-        for _, mount in ipairs(atlas.mounts) do
+        for _, mount in ipairs(ordered) do
             if catalog:matchesCollection(mount.id)
                 and (not sourceSubtype or (sourceSubtype == "rare" and mount.locations and mount.kind ~= "Исследование")
                 or (sourceSubtype == "raid" and (mount.isRaid or mount.kind == "Рейд")))
@@ -2705,6 +2775,7 @@ refresh = function(preferredMount)
         end
     end
     catalog.needsRefresh = nil
+    catalog.lastSortMode = sortMode
     if filtersChanged then catalog:resetScroll() end
     lastExpansion = expansionFilter
     lastKey, lastFilter, lastSourceFilter, lastSourceSubtype, lastFrequency = key, activeFilter, sourceFilter, sourceSubtype, frequency
@@ -2904,7 +2975,7 @@ returnToCollection = function()
         cardTabs.active = previous.tab
         locationIndex, vendorIndex, vendorMount = previous.locationIndex, previous.vendorIndex, selected
     end
-    catalog.offset = previous.offset
+    if previous.sortMode == catalog:sortMode() then catalog.offset = previous.offset else catalog:resetScroll() end
     atlas.refreshDetails(true)
 end
 
@@ -2913,7 +2984,7 @@ function atlas.showSharedCatalog(owner)
         ownCatalog = {
             activeFilter = activeFilter, sourceSubtype = sourceSubtype, frequency = frequency,
             sourceFilter = sourceFilter, expansionFilter = expansionFilter,
-            search = search:GetText(), selected = selected, offset = catalog.offset,
+            search = search:GetText(), selected = selected, offset = catalog.offset, sortMode = catalog:sortMode(),
             locationIndex = locationIndex, vendorIndex = vendorIndex, tab = cardTabs.active,
         }
     end

@@ -1,9 +1,9 @@
-# PawAtlas 0.3.26
+# PawAtlas 0.3.27
 
 ## RU
 
-🐾 Хотфиксы.
+🐾 Небольшие улучшения интерфейса.
 
 ## EN
 
-🐾 Hotfixes.
+🐾 Minor UI improvements.

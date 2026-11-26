@@ -2094,3 +2094,150 @@ do
     equal(atlas.sourceRespawnText(changed, changed.sourceGroups[1]), "2–8 ч", "the Russian native source has the same timer")
 end
 print("passed: journal caching, acquisition and availability updates, source filters, class alternatives, conditional rewards and respawn routes")
+
+do
+    local mounts, collection, locale = atlas.mounts, atlas.collection, language
+    atlas.mounts = {
+        { id = 9906, name = "Ёж", english = "Moose" },
+        { id = 9904, name = "Бык", english = "Yak" },
+        { id = 9903, name = "Дракон", english = "Dragon" },
+        { id = 9902, name = "еж", english = "Moose" },
+        { id = 9901, name = "Аист", english = "Stork" },
+        { id = 9905, name = "Волк", english = "Wolf" },
+    }
+    local function order(list, expected, scenario)
+        local ids = {}
+        for i, mount in ipairs(list) do ids[i] = mount.id end
+        equal(table.concat(ids, ","), expected, scenario)
+    end
+
+    language = "ruRU"
+    atlas.collection = nil
+    order(atlas.sortedCatalogMounts(), "9901,9904,9905,9903,9902,9906", "unpublished ownership sorts by name")
+    atlas.collection = { byID = { [9906] = false, [9904] = true, [9903] = "unknown", [9902] = false, [9905] = true } }
+    local missing = atlas.sortedCatalogMounts()
+    order(missing, "9902,9906,9904,9905,9901,9903", "uncollected, collected and unknown groups use name then mount ID")
+    equal(atlas.sortedCatalogMounts("unsupported"), missing, "invalid mode uses the cached default")
+    order(atlas.sortedCatalogMounts("collected"), "9904,9905,9902,9906,9901,9903", "collected mounts can appear first")
+    order(atlas.sortedCatalogMounts("name"), "9901,9904,9905,9903,9902,9906", "name sorting ignores ownership")
+    equal(atlas.sortedCatalogMounts("missing"), missing, "switching modes preserves cached orders")
+
+    language = "enUS"
+    order(atlas.sortedCatalogMounts("name"), "9903,9902,9906,9901,9905,9904", "changing locale uses English display names")
+    atlas.collection.byID[9902] = true
+    atlas.collection = { byID = atlas.collection.byID }
+    order(atlas.sortedCatalogMounts(), "9906,9902,9905,9904,9903,9901", "publication refreshes ordering even when ownership table is reused")
+    order(atlas.mounts, "9906,9904,9903,9902,9901,9905", "sorting preserves the catalog array")
+    atlas.mounts, atlas.collection, language = mounts, collection, locale
+    print("passed: catalog order, locale and ownership snapshot caching")
+end
+
+do
+    local probe = { ui = {}, L = function(text) return text end }
+    local mount, other = { id = 101 }, { id = 202 }
+    local displayed = { mount.id, other.id }
+    local favorites = { [mount.id] = false, [other.id] = false }
+    local ownership = { [mount.id] = true, [other.id] = false }
+    local visible, usable, canFavorite, combat = true, true, true, false
+    local favoriteWrites, summoned = 0, {}
+    local row = { item = mount, IsVisible = function() return visible end }
+    local buttons
+    local function filterWrite() error("mount actions must preserve native journal filters") end
+    local env = setmetatable({
+        InCombatLockdown = function() return combat end,
+        BATTLE_PET_FAVORITE = "Set Favorite",
+        BATTLE_PET_UNFAVORITE = "Remove Favorite",
+        MenuUtil = { CreateContextMenu = function(owner, build)
+            equal(owner, row, "menu belongs to its catalog row")
+            buttons = {}
+            build(owner, { CreateButton = function(_, label, click)
+                local button = { click = click, SetEnabled = function(self, enabled) self.enabled = enabled end }
+                buttons[label] = button
+                return button
+            end })
+        end },
+        C_MountJournal = {
+            GetMountInfoByID = function(id)
+                return nil, nil, nil, nil, true, nil, favorites[id], nil, nil, nil, ownership[id]
+            end,
+            GetMountUsabilityByID = function() return usable end,
+            SummonByID = function(id) summoned[#summoned + 1] = id end,
+            GetNumDisplayedMounts = function() return #displayed end,
+            GetDisplayedMountID = function(index) return displayed[index] end,
+            GetIsFavorite = function(index) return favorites[displayed[index]], canFavorite end,
+            SetIsFavorite = function(index, favorite)
+                favorites[displayed[index]] = favorite
+                favoriteWrites = favoriteWrites + 1
+            end,
+            SetSearch = filterWrite,
+            SetCollectedFilterSetting = filterWrite,
+            SetSourceFilter = filterWrite,
+            SetAllSourceFilters = filterWrite,
+            SetTypeFilter = filterWrite,
+            SetAllTypeFilters = filterWrite,
+        },
+    }, { __index = _G })
+    setfenv(assert(loadfile("UI/CollectedState.lua")), env)("PawAtlas", probe)
+    local ui = probe.ui
+    local function open(item)
+        row.item, buttons = item, nil
+        ui.openMountMenu(row)
+        return buttons
+    end
+
+    equal(ui.mountFavorite(other.id), nil, "uncollected mount has no favorite status")
+    equal(open(other), nil, "uncollected mount has no action menu")
+    equal(open({ id = 303 }), nil, "pending journal ownership has no action menu")
+    equal(ui.mountFavorite(mount.id), false, "collected mount starts without a favorite")
+    open(mount)
+    local addFavorite, summon = assert(buttons[env.BATTLE_PET_FAVORITE]), assert(buttons["Призвать"])
+    equal(addFavorite.enabled, true, "eligible mount can be favorited")
+    equal(summon.enabled, true, "usable mount can be summoned")
+
+    combat = true
+    summon.click()
+    equal(#summoned, 0, "combat after opening prevents a summon")
+    combat, usable = false, false
+    summon.click()
+    equal(#summoned, 0, "changed usability prevents a summon")
+    usable = true
+    row.item = other
+    summon.click()
+    addFavorite.click()
+    row.item, visible = mount, false
+    summon.click()
+    addFavorite.click()
+    row.item, visible, ownership[mount.id] = mount, true, nil
+    summon.click()
+    addFavorite.click()
+    equal(#summoned, 0, "stale menu cannot summon from a recycled or hidden row or pending mount")
+    equal(favoriteWrites, 0, "stale menu cannot change a favorite from a recycled or hidden row or pending mount")
+
+    ownership[mount.id], ownership[other.id] = true, true
+    open(mount)
+    addFavorite, summon = buttons[env.BATTLE_PET_FAVORITE], buttons["Призвать"]
+    canFavorite = false
+    addFavorite.click()
+    equal(favoriteWrites, 0, "favorite permission is checked again at click")
+    canFavorite = true
+    displayed = { other.id, mount.id }
+    addFavorite.click()
+    equal(ui.mountFavorite(mount.id), true, "favorite targets the original mount after journal reordering")
+    equal(favorites[other.id], false, "the mount at the old display index stays unfavorited")
+    equal(favoriteWrites, 1, "one favorite update is sent to the journal")
+    summon.click()
+    equal(summoned[1], mount.id, "summoning uses mount ID")
+
+    open(mount)
+    local removeFavorite = assert(buttons[env.BATTLE_PET_UNFAVORITE])
+    displayed = { other.id }
+    removeFavorite.click()
+    equal(favoriteWrites, 1, "a mount removed from the journal results cannot change favorites")
+    open(mount)
+    equal(buttons[env.BATTLE_PET_UNFAVORITE].enabled, false, "a filtered-out mount cannot change favorites")
+    displayed = { other.id, mount.id }
+    open(mount)
+    buttons[env.BATTLE_PET_UNFAVORITE].click()
+    equal(ui.mountFavorite(mount.id), false, "favorite can be removed through the native journal")
+    print("passed: mount menu ownership, stale actions, summon restrictions, native favorites and journal filters")
+end

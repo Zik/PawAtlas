@@ -2,6 +2,72 @@ local _, atlas = ...
 local ui = atlas.ui
 local controls = "Interface\\AddOns\\PawAtlas\\Media\\Controls\\"
 
+local function readable(value) return not (issecretvalue and issecretvalue(value)) end
+
+local function canSummonMount(id)
+    if not id then return false end
+    if InCombatLockdown and InCombatLockdown() then return false, ERR_NOT_IN_COMBAT end
+    local _, _, _, _, usable, _, _, _, _, _, collected = C_MountJournal.GetMountInfoByID(id)
+    if not readable(collected) or collected ~= true then return false end
+    if C_MountJournal.GetMountUsabilityByID then
+        local allowed, reason = C_MountJournal.GetMountUsabilityByID(id, true)
+        return readable(usable) and usable == true and readable(allowed) and allowed == true,
+            readable(reason) and reason or nil
+    end
+    return readable(usable) and usable == true
+end
+
+function ui.mountFavorite(id)
+    local _, _, _, _, _, _, favorite, _, _, _, collected = C_MountJournal.GetMountInfoByID(id)
+    if readable(collected) and collected == true and readable(favorite) then return favorite end
+end
+
+-- The favorite setter takes an index in Blizzard's filtered, sorted list.
+local function favoriteIndex(id, previous)
+    local journal = C_MountJournal
+    local count = journal.GetNumDisplayedMounts()
+    if not readable(count) or type(count) ~= "number" then return end
+    local function matches(index)
+        local displayedID = journal.GetDisplayedMountID(index)
+        return readable(displayedID) and displayedID == id
+    end
+    if previous and previous <= count and matches(previous) then return previous end
+    for index = 1, count do
+        if matches(index) then return index end
+    end
+end
+
+function ui.openMountMenu(row)
+    local id = row.item and row.item.id
+    local favorite = id and ui.mountFavorite(id)
+    if favorite == nil then return end
+    local function stillOwned()
+        return row:IsVisible() and row.item and row.item.id == id and ui.mountFavorite(id) ~= nil
+    end
+    MenuUtil.CreateContextMenu(row, function(_, menu)
+        local summon = menu:CreateButton(atlas.L("Призвать"), function()
+            if stillOwned() and canSummonMount(id) then C_MountJournal.SummonByID(id) end
+        end)
+        local usable = canSummonMount(id)
+        summon:SetEnabled(usable)
+        local index = favoriteIndex(id)
+        local canFavorite
+        if index then favorite, canFavorite = C_MountJournal.GetIsFavorite(index) end
+        if not readable(favorite) then return end
+        local desired = not favorite
+        local button = menu:CreateButton(favorite and BATTLE_PET_UNFAVORITE or BATTLE_PET_FAVORITE, function()
+            if not stillOwned() then return end
+            local current = favoriteIndex(id, index)
+            if not current then return end
+            local marked, allowed = C_MountJournal.GetIsFavorite(current)
+            if readable(allowed) and allowed == true and readable(marked) and marked ~= desired then
+                C_MountJournal.SetIsFavorite(current, desired)
+            end
+        end)
+        button:SetEnabled(readable(canFavorite) and canFavorite == true)
+    end)
+end
+
 -- Collected mounts use a quiet celebratory footer in place of farming controls.
 function atlas.collectedState(card, footerTop)
     local state = CreateFrame("Frame", nil, card)
@@ -79,18 +145,8 @@ function atlas.collectedState(card, footerTop)
         summon:SetHeight(iconSize + summonGap + labelHeight)
     end
 
-    local function readable(value) return not (issecretvalue and issecretvalue(value)) end
     local function canSummon()
-        if not state.mount then return false end
-        if InCombatLockdown and InCombatLockdown() then return false, ERR_NOT_IN_COMBAT end
-        local _, _, _, _, usable, _, _, _, _, _, collected = C_MountJournal.GetMountInfoByID(state.mount.id)
-        if not readable(collected) or collected ~= true then return false end
-        if C_MountJournal.GetMountUsabilityByID then
-            local allowed, reason = C_MountJournal.GetMountUsabilityByID(state.mount.id, true)
-            return readable(usable) and usable == true and readable(allowed) and allowed == true,
-                readable(reason) and reason or nil
-        end
-        return readable(usable) and usable == true
+        return canSummonMount(state.mount and state.mount.id)
     end
     local function updateButton(hovered)
         local enabled = canSummon()
