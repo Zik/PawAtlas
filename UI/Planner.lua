@@ -168,14 +168,55 @@ local function updateChoiceTint(row)
     row.marker:SetShown(row.chosen)
 end
 
+local function toolbarButton(page, x, width, u, v, callback, selectedRow)
+    local button = ui.place(CreateFrame("Button", nil, page), page, x, 1, width, 28)
+    local surface = button:CreateTexture(nil, "BACKGROUND")
+    surface:SetAllPoints()
+    surface:SetTexture("Interface\\AddOns\\PawAtlas\\Media\\Controls\\PlannerButtons.tga")
+    local hovered, active, pressed = false, false, false
+    local function update()
+        local left, row = u, v + (hovered and 32 or 0)
+        if active and selectedRow then left, row = 220, selectedRow end
+        surface:SetTexCoord(left / 512, (left + width) / 512, row / 128, (row + 28) / 128)
+        local tint = not button:IsEnabled() and .60 or pressed and .86 or 1
+        surface:SetVertexColor(tint, tint, tint)
+    end
+    function button:setActive(value) active = value; update() end
+    button:SetScript("OnClick", callback)
+    button:SetScript("OnEnter", function() hovered = button:IsEnabled(); update() end)
+    local function clearHover()
+        hovered, pressed = false, false
+        update()
+    end
+    local function updateHover()
+        hovered, pressed = button:IsEnabled() and button:IsMouseOver(), false
+        update()
+    end
+    button:SetScript("OnLeave", clearHover)
+    button:SetScript("OnHide", clearHover)
+    button:SetScript("OnDisable", clearHover)
+    button:SetScript("OnEnable", updateHover)
+    button:SetScript("OnShow", updateHover)
+    button:SetScript("OnMouseDown", function(self, mouseButton)
+        if mouseButton == "LeftButton" then pressed = self:IsEnabled(); update() end
+    end)
+    button:SetScript("OnMouseUp", function(_, mouseButton)
+        if mouseButton == "LeftButton" then updateHover() end
+    end)
+    update()
+    return button
+end
+
 local function drawShareIcon(button)
+    local offset = (button:GetWidth() - 28) / 2
     for _, direction in ipairs({ -1, 1 }) do
-        local link = ui.fill(button, 9, 13 + direction * 3, 10, 1.5, ui.paper)
+        local link = ui.fill(button, offset + 9, 13 + direction * 3, 10, 1.5, ui.paper)
         link:SetRotation(-direction * math.pi / 6)
         link:SetDrawLayer("ARTWORK")
     end
     for _, center in ipairs({ { 9, 14 }, { 18, 9 }, { 18, 19 } }) do
         local x, y = unpack(center)
+        x = x + offset
         ui.fill(button, x - 1.5, y - 2.5, 3, 5, ui.paper):SetDrawLayer("OVERLAY")
         ui.fill(button, x - 2.5, y - 1.5, 5, 3, ui.paper):SetDrawLayer("OVERLAY")
     end
@@ -347,10 +388,12 @@ end
 function atlas.makePlanner(parent, openMount, openExpansion)
     local page = ui.place(CreateFrame("Frame", nil, parent), parent, 35, 92, 970, 460)
     page:Hide()
+    local planX, planWidth = 222, 240
     ui.icon(page, 0, 4, 21, "Route"):SetVertexColor(unpack(ui.gold))
-    ui.text(page, 32, 0, 200, 30, 21, "Планнер")
-    local add = ui.action(page, 812, 0, 158, 30, "Добавить цель", "Plus", function() openMount(nil) end)
-    add:setActive(true)
+    ui.text(page, 32, 0, planX - 40, 30, 21, "Планнер")
+    local add = toolbarButton(page, 796, 174, 42, 65, function() openMount(nil) end)
+    ui.icon(add, 12, 5, 18, "Plus"):SetVertexColor(unpack(ui.gold))
+    ui.text(add, 34, 0, 132, 28, 14, "Добавить цель"):SetJustifyH("CENTER")
     local selectedGUID
     local menu, planMenu, planChanged
     local sources = atlas.makePlannerSources(page)
@@ -361,15 +404,14 @@ function atlas.makePlanner(parent, openMount, openExpansion)
     dismiss:SetFrameLevel(page:GetFrameLevel() + 12)
     dismiss:ClearHighlightTexture()
     dismiss:Hide()
-    local planX, planWidth = 259, 219
-    local characterX, characterWidth = 496, 242
+    local characterX, characterWidth = 476, 254
     local fieldY, fieldHeight = 1, 28
     local menuY = fieldY + fieldHeight + 5
     local fieldSilver = { .87, .89, .92 }
-    local picker = ui.action(page, characterX, fieldY, characterWidth, fieldHeight, nil, nil, function()
+    local picker = toolbarButton(page, characterX, characterWidth, 244, 1, function()
         planMenu:Hide()
         menu:SetShown(not menu:IsShown())
-    end)
+    end, 97)
     picker:SetFrameLevel(page:GetFrameLevel() + 13)
     local pickerIcon = rosterIcon(picker, 18, 18)
     local pickerName = ui.text(picker, 36, 0, characterWidth - 70, fieldHeight, 13, "Весь отряд")
@@ -385,10 +427,10 @@ function atlas.makePlanner(parent, openMount, openExpansion)
     ui.dropdownSurface(menu)
     local characterListWidth = characterWidth - menuInset * 2
     local characterList = ui.scrollingList(menu, menuInset, menuInset, characterListWidth, 42, 7)
-    local planPicker = ui.action(page, planX, fieldY, planWidth, fieldHeight, nil, nil, function()
+    local planPicker = toolbarButton(page, planX, planWidth, 1, 1, function()
         menu:Hide()
         planMenu:SetShown(not planMenu:IsShown())
-    end)
+    end, 65)
     planPicker:SetFrameLevel(picker:GetFrameLevel())
     local planName = ui.text(planPicker, 12, 0, planWidth - 44, fieldHeight, 13, "")
     planName.atlasGameText = true
@@ -403,7 +445,7 @@ function atlas.makePlanner(parent, openMount, openExpansion)
     planPicker:HookScript("OnEnter", function(self) showPlanTooltip(self, activeProfile and activeProfile.name) end)
     planPicker:HookScript("OnLeave", hidePlanTooltip)
     planPicker:HookScript("OnHide", hidePlanTooltip)
-    local share = ui.action(page, 760, 1, 28, 28, nil, nil, function()
+    local share = toolbarButton(page, 744, 38, 1, 65, function()
         menu:Hide(); planMenu:Hide(); sources:Hide(); sharing:open(activeProfile)
     end)
     drawShareIcon(share)

@@ -1165,6 +1165,172 @@ function atlas.extraDirectGrantSource(mount)
     } }
 end
 
+local sourceCategoryByKind = {
+    ["Босс"] = "loot", ["Рарка"] = "loot", ["Рейд"] = "loot",
+    ["Подземелье"] = "loot", ["Добыча"] = "loot", ["Сокровище"] = "loot", ["Исследование"] = "loot",
+    ["Взаимодействие"] = "loot",
+    ["Квест"] = "quest", ["Достижение"] = "achievement", ["Великий подвиг"] = "achievement",
+    ["Торговец"] = "vendor", ["Торговая лавка"] = "vendor",
+}
+local function classifySourceChoices(mount, choices)
+    for _, choice in ipairs(choices) do
+        choice.classification = atlas.classifyMountSource(mount, choice)
+    end
+    return choices
+end
+local function tradingPostChoice(mount, offer)
+    return {
+        category = "vendor", compact = true, tradingPost = offer,
+        view = {
+            id = mount.id, spell = mount.spell, kind = "Торговая лавка", sourceKind = "Торговая лавка",
+            trackingCompatible = false, tradingPost = true,
+        },
+    }
+end
+function atlas.mountSourceChoices(mount)
+    local L = atlas.L
+    local choices, hasVendor, hasDrop = {}, false, false
+    local blackMarket = atlas.extraBlackMarketSource(mount)
+    if mount.availability then
+        local category = mount.unavailable and "unavailable" or sourceCategoryByKind[mount.kind] or "other"
+        local primaryOffer = mount.kind == "Торговая лавка" and atlas.tradingPostOffer(mount)
+        choices[1] = primaryOffer and not primaryOffer.unknown and tradingPostChoice(mount, primaryOffer)
+            or { category = category, compact = true }
+        local offer = atlas.extraTradingPostSource(mount)
+        if offer then choices[mount.unavailable and 1 or 2] = tradingPostChoice(mount, offer) end
+        if blackMarket then choices[#choices + 1] = blackMarket end
+        return classifySourceChoices(mount, choices)
+    end
+    local covenantChoices = atlas.covenantVariantChoices(mount)
+    if covenantChoices then
+        if blackMarket then covenantChoices[#covenantChoices + 1] = blackMarket end
+        return classifySourceChoices(mount, covenantChoices)
+    end
+    local blocks = atlas.factionSources and atlas.factionSources(mount)
+    local factionChoices = blocks and atlas.factionMountSourceChoices(mount, blocks)
+    if factionChoices then
+        choices = factionChoices
+        for _, choice in ipairs(choices) do
+            hasVendor = hasVendor or choice.vendor ~= nil
+            hasDrop = hasDrop or choice.verifiedDrop == true
+        end
+    else
+        for _, block in ipairs(blocks or { mount }) do
+            local vendors = atlas.vendorSources and atlas.vendorSources(block)
+            if vendors then
+                hasVendor = true
+                for _, vendor in ipairs(vendors) do choices[#choices + 1] = { vendor = vendor, view = block } end
+            elseif blocks then
+                choices[#choices + 1] = { view = block, compact = true }
+            else
+                for _, group in ipairs(mount.sourceGroups or {}) do
+                    choices[#choices + 1] = { view = group, separated = true, scopedPoints = #mount.sourceGroups > 1 }
+                end
+            end
+        end
+    end
+    atlas.addVerifiedDropSource(mount, choices, hasVendor, hasDrop)
+    if #choices == 0 then choices = atlas.achievementRouteChoices(mount) or { {} } end
+    local saddle = atlas.extraSaddlePurchase(mount)
+    if saddle then choices[#choices + 1] = { vendor = saddle, view = mount } end
+    local covenantPurchase = not hasVendor and atlas.extraCovenantPurchase(mount)
+    if covenantPurchase then choices[#choices + 1] = { vendor = covenantPurchase, view = mount } end
+    atlas.addQuestRewardVendors(mount, choices)
+    for _, offer in ipairs((atlas.vendorAlternatives or {})[mount.id] or {}) do
+        local holiday = atlas.eventReminderHolidays and atlas.eventReminderHolidays[offer.holiday]
+        if offer.spell == mount.spell and holiday then
+            local english = atlas.getLocale() == "enUS"
+            local name = english and offer.englishName or offer.name
+            local existing
+            for _, choice in ipairs(choices) do
+                local vendor = choice.vendor
+                if vendor and (atlas.searchKey(vendor.name) == atlas.searchKey(offer.name)
+                    or atlas.searchKey(vendor.name) == atlas.searchKey(offer.englishName)) then existing = true; break end
+            end
+            if not existing then
+                local currency = english and offer.englishCurrencyName or offer.currencyName
+                local price = ("%s: %d |Hcurrency:%d|h[%s]|h"):format(L("Цена"), offer.amount, offer.currency, currency)
+                local conditions = price .. "\n" .. L("Событие") .. ": " .. (english and holiday.englishName or holiday.name)
+                choices[#choices + 1] = {
+                    vendor = { name = name, place = english and offer.englishPlace or offer.place,
+                        conditions = conditions, holiday = offer.holiday, npc = offer.npc,
+                        map = offer.map, x = offer.x, y = offer.y },
+                    view = mount,
+                }
+            end
+        end
+    end
+    local hasQuest, hasAchievement
+    local chain = atlas.questAcquisitionChain(mount)
+    for _, choice in ipairs(choices) do
+        local view = choice.view or mount
+        choice.category = choice.vendor and "vendor" or view == mount and mount.locations and mount.npcs and "loot"
+            or sourceCategoryByKind[view.sourceKind or view.kind] or "other"
+        hasQuest = hasQuest or choice.category == "quest"
+        hasAchievement = hasAchievement or choice.category == "achievement"
+        choice.questChain, choice.chainGrant = atlas.questChainForSource(mount, choice)
+    end
+    local questText
+    if not hasQuest and mount.hasQuest then
+        local questLabels = {
+            ["Квест"] = true, ["Задание"] = true, ["Локальное задание"] = true, ["Задание гарнизона"] = true,
+            ["Quest"] = true, ["World Quest"] = true, ["Garrison Mission"] = true,
+        }
+        local lines = {}
+        for line in atlas.decorateSource(mount):gmatch("[^\n]+") do
+            local label = line:match("^%s*([^:]+):")
+            if label and questLabels[label] then lines[#lines + 1] = line end
+        end
+        if #lines > 0 then questText = table.concat(lines, "\n") end
+    end
+    if not chain and not hasQuest and (questText or mount.quest) then
+        local questChoice = {
+            category = "quest", compact = true, contextOnly = true, questStep = true,
+            view = {
+                id = mount.id, spell = mount.spell, sourceKind = "Квест", kind = "Квест",
+                journalSourceRaw = questText or "Квест: " .. mount.quest,
+                decoratedSource = questText, contextOnly = true, trackingCompatible = false,
+            },
+        }
+        if not atlas.classifyMountSource(mount, questChoice).requirement then
+            choices[#choices + 1] = questChoice
+        else
+            local text = questText or L("Квест") .. ": " .. L(mount.quest)
+            for _, routeChoice in ipairs(choices) do
+                if not routeChoice.vendor and not routeChoice.verifiedDrop then
+                    routeChoice.requirementText = text
+                end
+            end
+        end
+    end
+    for _, step in ipairs(mount.achievementSteps or {}) do
+        -- Merchant-owned steps are still in the exact conditions of that vendor.
+        if not step.purchase and not hasAchievement then
+            choices[#choices + 1] = {
+                category = "achievement", compact = true, separateSource = true,
+                view = {
+                    id = mount.id, spell = mount.spell, sourceKind = "Достижение", kind = "Достижение",
+                    faction = step.faction, journalSourceRaw = step.text,
+                    separateReward = true, trackingCompatible = false,
+                },
+            }
+        end
+    end
+    local offer = atlas.extraTradingPostSource(mount)
+    if offer then choices[#choices + 1] = tradingPostChoice(mount, offer) end
+    local grant = atlas.extraDirectGrantSource(mount)
+    if grant then table.insert(choices, 1, grant) end
+    local questReward = not hasQuest and atlas.extraQuestRewardSource(mount)
+    if questReward then choices[#choices + 1] = questReward end
+    if mount.kind == "Торговая лавка" and #choices == 1 and not choices[1].vendor then
+        offer = atlas.tradingPostOffer(mount)
+        if offer and not offer.unknown then choices[1] = tradingPostChoice(mount, offer) end
+    end
+    if blackMarket then choices[#choices + 1] = blackMarket end
+    atlas.addIslandSalvageSource(mount, choices)
+    return classifySourceChoices(mount, choices)
+end
+
 do
     local events = CreateFrame("Frame")
     for _, event in ipairs({ "PERKS_PROGRAM_OPEN", "PERKS_PROGRAM_DATA_REFRESH",

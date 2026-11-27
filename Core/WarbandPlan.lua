@@ -356,6 +356,16 @@ planEvents:SetScript("OnEvent", function(self, event, isInitialLogin)
     end
 end)
 
+function atlas.canAddMountToPlan(mount, choices)
+    if not mount or not mount.indexed then return false end
+    for _, choice in ipairs(choices or atlas.mountSourceChoices(mount)) do
+        local route = choice.classification
+        if route.state == "current" and route.key and not route.requirement
+            and route.key ~= "promotion" and route.subtype ~= "Внутриигровой магазин" then return true end
+    end
+    return false
+end
+
 function atlas.togglePlan(mount, profileID)
     local personal = not profileID or profileID == personalPlanID
     local db = personal and database() or savedAccount()
@@ -366,8 +376,10 @@ function atlas.togglePlan(mount, profileID)
     if record.plan[key] then
         removePlanTarget(record, key, removed)
     else
-        local owned = C_MountJournal and select(11, C_MountJournal.GetMountInfoByID(mount.id))
-        if mount.unavailable or (readable(owned) and owned) then return false end
+        local journal = C_MountJournal
+        local owned = journal and journal.GetMountInfoByID and select(11, journal.GetMountInfoByID(mount.id))
+        if not readable(owned) or owned ~= false
+            or not atlas.canAddMountToPlan(atlas.resolveJournalMount(mount.id)) then return false end
         record.plan[key] = true
         if removed then removed[key] = nil end
         if order then order[#order + 1] = key end

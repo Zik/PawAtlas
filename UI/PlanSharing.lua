@@ -164,6 +164,26 @@ function atlas.makePlanSharing(parent, changed)
         if userInput then editedName = true end
         updateImportEnabled()
     end)
+    local function validateImport(value, expected, retries)
+        if expected ~= revision or not import:IsVisible() then return end
+        local result, reason = atlas.previewPlanImport(value)
+        if not result then
+            if reason == "journal" and retries > 0 then
+                C_Timer.After(.25, function() validateImport(value, expected, retries - 1) end)
+                return
+            end
+            summary:SetText("Не удалось прочитать план")
+            layoutImport(false, true)
+            return
+        end
+        if not editedName then name:SetText(result.name) end
+        local counts = L("К импорту: %d", #result.ids) .. "   ·   " .. L("Уже в коллекции: %d", result.collected)
+        if result.skipped > 0 then counts = counts .. "   ·   " .. L("Пропущено: %d", result.skipped) end
+        summary:SetText(counts)
+        importName = #result.ids > 0 and result.name or nil
+        layoutImport(importName ~= nil, true)
+        updateImportEnabled()
+    end
     input:SetScript("OnTextChanged", function(self)
         local value = self:GetText()
         -- Layout notifications must not restart validation of unchanged text.
@@ -182,22 +202,7 @@ function atlas.makePlanSharing(parent, changed)
             layoutImport(false, true)
             return
         end
-        C_Timer.After(.12, function()
-            if expected ~= revision or not import:IsVisible() then return end
-            local result = atlas.previewPlanImport(value)
-            if not result then
-                summary:SetText("Не удалось прочитать план")
-                layoutImport(false, true)
-                return
-            end
-            if not editedName then name:SetText(result.name) end
-            local counts = L("К импорту: %d", #result.ids) .. "   ·   " .. L("Уже в коллекции: %d", result.collected)
-            if result.skipped > 0 then counts = counts .. "   ·   " .. L("Пропущено: %d", result.skipped) end
-            summary:SetText(counts)
-            importName = #result.ids > 0 and result.name or nil
-            layoutImport(importName ~= nil, true)
-            updateImportEnabled()
-        end)
+        C_Timer.After(.12, function() validateImport(value, expected, 3) end)
     end)
 
     local removeName = ui.text(remove, 22, 59, 376, 38, 18, "", ui.paper)

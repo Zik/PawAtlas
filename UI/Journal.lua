@@ -236,10 +236,11 @@ end
 local selected, planner, settings
 local locationIndex = 1
 local refresh, showPage, returnToCollection
-local catalogTab = ui.tab(frame, 613, 10, 155, 46, "Каталог", "Book", function() showPage(false) end, nil, true)
+local navUnderline = {}
+local catalogTab = ui.tab(frame, 613, 10, 155, 46, "Каталог", "Book", function() showPage(false) end, nil, true, navUnderline)
 local planTab = ui.tab(frame, 772, 10, 151, 46, "Планнер", "Route", function()
     if shared then returnToCollection() else showPage(true) end
-end, nil, true)
+end, nil, true, navUnderline)
 local settingsTab = ui.tab(frame, 937, 11, 48, 44, nil, "Settings", function() atlas.toggleSettings() end)
 settingsTab.divider = ui.fill(frame, 930, 23, 1, 22, ui.rule)
 ui.fill(frame, 989, 23, 1, 22, ui.rule)
@@ -262,14 +263,15 @@ search:SetTextColor(unpack(ui.paper))
 search:SetTextInsets(4, 4, 0, 0)
 local hint = ui.text(search, 4, 0, 193, 29, 13, "Имя, босс или место", ui.muted)
 do
-    local rim = ui.surface(page, 26, 0, 265, 29)
+    local rim = page:CreateTexture(nil, "BACKGROUND")
+    ui.place(rim, page, 26, 0, 265, 29)
+    rim:SetTexture("Interface\\AddOns\\PawAtlas\\Media\\Controls\\PlannerButtons.tga")
     local loupe = ui.icon(page, 32, 6, 17, "Search")
     hint:SetAlpha(.9)
     local function updateFocus(focused)
-        local r, g, b = 1, 1, 1
-        if not focused then r, g, b = .67, .73, .79 end
-        for _, texture in ipairs(rim) do texture:SetVertexColor(r, g, b) end
-        loupe:SetVertexColor(unpack(focused and ui.paper or ui.muted))
+        local top = focused and 33 or 1
+        rim:SetTexCoord(244 / 512, 498 / 512, top / 128, (top + 28) / 128)
+        loupe:SetVertexColor(unpack(focused and ui.gold or ui.muted))
         hint:SetShown(not focused and search:GetText() == "")
     end
     search:HookScript("OnEditFocusGained", function() updateFocus(true) end)
@@ -293,6 +295,7 @@ for _, entry in ipairs({ { "Не получены", 0, 83, 3 }, { "Получе�
         refresh()
     end)
     ui.setFont(filters[filterID].caption, 11)
+    filters[filterID].flatSkin:animateSelection()
     filters[filterID].caption:SetMaxLines(1)
     filters[filterID]:SetShown(filterID <= 3)
 end
@@ -320,6 +323,7 @@ do
         ui.dropdownSurface(menu)
         menu:Hide()
         local trigger = ui.action(page, x, 69, width, 25, label, nil, function() menu:SetShown(not menu:IsShown()) end)
+        trigger.flatSkin:animateSelection()
         ui.setFont(trigger.caption, 12)
         ui.place(trigger.caption, trigger, 23, 0, width - 40, 25)
         trigger.caption:SetWordWrap(false)
@@ -377,7 +381,13 @@ do
     row("daily", "Ежедневно", function(key) frequency = frequency ~= key and key or nil end)
     row("weekly", "Еженедельно", function(key) frequency = frequency ~= key and key or nil end)
     menu:SetHeight(y + 4)
-    sourceMenu.trigger = toggle
+    local filtered = false
+    function sourceMenu:setFiltered(value)
+        filtered = value
+        toggle:setActive(filtered or menu:IsShown())
+    end
+    menu:HookScript("OnShow", function() toggle:setActive(true) end)
+    menu:HookScript("OnHide", function() toggle:setActive(filtered) end)
 
     function catalog:sortMode()
         local settings = type(MountAtlasAccountDB) == "table" and MountAtlasAccountDB.settings
@@ -454,6 +464,28 @@ headerMask:SetAllPoints(headerArt)
 headerArt:AddMaskTexture(headerMask)
 local expansionLogo = card:CreateTexture(nil, "ARTWORK")
 expansionLogo:SetAlpha(.85)
+do
+    local mountID
+    local function reveal(amount)
+        headerArt:SetAlpha(.2 * amount)
+        expansionLogo:SetAlpha(.85 * amount)
+    end
+    function card:revealArtwork(id)
+        if mountID == id then return end
+        mountID = id
+        if self:IsVisible() then
+            ui.transition(self, .15, reveal)
+        else
+            ui.stopTransition(self)
+            reveal(1)
+        end
+    end
+    card:HookScript("OnHide", function(self)
+        ui.stopTransition(self)
+        reveal(1)
+        mountID = nil
+    end)
+end
 do
     -- Visible bounds in the 512 × 256 textures, with room for the soft edges.
     local bounds = {
@@ -688,175 +720,19 @@ local function pointLocation(point, choice, view, vendor, navigationKind)
         return point
     end
 end
-local sourceTabByKind = {
-    ["Босс"] = "loot", ["Рарка"] = "loot", ["Рейд"] = "loot",
-    ["Подземелье"] = "loot", ["Добыча"] = "loot", ["Сокровище"] = "loot", ["Исследование"] = "loot",
-    ["Взаимодействие"] = "loot",
-    ["Квест"] = "quest", ["Достижение"] = "achievement", ["Великий подвиг"] = "achievement",
-    ["Торговец"] = "vendor", ["Торговая лавка"] = "vendor",
-}
-function cardTabs:classify(mount, choices)
+local function buildSourceChoices(mount)
+    local choices = atlas.mountSourceChoices(mount)
     for _, choice in ipairs(choices) do
-        local route = atlas.classifyMountSource(mount, choice)
-        choice.classification = route
+        if choice.tradingPost then
+            local description, price = ui.tradingPostDescription(choice.tradingPost, true)
+            choice.view.decoratedSource = price and (description .. "\n" .. price) or description
+        end
+        local route = choice.classification
         choice.tabKey = choice.tabOverride or choice.islandExpedition and "islandExpedition" or choice.islandSalvage and "islandSalvage"
             or choice.covenantVariant and "covenant" or route.key
             or (route.state == "historical" and "history") or "unknown"
     end
     return choices
-end
-function cardTabs:tradingPostChoice(mount, offer)
-    local description, price = ui.tradingPostDescription(offer, true)
-    return {
-        category = "vendor", compact = true, tradingPost = offer,
-        view = {
-            id = mount.id, spell = mount.spell, kind = "Торговая лавка", sourceKind = "Торговая лавка",
-            decoratedSource = price and (description .. "\n" .. price) or description,
-            trackingCompatible = false, tradingPost = true,
-        },
-    }
-end
-local function buildSourceChoices(mount)
-    local choices, hasVendor, hasDrop = {}, false, false
-    local blackMarket = atlas.extraBlackMarketSource(mount)
-    if mount.availability then
-        local category = mount.unavailable and "unavailable" or sourceTabByKind[mount.kind] or "other"
-        local primaryOffer = mount.kind == "Торговая лавка" and atlas.tradingPostOffer(mount)
-        choices[1] = primaryOffer and not primaryOffer.unknown and cardTabs:tradingPostChoice(mount, primaryOffer)
-            or { category = category, compact = true }
-        local offer = atlas.extraTradingPostSource(mount)
-        if offer then choices[mount.unavailable and 1 or 2] = cardTabs:tradingPostChoice(mount, offer) end
-        if blackMarket then choices[#choices + 1] = blackMarket end
-        return cardTabs:classify(mount, choices)
-    end
-    local covenantChoices = atlas.covenantVariantChoices(mount)
-    if covenantChoices then
-        if blackMarket then covenantChoices[#covenantChoices + 1] = blackMarket end
-        return cardTabs:classify(mount, covenantChoices)
-    end
-    local blocks = atlas.factionSources and atlas.factionSources(mount)
-    local factionChoices = blocks and atlas.factionMountSourceChoices(mount, blocks)
-    if factionChoices then
-        choices = factionChoices
-        for _, choice in ipairs(choices) do
-            hasVendor = hasVendor or choice.vendor ~= nil
-            hasDrop = hasDrop or choice.verifiedDrop == true
-        end
-    else
-        for _, block in ipairs(blocks or { mount }) do
-            local vendors = atlas.vendorSources and atlas.vendorSources(block)
-            if vendors then
-                hasVendor = true
-                for _, vendor in ipairs(vendors) do choices[#choices + 1] = { vendor = vendor, view = block } end
-            elseif blocks then
-                choices[#choices + 1] = { view = block, compact = true }
-            else
-                for _, group in ipairs(mount.sourceGroups or {}) do
-                    choices[#choices + 1] = { view = group, separated = true, scopedPoints = #mount.sourceGroups > 1 }
-                end
-            end
-        end
-    end
-    atlas.addVerifiedDropSource(mount, choices, hasVendor, hasDrop)
-    if #choices == 0 then choices = atlas.achievementRouteChoices(mount) or { {} } end
-    local saddle = atlas.extraSaddlePurchase(mount)
-    if saddle then choices[#choices + 1] = { vendor = saddle, view = mount } end
-    local covenantPurchase = not hasVendor and atlas.extraCovenantPurchase(mount)
-    if covenantPurchase then choices[#choices + 1] = { vendor = covenantPurchase, view = mount } end
-    atlas.addQuestRewardVendors(mount, choices)
-    for _, offer in ipairs((atlas.vendorAlternatives or {})[mount.id] or {}) do
-        local holiday = atlas.eventReminderHolidays and atlas.eventReminderHolidays[offer.holiday]
-        if offer.spell == mount.spell and holiday then
-            local english = atlas.getLocale() == "enUS"
-            local name = english and offer.englishName or offer.name
-            local existing
-            for _, choice in ipairs(choices) do
-                local vendor = choice.vendor
-                if vendor and (atlas.searchKey(vendor.name) == atlas.searchKey(offer.name)
-                    or atlas.searchKey(vendor.name) == atlas.searchKey(offer.englishName)) then existing = true; break end
-            end
-            if not existing then
-                local currency = english and offer.englishCurrencyName or offer.currencyName
-                local price = ("%s: %d |Hcurrency:%d|h[%s]|h"):format(L("Цена"), offer.amount, offer.currency, currency)
-                local conditions = price .. "\n" .. L("Событие") .. ": " .. (english and holiday.englishName or holiday.name)
-                choices[#choices + 1] = {
-                    vendor = { name = name, place = english and offer.englishPlace or offer.place,
-                        conditions = conditions, holiday = offer.holiday, npc = offer.npc,
-                        map = offer.map, x = offer.x, y = offer.y },
-                    view = mount,
-                }
-            end
-        end
-    end
-    local hasQuest, hasAchievement
-    local chain = atlas.questAcquisitionChain(mount)
-    for _, choice in ipairs(choices) do
-        local view = choice.view or mount
-        choice.category = choice.vendor and "vendor" or view == mount and mount.locations and mount.npcs and "loot"
-            or sourceTabByKind[view.sourceKind or view.kind] or "other"
-        hasQuest = hasQuest or choice.category == "quest"
-        hasAchievement = hasAchievement or choice.category == "achievement"
-        choice.questChain, choice.chainGrant = atlas.questChainForSource(mount, choice)
-    end
-    local questText
-    if not hasQuest and mount.hasQuest then
-        local questLabels = {
-            ["Квест"] = true, ["Задание"] = true, ["Локальное задание"] = true, ["Задание гарнизона"] = true,
-            ["Quest"] = true, ["World Quest"] = true, ["Garrison Mission"] = true,
-        }
-        local lines = {}
-        for line in atlas.decorateSource(mount):gmatch("[^\n]+") do
-            local label = line:match("^%s*([^:]+):")
-            if label and questLabels[label] then lines[#lines + 1] = line end
-        end
-        if #lines > 0 then questText = table.concat(lines, "\n") end
-    end
-    if not chain and not hasQuest and (questText or mount.quest) then
-        local questChoice = {
-            category = "quest", compact = true, contextOnly = true, questStep = true,
-            view = {
-                id = mount.id, spell = mount.spell, sourceKind = "Квест", kind = "Квест",
-                journalSourceRaw = questText or "Квест: " .. mount.quest,
-                decoratedSource = questText, contextOnly = true, trackingCompatible = false,
-            },
-        }
-        if not atlas.classifyMountSource(mount, questChoice).requirement then
-            choices[#choices + 1] = questChoice
-        else
-            local text = questText or L("Квест") .. ": " .. L(mount.quest)
-            for _, routeChoice in ipairs(choices) do
-                if not routeChoice.vendor and not routeChoice.verifiedDrop then
-                    routeChoice.requirementText = text
-                end
-            end
-        end
-    end
-    for _, step in ipairs(mount.achievementSteps or {}) do
-        -- Merchant-owned steps are still in the exact conditions of that vendor.
-        if not step.purchase and not hasAchievement then
-            choices[#choices + 1] = {
-                category = "achievement", compact = true, separateSource = true,
-                view = {
-                    id = mount.id, spell = mount.spell, sourceKind = "Достижение", kind = "Достижение",
-                    faction = step.faction, journalSourceRaw = step.text,
-                    separateReward = true, trackingCompatible = false,
-                },
-            }
-        end
-    end
-    local offer = atlas.extraTradingPostSource(mount)
-    if offer then choices[#choices + 1] = cardTabs:tradingPostChoice(mount, offer) end
-    local grant = atlas.extraDirectGrantSource(mount)
-    if grant then table.insert(choices, 1, grant) end
-    local questReward = not hasQuest and atlas.extraQuestRewardSource(mount)
-    if questReward then choices[#choices + 1] = questReward end
-    if mount.kind == "Торговая лавка" and #choices == 1 and not choices[1].vendor then
-        offer = atlas.tradingPostOffer(mount)
-        if offer and not offer.unknown then choices[1] = cardTabs:tradingPostChoice(mount, offer) end
-    end
-    if blackMarket then choices[#choices + 1] = blackMarket end
-    atlas.addIslandSalvageSource(mount, choices)
-    return cardTabs:classify(mount, choices)
 end
 do
     local function onTabClick(self)
@@ -870,8 +746,9 @@ do
     local function hideTabTooltip(self)
         if GameTooltip:IsOwned(self) then GameTooltip:Hide() end
     end
+    local tabUnderlines = {}
     local function makeTab(label, icon)
-        local button = ui.tab(card, 0, 153, 124, 37, label, icon, onTabClick, .72)
+        local button = ui.tab(card, 0, 153, 124, 37, label, icon, onTabClick, .72, nil, tabUnderlines)
         ui.setFont(button.caption, 12)
         button:HookScript("OnEnter", function(self)
             local caption = self.caption
@@ -2052,10 +1929,43 @@ function atlas.refreshIslandExpeditionDetails()
     end
 end
 
-local planButton = ui.action(card, 526, 408, 134, 31, "В план", nil, function()
-    atlas.togglePlan(selected, atlas.activePlanID())
+local planButton = ui.action(card, 526, 408, 134, 31, "В план", nil, function(self)
+    local mount = selected
+    local planID = atlas.activePlanID()
+    local added = atlas.togglePlan(mount, planID)
     atlas.refreshDetails()
-end)
+    if added and selected == mount and planID == atlas.activePlanID() and self:IsVisible() then
+        self:flashAdded(mount.id, planID)
+    else self:clearFlash() end
+end, nil, true)
+do
+    local glint = ui.place(CreateFrame("Frame", nil, planButton), planButton, 5, 0, 32, 2)
+    glint:EnableMouse(false)
+    local clear = CreateColor(1, .74, .30, 0)
+    local bright = CreateColor(1, .88, .55, 1)
+    local left = ui.fill(glint, 0, 0, 16, 2, { 1, 1, 1 })
+    local right = ui.fill(glint, 16, 0, 16, 2, { 1, 1, 1 })
+    left:SetGradient("HORIZONTAL", clear, bright)
+    right:SetGradient("HORIZONTAL", bright, clear)
+    function planButton:clearFlash()
+        ui.stopTransition(glint)
+        glint:Hide()
+        self.flashMountID, self.flashPlanID = nil, nil
+    end
+    function planButton:flashAdded(id, planID)
+        self.flashMountID, self.flashPlanID = id, planID
+        glint:Show()
+        ui.transition(glint, .32, function(t)
+            if t >= 1 then self:clearFlash(); return end
+            local x = 5 + (self:GetWidth() - glint:GetWidth() - 10) * t
+            glint:ClearAllPoints()
+            glint:SetPoint("TOPLEFT", self, "TOPLEFT", x, 0)
+            glint:SetAlpha(math.min(1, t * 7, (1 - t) * 5))
+        end)
+    end
+    planButton:HookScript("OnHide", planButton.clearFlash)
+    planButton:clearFlash()
+end
 planButton:HookScript("OnEnter", function(self)
     local activeID = atlas.activePlanID()
     for _, profile in ipairs(atlas.planProfiles()) do
@@ -2243,7 +2153,7 @@ end
 
 -- Keep each renderer below the client's Lua 5.1 upvalue limit. The browser
 -- runtime accepts larger closures, so it cannot enforce this client constraint.
-local function refreshHeader(collected)
+local function refreshHeader(collected, choices)
     collectedState:SetShown(collected)
     if collected then collectedState:update(selected) end
     local expansion = selected.expansion ~= "Classic" and selected.expansion or nil
@@ -2252,25 +2162,28 @@ local function refreshHeader(collected)
     local art, logo = event and event.art or expansion or "Azeroth", event and event.logo or expansion
     headerArt:SetTexture("Interface\\AddOns\\PawAtlas\\Media\\Headers\\" .. art .. ".tga")
     local textWidth, logoBottom = expansionLogo:layout(logo, event)
+    card:revealArtwork(selected.id)
+    local planID = not shared and atlas.activePlanID() or nil
+    if planButton.flashMountID and (planButton.flashMountID ~= selected.id or planButton.flashPlanID ~= planID) then
+        planButton:clearFlash()
+    end
     local className = atlas.mountClassName(selected)
     local _, description = C_MountJournal.GetMountInfoExtraByID(selected.id)
     titleArea:layout(textWidth, logoBottom, atlas.displayMountName(selected), className, description)
     titleArea:updateQuality(selected)
     titleArea.refreshModelPreview()
-    local included = not shared and atlas.isPlanned(selected, atlas.activePlanID())
-    local canPlan = included or (not selected.unavailable and not collected)
-    planButton:SetShown(not shared and not collected)
+    local included = planID and atlas.isPlanned(selected, planID)
+    local canPlan = not shared and not collected and (included or atlas.canAddMountToPlan(selected, choices))
+    planButton:SetShown(canPlan)
     planButton.caption:SetText(included and "Убрать из плана" or "+ В план")
-    planButton:SetEnabled(canPlan)
-    planButton:SetAlpha(canPlan and 1 or .45)
     planButton:setActive(canPlan and not included)
 end
 
-local function refreshSources(collected)
+local function refreshSources(collected, choices)
     local official = selected.journalOnly == true
     local differentMount = vendorMount ~= selected
     if differentMount then vendorIndex, vendorMount = 1, selected end
-    sourceChoices = cardTabs:select(buildSourceChoices(selected), differentMount)
+    sourceChoices = cardTabs:select(choices, differentMount)
     sourceRow:layout(cardTabs.bodyOffset)
     vendorIndex = math.max(1, math.min(vendorIndex, #sourceChoices))
     local choice, vendor, view = currentChoice(), currentVendor(), currentSource()
@@ -2573,8 +2486,9 @@ function atlas.refreshDetails(cardOnly)
         collected = owned
     end
     card:Show()
-    refreshHeader(collected)
-    refreshChance(collected, refreshSources(collected))
+    local choices = buildSourceChoices(selected)
+    refreshHeader(collected, choices)
+    refreshChance(collected, refreshSources(collected, choices))
     if showingWaypoint and waypoint:IsVisible() and waypoint:IsMouseOver() then waypoint:refreshTooltip() end
     local owner = ui.tooltipOwnerIn(card)
     if owner and (owner == sourceButton.hitbox or owner == sourceProgress or owner == summary.respawn
@@ -2644,6 +2558,55 @@ function catalog:refreshRowHistory(row)
     ui.tooltipSourceText(history)
     GameTooltip:Show()
 end
+function catalog:makePlanMarker(row)
+    local holder = ui.place(CreateFrame("Frame", nil, row), row, 240, 11, 19, 19)
+    holder:EnableMouse(false)
+    local icon = ui.icon(holder, 0, 0, 19, "Route")
+    icon:ClearAllPoints()
+    icon:SetPoint("CENTER", holder, "CENTER")
+    icon:SetVertexColor(unpack(ui.gold))
+    icon:Hide()
+
+    local mountID, planID, owned
+    local amount, target = 0, 0
+    local function draw(value)
+        amount = value
+        local size = 13 + 6 * value
+        icon:SetSize(size, size)
+        icon:SetAlpha(value)
+        icon:SetShown(value > 0)
+    end
+    local function finish()
+        ui.stopTransition(holder)
+        draw(target)
+        row.name:SetWidth((owned or target == 1) and 187 or 209)
+    end
+    row:HookScript("OnHide", finish)
+    function row:updatePlanMarker(id, plan, planned, collected)
+        owned = collected
+        local nextTarget = planned and 1 or 0
+        if mountID ~= id or planID ~= plan or not self:IsVisible() then
+            mountID, planID, target = id, plan, nextTarget
+            finish()
+        elseif target ~= nextTarget then
+            target = nextTarget
+            local start = amount
+            if start == target then
+                finish()
+                return
+            end
+            self.name:SetWidth(187)
+            local duration = (planned and .18 or .15) * math.abs(target - start)
+            ui.transition(holder, duration, function(t)
+                draw(start + (target - start) * t)
+                if t == 1 then self.name:SetWidth((owned or planned) and 187 or 209) end
+            end)
+        else
+            self.name:SetWidth((owned or planned or amount > 0) and 187 or 209)
+        end
+    end
+end
+
 function catalog:render(row, mount)
     local active = mount == selected
     local r, g, b = atlas.qualityColor(atlas.mountDisplayQuality(mount.id))
@@ -2658,11 +2621,11 @@ function catalog:render(row, mount)
     row.selected = active
     colorCatalogRow(row)
     local owned = atlas.collection and atlas.collection.byID[mount.id] == true
-    local planned = not shared and not owned and atlas.isPlanned(mount, atlas.activePlanID())
+    local planID = not shared and not owned and atlas.activePlanID() or nil
+    local planned = planID and atlas.isPlanned(mount, planID)
     row.bookmark:SetShown(owned)
     self:updateFavorite(row)
-    row.tracked:SetShown(planned)
-    row.name:SetWidth((owned or planned) and 187 or 209)
+    row:updatePlanMarker(mount.id, planID, planned, owned)
     local killed = atlas.isKilled(mount)
     local status = owned and (killed and "В коллекции  ·  Босс убит" or "В коллекции") or (killed and "Босс убит" or "")
     local unique = mount.availability and mount.availability.unique
@@ -2716,9 +2679,7 @@ for _, row in ipairs(catalog.rows) do
     row.bookmark = row:CreateTexture(nil, "ARTWORK")
     ui.place(row.bookmark, row, 240, 0, 18, 22)
     row.bookmark:SetTexture("Interface\\AddOns\\PawAtlas\\Media\\Controls\\Bookmark.tga")
-    row.tracked = ui.icon(row, 240, 11, 19, "Route")
-    row.tracked:SetVertexColor(unpack(ui.gold))
-    row.tracked:Hide()
+    catalog:makePlanMarker(row)
     row.status = ui.text(row, 48, 22, 187, 16, 11, "", ui.muted)
     bindHover(row, function() return row.item end)
 end
@@ -2792,7 +2753,7 @@ refresh = function(preferredMount)
     sourceMenu.raid:SetShown(sourceSubtype == "raid")
     sourceMenu.daily:SetShown(frequency == "daily")
     sourceMenu.weekly:SetShown(frequency == "weekly")
-    sourceMenu.trigger:setActive(not allSources)
+    sourceMenu:setFiltered(not allSources)
     local ordered = atlas.sortedCatalogMounts(sortMode)
     local matches, wanted, keep = ordered, preferredMount or selected, false
     if wanted == catalog.loadingPreview and not preferredMount and not catalog.revealAfterLoading then wanted = nil end

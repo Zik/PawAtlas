@@ -71,6 +71,13 @@ local iconPath = icon:gsub("\\", "/"):match("^Interface/AddOns/PawAtlas/(.+)$")
 assert(iconPath and tracked[iconPath], "Invalid or untracked TOC icon")
 read(safePath(iconPath))
 
+-- Both the catalog and the planner use these sprite sheets for their controls.
+for _, name in ipairs({ "FlatButtons.tga", "PlannerButtons.tga" }) do
+    local path = "Media/Controls/" .. name
+    assert(tracked[path], "Untracked button texture: " .. path)
+    assert(#read(path) > 18, "Empty button texture: " .. path)
+end
+
 if root == "." then
     local output = os.getenv("GITHUB_OUTPUT")
     if output then

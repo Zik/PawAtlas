@@ -29,6 +29,7 @@ end
 
 function UnitGUID() return "Player-fixture" end
 function GetServerTime() return 1000 end
+function GetTime() return 1 end
 local owned, missing, journalReads = { [4] = true }, { [1] = true }, {}
 local membershipReads = 0
 local journal = {
@@ -48,7 +49,10 @@ local atlas = {
         { id = 7, name = "Seven" }, { id = 8, name = "Eight" } },
     L = function(text) return text end,
     isExcludedJournalMount = function(id) return id == 5 end,
-    legacySourceDetails = function(mount) if mount.id == 6 then return { state = "unavailable" } end end,
+    achievementRouteChoices = function() end,
+    verifiedRewardDropRoute = function() end,
+    extraSaddlePurchase = function() end,
+    extraCovenantPurchase = function() end,
     refreshBossLockouts = function() end,
     isWarbandCharacterHidden = function() return false end,
 }
@@ -56,10 +60,18 @@ local refreshes, trackerRefreshes = 0, 0
 local catalogByID = {}
 for _, mount in ipairs(atlas.mounts) do catalogByID[mount.id] = mount end
 function atlas.mountByID(id) return catalogByID[id] end
+local sources = {
+    [2] = { id = 2, spell = 102, kind = "Добыча", indexed = true },
+    [3] = { id = 3, spell = 103, kind = "Квест", indexed = true },
+    [6] = { id = 6, spell = 106, kind = "Акция", indexed = true },
+    [7] = { id = 7, spell = 107, kind = "Подземелье", indexed = true },
+    [8] = { id = 8, spell = 108, kind = "Добыча", indexed = true },
+}
+function atlas.resolveJournalMount(id) return sources[id] end
 function atlas.queuePlanBrokerRefresh() refreshes = refreshes + 1 end
 function atlas.queueExpeditionTrackerRefresh() trackerRefreshes = trackerRefreshes + 1 end
 for _, path in ipairs({ "Libs/LibStub/LibStub.lua", "Libs/AceSerializer-3.0/AceSerializer-3.0.lua",
-    "Core/WarbandPlan.lua", "Core/PlanSharing.lua" }) do assert(loadfile(path))("PawAtlas", atlas) end
+    "Core/WarbandPlan.lua", "Core/PlanSharing.lua", "Core/Sources.lua" }) do assert(loadfile(path))("PawAtlas", atlas) end
 local serializer = LibStub("AceSerializer-3.0")
 local function payload(csv, name, version)
     return serializer:Serialize("PawAtlasPlan", version or 1, name or "Shared", csv)
@@ -115,6 +127,22 @@ assert(preview.names[1] == "Mount 2" and preview.names[2] == "Mount 3")
 assert(preview.collected == 1 and preview.skipped == 5)
 assert(db.planProfiles == nil and personalBytes() == personalBefore)
 
+do
+    local alternative = sources[6]
+    alternative.kind = "Магазин"
+    assert(not atlas.canAddMountToPlan(alternative))
+    atlas.blackMarketMounts = { [6] = { spell = alternative.spell } }
+    assert(atlas.canAddMountToPlan(alternative), "a current in-game route may supplement the shop")
+    assert(#assert(atlas.previewPlanImport(payload("6"))).ids == 1)
+    atlas.blackMarketMounts = nil
+    alternative.kind = "Акция"
+    sources[3].indexed = false
+    local cold, reason = atlas.previewPlanImport(payload("2,3"))
+    assert(cold == nil and reason == "journal", "pending source data must not silently drop an import target")
+    sources[3].indexed = true
+    assert(#assert(atlas.previewPlanImport(payload("2,3"))).ids == 2)
+end
+
 local first, imported = atlas.importPlan(input, "  Набег  ")
 assert(first and imported == 2)
 assert(not atlas.movePlanProfile(first, "personal", false))
@@ -168,6 +196,7 @@ assert(#atlas.planTargets(false, second) == 2)
 assert(atlas.movePlanTarget(3, 2, false, second))
 assert(atlas.planTargets(false, second)[1].id == 3 and atlas.planTargets(false, first)[1].id == 2)
 assert(atlas.togglePlan({ id = 7 }, second) and not atlas.isPlanned({ id = 7 }, first))
+assert(not atlas.togglePlan({ id = 6 }, second) and not atlas.isPlanned({ id = 6 }, second))
 assert(atlas.selectPlan("personal") and atlas.activePlanID() == "personal")
 assert(atlas.selectPlan(first) and not atlas.selectPlan("missing"))
 assert(not atlas.deletePlanProfile("personal") and atlas.activePlanID() == first)
@@ -252,6 +281,12 @@ assert(atlas.activePlanID() == created)
 assert(db.planProfiles.entries[created].name == "Мой маршрут")
 assert(#atlas.planTargets(false, created) == 0 and #db.planProfiles.entries[created].planOrder == 0)
 assert(personalBytes() == beforeCreate and db.plan == personalPlan and db.planOrder == personalOrder)
+assert(atlas.togglePlan({ id = 3 }, created) and atlas.isPlanned({ id = 3 }, created))
+sources[3].indexed = false
+assert(not atlas.togglePlan({ id = 3 }, created) and not atlas.isPlanned({ id = 3 }, created),
+    "a saved target can be removed while its source is unavailable")
+assert(not atlas.togglePlan({ id = 3 }, created) and not atlas.isPlanned({ id = 3 }, created))
+sources[3].indexed = true
 assert(atlas.togglePlan({ id = 3 }, created) and atlas.isPlanned({ id = 3 }, created))
 do
     local store, entry = db.planProfiles, entries[created]
@@ -463,6 +498,15 @@ do
     cursor(input, 0, -160, 1, 15)
     assert(scroll:GetVerticalScroll() == 175 - scroll:GetHeight(), "a caret below the viewport scrolls downward")
     assert((input.heightWrites or 0) == heightWrites, "caret movement must not resize the multiline edit box")
+    sources[3].indexed = false
+    input:SetText(payload("3", "Источник загружается"))
+    runTimer()
+    assert(#timers == 1 and not buttons["Импортировать"].enabled and summary:GetText() == "",
+        "the import dialog waits while a known target's source is loading")
+    sources[3].indexed = true
+    runTimer()
+    assert(#timers == 0 and buttons["Импортировать"].enabled and summary:GetText() ~= "",
+        "a pending import revalidates when its source becomes available")
     dialog:Hide()
 
     local planName, confirmName = edits[4], buttons["Создать план"]

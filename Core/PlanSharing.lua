@@ -70,14 +70,19 @@ function atlas.previewPlanImport(text)
             if not loaded or not readable(name) or type(name) ~= "string" or name == ""
                 or not readable(spell) or type(spell) ~= "number"
                 or not readable(collected) or type(collected) ~= "boolean" then return nil, "journal" end
-            local legacy = not collected and atlas.legacySourceDetails and atlas.legacySourceDetails({ id = id, spell = spell })
-            if atlas.isExcludedJournalMount(id, name, spell, collected) or (legacy and legacy.state == "unavailable") then
+            if atlas.isExcludedJournalMount(id, name, spell, collected) then
                 result.skipped = result.skipped + 1
             elseif collected then
                 result.collected = result.collected + 1
             else
-                local index = #result.ids + 1
-                result.ids[index], result.names[index] = id, name
+                local mount = atlas.resolveJournalMount(id)
+                if not mount or not mount.indexed or mount.spell ~= spell then return nil, "journal" end
+                if atlas.canAddMountToPlan(mount) then
+                    local index = #result.ids + 1
+                    result.ids[index], result.names[index] = id, name
+                else
+                    result.skipped = result.skipped + 1
+                end
             end
         end
         seen[id] = true

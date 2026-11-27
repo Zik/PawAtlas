@@ -261,7 +261,6 @@ function atlas.difficultyBadge(parent)
         -- An account-wide reagent has one limit even when several raid modes
         -- award it. Show the eligible modes without per-character save rows.
         local accountLoot = source == "raid" and atlas.accountLootSources and atlas.accountLootSources[(contextMount or mount).id]
-        if source == "raid" and #rows == 0 and not accountLoot then clear(); return false end
         local kind, sizes, usedSizes, allSizes, allComplete = nil, {}, {}, true, #rows > 0
         lines = {}
         if #rows > 0 then
@@ -278,10 +277,12 @@ function atlas.difficultyBadge(parent)
         else
             local entries = atlas.sourceDifficulty(mount, true)
             kind = entries[1] and entries[1].kind
-            if accountLoot then lines[1] = L("Режим") end
+            if source == "raid" then lines[1] = L("Режим") end
             for _, entry in ipairs(entries) do
                 if entry.kind ~= kind then kind = "normal" end
-                lines[#lines + 1] = entry.name .. (entry.sizes and (" (" .. table.concat(entry.sizes, "/") .. ")") or "")
+                local sizeText = entry.sizes and table.concat(entry.sizes, "/")
+                if sizeText and sizeText == entry.name:match("^(%d+)%s") then sizeText = nil end
+                lines[#lines + 1] = entry.name .. (sizeText and (" (" .. sizeText .. ")") or "")
                 if entry.sizes then
                     for _, size in ipairs(entry.sizes) do if not usedSizes[size] then sizes[#sizes + 1], usedSizes[size] = size, true end end
                 else allSizes = false end

@@ -1040,8 +1040,23 @@ local function buttonStrips(parent, x, y, w, h, row, layer)
     end
     return strips
 end
-function ui.action(parent, x, y, w, h, label, icon, callback, field)
+local function actionButton(parent, x, y, w, h, label, icon, callback)
     local button = ui.place(CreateFrame("Button", nil, parent), parent, x, y, w, h)
+    button:SetScript("OnClick", callback)
+    if icon then
+        button.glyph = ui.icon(button, label and 10 or (w - 19) / 2, (h - 19) / 2, 19, icon)
+        button.glyph:SetDrawLayer("OVERLAY")
+    end
+    if label then
+        local left = icon and 30 or 3
+        button.caption = ui.text(button, left, 0, w - left - 3, h, 14, label)
+        button.caption:SetJustifyH("CENTER")
+    end
+    return button
+end
+
+local function ornateAction(parent, x, y, w, h, label, icon, callback, field)
+    local button = actionButton(parent, x, y, w, h, label, icon, callback)
     local compact = h <= 40
     local surface, glow
     if compact then
@@ -1052,7 +1067,6 @@ function ui.action(parent, x, y, w, h, label, icon, callback, field)
         glow = ui.surface(button, -2, -2, w + 4, h + 4, true, "OrnateGlow")
         for _, texture in ipairs(glow) do texture:SetDrawLayer("BORDER") end
     end
-    button:SetScript("OnClick", callback)
     local active, hovered, pressed = false, false, false
     local fieldStyle, dropdownStyle
     local function updateSurface()
@@ -1089,17 +1103,6 @@ function ui.action(parent, x, y, w, h, label, icon, callback, field)
     button:SetScript("OnEnable", resetHover)
     button:SetScript("OnMouseDown", function() pressed = button:IsEnabled(); updateSurface() end)
     button:SetScript("OnMouseUp", function() pressed = false; hovered = button:IsMouseOver(); updateSurface() end)
-    if icon then
-        local glyph = button:CreateTexture(nil, "OVERLAY")
-        button.glyph = glyph
-        ui.place(glyph, button, label and 10 or (w - 19) / 2, (h - 19) / 2, 19, 19)
-        ui.setIcon(glyph, icon)
-    end
-    if label then
-        local left = icon and 30 or 3
-        button.caption = ui.text(button, left, 0, w - left - 3, h, 14, label)
-        button.caption:SetJustifyH("CENTER")
-    end
     function button:setActive(value)
         active = value
         updateSurface()
@@ -1126,7 +1129,228 @@ function ui.action(parent, x, y, w, h, label, icon, callback, field)
     return button
 end
 
-function ui.tab(parent, x, y, w, h, label, icon, callback, glowScale, centerCaption)
+local flatButtonUV = { 2, 7, 9, 14 }
+
+function ui.stopTransition(frame)
+    local timer = frame.atlasTransition
+    if timer then timer:SetScript("OnUpdate", nil) end
+end
+
+function ui.transition(frame, duration, draw)
+    local timer = frame.atlasTransition
+    if not timer then
+        timer = CreateFrame("Frame", nil, frame)
+        timer:EnableMouse(false)
+        frame.atlasTransition = timer
+    end
+    local age = 0
+    timer:SetScript("OnUpdate", function(self, elapsed)
+        age = age + elapsed
+        local t = math.min(age / duration, 1)
+        if t == 1 then self:SetScript("OnUpdate", nil) end
+        draw(t * (2 - t))
+    end)
+    draw(0)
+end
+
+local function flatButtonSkin(button, primary, warmFill)
+    local skin, slices = {}, {}
+    button.flatSkin = skin
+    for row = 1, 3 do
+        slices[row] = {}
+        for column = 1, 3 do
+            local slice = button:CreateTexture(nil, "BACKGROUND", nil, 1)
+            slice:SetTexture(controls .. "FlatButtons.tga")
+            slices[row][column] = slice
+        end
+    end
+
+    -- Keep the corners at their native size whenever the button is large enough.
+    local topLeft, top, topRight = unpack(slices[1])
+    local left, fill, right = unpack(slices[2])
+    local bottomLeft, bottom, bottomRight = unpack(slices[3])
+    topLeft:SetPoint("TOPLEFT", button)
+    topRight:SetPoint("TOPRIGHT", button)
+    bottomLeft:SetPoint("BOTTOMLEFT", button)
+    bottomRight:SetPoint("BOTTOMRIGHT", button)
+    top:SetPoint("TOPLEFT", topLeft, "TOPRIGHT")
+    top:SetPoint("TOPRIGHT", topRight, "TOPLEFT")
+    bottom:SetPoint("BOTTOMLEFT", bottomLeft, "BOTTOMRIGHT")
+    bottom:SetPoint("BOTTOMRIGHT", bottomRight, "BOTTOMLEFT")
+    left:SetPoint("TOPLEFT", topLeft, "BOTTOMLEFT")
+    left:SetPoint("BOTTOMLEFT", bottomLeft, "TOPLEFT")
+    right:SetPoint("TOPRIGHT", topRight, "BOTTOMRIGHT")
+    right:SetPoint("BOTTOMRIGHT", bottomRight, "TOPRIGHT")
+    fill:SetPoint("TOPLEFT", topLeft, "BOTTOMRIGHT")
+    fill:SetPoint("BOTTOMRIGHT", bottomRight, "TOPLEFT")
+
+    local function setCornerSize(_, width, height)
+        local cornerWidth = math.min(5, width / 3)
+        local cornerHeight = math.min(5, height / 3)
+        topLeft:SetSize(cornerWidth, cornerHeight)
+        topRight:SetSize(cornerWidth, cornerHeight)
+        bottomLeft:SetSize(cornerWidth, cornerHeight)
+        bottomRight:SetSize(cornerWidth, cornerHeight)
+        top:SetHeight(cornerHeight)
+        bottom:SetHeight(cornerHeight)
+        left:SetWidth(cornerWidth)
+        right:SetWidth(cornerWidth)
+    end
+    button:HookScript("OnSizeChanged", setCornerSize)
+    setCornerSize(button, button:GetSize())
+
+    local active, hovered, pressed = false, button:IsVisible() and button:IsMouseOver(), false
+    local spriteOffset
+    local paletteTop = warmFill and 0 or 16
+    local selection, weight
+    local shown, tint, desaturated = true, { 1, 1, 1 }, false
+    local function style(slice)
+        slice:SetShown(shown)
+        slice:SetDesaturated(desaturated)
+        slice:SetVertexColor(unpack(tint))
+    end
+    local function setWeight(value)
+        weight = value
+        for _, layer in ipairs(selection) do layer:SetAlpha(value) end
+    end
+    local function paint()
+        local enabled = button:IsEnabled()
+        local gold = primary or active
+        local state = not enabled and 3 or pressed and 2 or hovered and 1 or 0
+        local offset = ((gold and not selection and 4 or 0) + state) * 16
+        if offset ~= spriteOffset then
+            for row, parts in ipairs(slices) do
+                for column, slice in ipairs(parts) do
+                    slice:SetTexCoord((offset + flatButtonUV[column]) / 128,
+                        (offset + flatButtonUV[column + 1]) / 128,
+                        (paletteTop + flatButtonUV[row]) / 32, (paletteTop + flatButtonUV[row + 1]) / 32)
+                    if selection then
+                        selection[(row - 1) * 3 + column]:SetTexCoord((64 + offset + flatButtonUV[column]) / 128,
+                            (64 + offset + flatButtonUV[column + 1]) / 128,
+                            (paletteTop + flatButtonUV[row]) / 32, (paletteTop + flatButtonUV[row + 1]) / 32)
+                    end
+                end
+            end
+            spriteOffset = offset
+        end
+        if skin.onStateChanged then skin.onStateChanged(enabled, gold, hovered) end
+    end
+    skin.paint = paint
+    function skin:animateSelection()
+        if selection then return end
+        selection = {}
+        for _, parts in ipairs(slices) do
+            for _, slice in ipairs(parts) do
+                local layer = button:CreateTexture(nil, "BACKGROUND", nil, 2)
+                layer:SetTexture(controls .. "FlatButtons.tga")
+                layer:SetAllPoints(slice)
+                selection[#selection + 1] = layer
+                style(layer)
+            end
+        end
+        setWeight(active and 1 or 0)
+        spriteOffset = nil
+        paint()
+        button:HookScript("OnHide", function()
+            ui.stopTransition(button)
+            setWeight(active and 1 or 0)
+        end)
+    end
+    function skin:setActive(value)
+        value = not not value
+        if active == value then paint(); return end
+        active = value
+        if selection then
+            local start, target = weight, active and 1 or 0
+            if button:IsVisible() and start ~= target then
+                ui.transition(button, .12 * math.abs(target - start), function(t)
+                    setWeight(start + (target - start) * t)
+                end)
+            else
+                ui.stopTransition(button)
+                setWeight(target)
+            end
+        end
+        paint()
+    end
+    local function updateStyle()
+        for _, parts in ipairs(slices) do
+            for _, slice in ipairs(parts) do style(slice) end
+        end
+        if selection then
+            for _, layer in ipairs(selection) do style(layer) end
+        end
+    end
+    function skin:setColor(color)
+        tint, desaturated = color or (primary and fieldTint) or { 1, 1, 1 }, color ~= nil
+        updateStyle()
+    end
+    function skin:setShown(value)
+        shown = value
+        updateStyle()
+    end
+
+    local function clear() hovered, pressed = false, false; paint() end
+    local function updateHover() hovered, pressed = button:IsMouseOver(), false; paint() end
+    button:HookScript("OnEnter", function() hovered = true; paint() end)
+    button:HookScript("OnLeave", clear)
+    button:HookScript("OnHide", clear)
+    button:HookScript("OnShow", updateHover)
+    button:HookScript("OnDisable", clear)
+    button:HookScript("OnEnable", updateHover)
+    button:HookScript("OnMouseDown", function(_, mouseButton)
+        if mouseButton == "LeftButton" then pressed = button:IsEnabled(); paint() end
+    end)
+    button:HookScript("OnMouseUp", function(_, mouseButton)
+        if mouseButton == "LeftButton" then updateHover() end
+    end)
+    paint()
+    return skin
+end
+
+local function paintButtonContents(button, enabled, active, hovered, idleGlyph)
+    local emphasis = enabled and (active or hovered)
+    if button.glyph then
+        local color = emphasis and ui.gold or idleGlyph
+        button.glyph:SetVertexColor(color[1], color[2], color[3], enabled and 1 or .50)
+    end
+    if button.caption then
+        local color = emphasis and ui.paper or ui.muted
+        button.caption:SetTextColor(color[1], color[2], color[3], enabled and 1 or .65)
+    end
+end
+
+function ui.action(parent, x, y, w, h, label, icon, callback, field, warmFill)
+    if h > 40 or (not label and icon) then
+        return ornateAction(parent, x, y, w, h, label, icon, callback, field)
+    end
+    local button = actionButton(parent, x, y, w, h, label, icon, callback)
+    local skin = flatButtonSkin(button, field, warmFill)
+    local dropdownStyle
+    skin.onStateChanged = function(enabled, active, hovered)
+        if dropdownStyle then
+            local highlight = enabled and hovered
+            dropdownStyle[1]:SetColorTexture(highlight and .075 or .055,
+                highlight and .10 or .075, highlight and .14 or .105, 1)
+        end
+        paintButtonContents(button, enabled, active, hovered, ui.paper)
+    end
+    function button:setActive(value) skin:setActive(value) end
+    function button:setFieldStyle(color) skin:setColor(color) end
+    function button:setDropdownStyle()
+        if not dropdownStyle then
+            skin:setShown(false)
+            dropdownStyle = ui.dropdownSurface(self)
+            skin:paint()
+        end
+        return dropdownStyle
+    end
+    button:setFieldStyle(nil)
+    button:setActive(false)
+    return button
+end
+
+function ui.tab(parent, x, y, w, h, label, icon, callback, glowScale, centerCaption, slideGroup)
     local tab = ui.place(CreateFrame("Button", nil, parent), parent, x, y, w, h)
     local glow = tab:CreateTexture(nil, "BACKGROUND")
     glow:SetPoint("BOTTOM", tab, "BOTTOM", 0, -5)
@@ -1140,6 +1364,7 @@ function ui.tab(parent, x, y, w, h, label, icon, callback, glowScale, centerCapt
         if not icon then tab.caption:SetJustifyH("CENTER") end
     end
     if icon then tab.glyph = ui.icon(tab, 0, 0, 18, icon) end
+    local sliding
     local function layoutContents(width)
         local inset = math.max(4, math.floor((width - 102) / 2))
         local glyphLeft = label and inset or (width - 18) / 2
@@ -1151,7 +1376,7 @@ function ui.tab(parent, x, y, w, h, label, icon, callback, glowScale, centerCapt
             captionLeft = (width - captionWidth) / 2
             glyphLeft = captionLeft - glyphSpace
         end
-        edge:SetWidth(width - 6)
+        if not sliding then edge:SetWidth(width - 6) end
         glow:SetWidth(width * .75)
         if tab.glyph then
             tab.glyph:ClearAllPoints()
@@ -1179,8 +1404,44 @@ function ui.tab(parent, x, y, w, h, label, icon, callback, glowScale, centerCapt
         if tab.glyph then tab.glyph:SetVertexColor(unpack((active or hovered) and ui.gold or ui.muted)) end
         if tab.caption then tab.caption:SetTextColor(unpack((active or hovered) and ui.paper or ui.muted)) end
     end
-    function tab:setActive(value) active = value; paint() end
-    tab:SetScript("OnClick", callback)
+    local function resetUnderline()
+        ui.stopTransition(tab)
+        sliding = nil
+        edge:ClearAllPoints()
+        edge:SetPoint("TOPLEFT", tab, "TOPLEFT", 3, 1 - h)
+        edge:SetWidth(tab:GetWidth() - 6)
+    end
+    function tab:setActive(value)
+        if slideGroup then
+            if value then slideGroup.current = self
+            elseif slideGroup.current == self then slideGroup.current = nil end
+            if active and not value then resetUnderline() end
+        end
+        active = value
+        paint()
+    end
+    if slideGroup then
+        tab.underline = edge
+        tab:HookScript("OnHide", resetUnderline)
+        tab:SetScript("OnClick", function(self, ...)
+            local previous = slideGroup.current
+            local left, width
+            if previous and previous ~= self and previous:IsVisible() then
+                left, width = previous.underline:GetLeft(), previous.underline:GetWidth()
+            end
+            callback(self, ...)
+            local origin = self:GetLeft()
+            if not left or not origin or not active or not self:IsVisible() then return end
+            local start = left - origin
+            sliding = true
+            ui.transition(self, .16, function(t)
+                if t == 1 then resetUnderline(); return end
+                edge:ClearAllPoints()
+                edge:SetPoint("TOPLEFT", self, "TOPLEFT", start + (3 - start) * t, 1 - h)
+                edge:SetWidth(width + (self:GetWidth() - 6 - width) * t)
+            end)
+        end)
+    else tab:SetScript("OnClick", callback) end
     tab:SetScript("OnEnter", function() hovered = true; paint() end)
     local function leave() hovered = false; paint() end
     tab:SetScript("OnLeave", leave)
