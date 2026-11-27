@@ -5,27 +5,19 @@ local pending
 local function activeChat()
     local focused = type(WIM) == "table" and WIM.EditBoxInFocus
     if focused and focused.HasFocus and focused:HasFocus() and focused.IsVisible and focused:IsVisible() then
-        return focused, true
+        return focused
     end
     local getter = ChatFrameUtil and ChatFrameUtil.GetActiveWindow or ChatEdit_GetActiveWindow
-    return getter and getter()
+    local chat = getter and getter()
+    if chat and chat:HasFocus() and chat:IsVisible() then return chat end
 end
 
 local function insertLink(link)
     if type(link) ~= "string" or link == "" then return false end
-    local insert = ChatFrameUtil and ChatFrameUtil.InsertLink or ChatEdit_InsertLink
-    local open = ChatFrameUtil and ChatFrameUtil.OpenChat or ChatFrame_OpenChat
-    -- InsertLink also targets macros and auction searches. With no active chat,
-    -- open a chat draft explicitly, as Blizzard's own LinkItem does.
-    local chat, external = activeChat()
-    if external then
-        if not chat.Insert then return false end
-        chat:Insert(link)
-        return true
-    end
-    if chat and insert and insert(link) then return true end
-    if open then open(link); return true end
-    return false
+    local chat = activeChat()
+    if not chat or not chat.Insert then return false end
+    chat:Insert(link)
+    return true
 end
 
 function atlas.cancelPendingLink(owner)
@@ -54,9 +46,10 @@ end
 
 local function awaitLink(id, owner, event)
     local chat = activeChat()
+    if not chat then return false end
     local request = {
         id = id, owner = owner, chat = chat, event = event,
-        text = chat and chat:GetText(), expires = GetTime() + 5,
+        text = chat:GetText(), expires = GetTime() + 5,
     }
     pending = request
     loader:RegisterEvent(event)
@@ -71,6 +64,7 @@ local function awaitLink(id, owner, event)
     C_Timer.After(5, function()
         if pending == request then atlas.cancelPendingLink() end
     end)
+    return true
 end
 
 function atlas.linkItem(itemID, owner)
@@ -80,7 +74,7 @@ function atlas.linkItem(itemID, owner)
     local link = itemLink(id)
     if link then return insertLink(link) end
     if not C_Item or not C_Item.RequestLoadItemDataByID then return false end
-    awaitLink(id, owner, "ITEM_DATA_LOAD_RESULT")
+    if not awaitLink(id, owner, "ITEM_DATA_LOAD_RESULT") then return false end
     C_Item.RequestLoadItemDataByID(id)
     return true
 end
@@ -413,8 +407,7 @@ function atlas.linkSource(link, owner, displayedText)
     if kind == "achievement" and GetAchievementLink then
         local reference = atlas.nativeAchievementLink(id)
         if reference then return insertLink(reference) end
-        awaitLink(id, owner, "RECEIVED_ACHIEVEMENT_LIST")
-        return true
+        return awaitLink(id, owner, "RECEIVED_ACHIEVEMENT_LIST")
     end
     if kind == "quest" then
         return insertLink(questReference(link, id, displayedText))

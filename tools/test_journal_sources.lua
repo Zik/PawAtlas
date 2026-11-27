@@ -2192,6 +2192,28 @@ do
     order(atlas.sortedCatalogMounts("name"), "9901,9904,9905,9903,9902,9906", "name sorting ignores ownership")
     equal(atlas.sortedCatalogMounts("missing"), missing, "switching modes preserves cached orders")
 
+    local originalChances = atlas.catalogDropChances
+    local odds = { [9906] = { .02, .25 }, [9904] = { .01, .80 }, [9901] = { .10, 0 },
+        [9903] = { .02, nil }, [9902] = { nil, .25 } }
+    local reads = 0
+    atlas.catalogDropChances = function(mount)
+        reads = reads + 1
+        local score = odds[mount.id]
+        if score then return score[1], score[2] end
+    end
+    local perRoll = atlas.sortedCatalogMounts("dropChance")
+    order(perRoll, "9901,9903,9906,9904,9905,9902", "single drop rate, then localized name for ties and unknowns")
+    order(atlas.sortedCatalogMounts("attemptChance"), "9904,9902,9906,9901,9905,9903",
+        "cumulative chance sorts descending, with known zero before unknown")
+    equal(reads, 12, "each sort reads a mount once outside the comparator")
+    atlas.sortedCatalogMounts("attemptChance")
+    equal(reads, 12, "filtering and searching reuse the cached order")
+    odds[9901][2] = .90
+    atlas.invalidateCatalogAttemptOrder()
+    order(atlas.sortedCatalogMounts("attemptChance"), "9901,9904,9902,9906,9905,9903", "new attempts change the order")
+    equal(atlas.sortedCatalogMounts("dropChance"), perRoll, "new attempts preserve per-roll odds")
+    atlas.catalogDropChances = originalChances
+
     language = "enUS"
     order(atlas.sortedCatalogMounts("name"), "9903,9902,9906,9901,9905,9904", "changing locale uses English display names")
     atlas.collection.byID[9902] = true

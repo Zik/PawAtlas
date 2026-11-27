@@ -25,6 +25,8 @@ local function client(name, collection)
         SetScript = function(_, _, callback) state.onEvent = callback end,
     }
     local chat = {
+        HasFocus = function() return state.focused ~= false end,
+        IsVisible = function() return state.enabled end,
         GetChatType = function() return state.chatType end,
         GetTellTarget = function() return state.target end,
         GetText = function() return state.draft end,
@@ -137,6 +139,9 @@ alice.target = "bob-realm"
 alice.enabled = false
 assert(not alice.atlas.shareCollectionLink())
 alice.enabled = true
+alice.focused = false
+assert(not alice.atlas.shareCollectionLink() and alice.draft == "" and #packets == 0)
+alice.focused = true
 alice.lockdown = true
 assert(not alice.atlas.shareCollectionLink() and alice.draft == "", "chat lockdown still blocks insertion")
 alice.lockdown = false

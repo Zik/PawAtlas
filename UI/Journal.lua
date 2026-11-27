@@ -392,14 +392,17 @@ do
     function catalog:sortMode()
         local settings = type(MountAtlasAccountDB) == "table" and MountAtlasAccountDB.settings
         local mode = type(settings) == "table" and settings.catalogSort
-        if mode == "collected" or mode == "name" then return mode end
+        if mode == "collected" or mode == "name" or mode == "attemptChance" or mode == "dropChance" then return mode end
         return "missing"
     end
     local sortMenu, sortButton = dropdown(130, 125, "Сортировка", 210, true)
     for i, width in ipairs({14, 10, 6}) do
         ui.fill(sortButton, 9, 8 + (i - 1) * 4, width, 1, ui.paper):SetDrawLayer("ARTWORK")
     end
-    local options = { { "missing", "Сначала неполученные" }, { "collected", "Сначала полученные" }, { "name", "По имени" } }
+    local options = {
+        { "missing", "Сначала неполученные" }, { "collected", "Сначала полученные" }, { "name", "По имени" },
+        { "attemptChance", "По шансу за все попытки" }, { "dropChance", "По шансу выпадения" },
+    }
     for i, option in ipairs(options) do
         local mode = option[1]
         local button = ui.button(sortMenu, 4, 4 + (i - 1) * 24, 202, 24, function()
@@ -1642,7 +1645,7 @@ local chanceTrack = ui.place(CreateFrame("Frame", nil, card), card, 217, 409, 29
 killsHelp:EnableMouse(true)
 function killsHelp:shareHint()
     if self.count ~= nil or chanceTrack.islandCount ~= nil then
-        ui.tooltipLine(L("Shift + ЛКМ — поделиться в чате"), unpack(ui.muted))
+        ui.attemptShareHint()
     end
 end
 function killsHelp.shareAttempts(_, button)
@@ -1670,20 +1673,10 @@ killsHelp:SetScript("OnEnter", function(self)
     if chanceTrack.islandMode then return chanceTrack:GetScript("OnEnter")(self) end
     if self.riftProgress then return self:showRiftTooltip(self) end
     GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-    ui.tooltipTitle(attemptsLabel:GetText(), unpack(ui.gold))
+    ui.attemptTooltip(self.count)
     if self.encounterEstimate then
-        ui.tooltipLine("Rarity " .. kills:GetText(), 1, 1, 1)
-        ui.tooltipLine(L(self.encounterEstimate), ui.muted[1], ui.muted[2], ui.muted[3], true)
-        self:shareHint()
-        GameTooltip:Show()
-        return
+        ui.tooltipLine("Rarity: " .. L(self.encounterEstimate), 1, 1, 1, true)
     end
-    ui.tooltipLine(L("Попыток: %s", kills:GetText()), 1, 1, 1)
-    ui.tooltipLine(" ")
-    local help = self.localBossCounter
-        and "История убийств до установки аддона не загружается. Учитываются убийства, записанные аддоном, и импорт из Rarity."
-        or "Попытки всех учтённых персонажей аккаунта. Доступная история загружается при входе на каждого персонажа; остальные попытки считаются с момента установки аддона"
-    ui.tooltipLine(L(help), ui.muted[1], ui.muted[2], ui.muted[3], true)
     self:shareHint()
     GameTooltip:Show()
 end)
@@ -2455,9 +2448,9 @@ local function refreshChance(collected, vendor, view, official)
     attemptsLabel:SetShown(showKills)
     attemptsIcon:SetShown(showKills)
     killsHelp.encounterEstimate = estimate and reward.condition or nil
-    killsHelp.localBossCounter = not rewardProgress and not selected.npcs and not atlas.usesKillAPI(selected)
+    local localBossCounter = not rewardProgress and not selected.npcs and not atlas.usesKillAPI(selected)
     attemptsLabel:SetText(summary.openingChance and "Попыток с добычей" or estimate and "Rarity" or rewardProgress and "Попытки:" or selected.npcs and "Попыток с добычей"
-        or killsHelp.localBossCounter and "Учтено убийств" or "Убийств босса")
+        or localBossCounter and "Учтено убийств" or "Убийств босса")
     killsHelp.count = showKills and (estimate or attempts or rewardProgress and rewardProgress.attempts
         or atlas.kills(selected)) or nil
     kills:SetText(showKills and tostring(killsHelp.count or "—") or "")
@@ -2721,9 +2714,10 @@ refresh = function(preferredMount)
     end
     local queryChanged = lastKey ~= key
     local sortMode = catalog:sortMode()
+    local ordered = atlas.sortedCatalogMounts(sortMode)
     local filtersChanged = queryChanged or catalog.lastSortMode ~= sortMode or lastFilter ~= activeFilter or lastSourceFilter ~= sourceFilter
         or lastSourceSubtype ~= sourceSubtype or lastFrequency ~= frequency or lastExpansion ~= expansionFilter
-    if not filtersChanged and not catalog.needsRefresh and collection == lastCollection then
+    if not filtersChanged and not catalog.needsRefresh and collection == lastCollection and catalog.lastOrder == ordered then
         selectMount(preferredMount or selected)
         return
     end
@@ -2754,7 +2748,7 @@ refresh = function(preferredMount)
     sourceMenu.daily:SetShown(frequency == "daily")
     sourceMenu.weekly:SetShown(frequency == "weekly")
     sourceMenu:setFiltered(not allSources)
-    local ordered = atlas.sortedCatalogMounts(sortMode)
+    catalog.lastOrder = ordered
     local matches, wanted, keep = ordered, preferredMount or selected, false
     if wanted == catalog.loadingPreview and not preferredMount and not catalog.revealAfterLoading then wanted = nil end
     catalog.loadingPreview = nil
@@ -2900,6 +2894,14 @@ function atlas.effectiveWindowScale()
     return frame:GetScale()
 end
 function atlas.onJournalChanged() refreshJournal() end
+function atlas.onCatalogAttemptsChanged()
+    if catalog.attemptSortPending or not page:IsVisible() or catalog:sortMode() ~= "attemptChance" then return end
+    catalog.attemptSortPending = true
+    C_Timer.After(.1, function()
+        catalog.attemptSortPending = nil
+        if page:IsVisible() and catalog:sortMode() == "attemptChance" then refresh() end
+    end)
+end
 function atlas.refreshSourceRoutes()
     sourceMenu.categories = nil
     catalog.needsRefresh = true

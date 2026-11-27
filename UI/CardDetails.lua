@@ -384,13 +384,13 @@ function atlas.cardDetails(card, pagerArrow)
         local progress = panel.itemProgress
         if not progress then return end
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        if self.showChance then
+        if self.hasAttempts then
+            ui.attemptTooltip(progress.attempts)
+            ui.attemptShareHint()
+        elseif self.showChance then
             local step = math.max(1, math.min(#ui.chanceFlavors, math.ceil(progress.cumulative * 10)))
             ui.tooltipTitle(L(ui.chanceFlavors[step]), itemAttempts:GetTextColor())
-        else
-            ui.tooltipTitle(L("Попыток: %s", progress.attempts), itemAttempts:GetTextColor())
         end
-        if self.hasAttempts then ui.tooltipLine(L("Shift + ЛКМ — поделиться в чате"), unpack(ui.muted)) end
         GameTooltip:Show()
     end
     itemChanceHelp:SetScript("OnMouseUp", function(self, button)

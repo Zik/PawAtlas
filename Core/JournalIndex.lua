@@ -678,9 +678,17 @@ end
 
 local catalogOrders = {}
 local firstOwned = { missing = false, collected = true }
+local chanceIndex = { dropChance = 1, attemptChance = 2 }
+
+function atlas.invalidateCatalogAttemptOrder()
+    if not catalogOrders.attemptChance then return end
+    catalogOrders.attemptChance = nil
+    if atlas.onCatalogAttemptsChanged then atlas.onCatalogAttemptsChanged() end
+end
 
 function atlas.sortedCatalogMounts(mode)
-    if mode ~= "name" and firstOwned[mode] == nil then mode = "missing" end
+    local index = chanceIndex[mode]
+    if not index and mode ~= "name" and firstOwned[mode] == nil then mode = "missing" end
     local collection, locale = atlas.collection, atlas.getLocale()
     if catalogOrders.collection ~= collection or catalogOrders.locale ~= locale then
         catalogOrders = { collection = collection, locale = locale }
@@ -691,7 +699,11 @@ function atlas.sortedCatalogMounts(mode)
     local entries = {}
     for i, mount in ipairs(atlas.mounts) do
         local group = 1
-        if first ~= nil then
+        if index then
+            local chance = select(index, atlas.catalogDropChances(mount))
+            -- Zero is known and sorts above entries without a comparable roll.
+            group = chance and -chance or 1
+        elseif first ~= nil then
             local owned = byID and byID[mount.id]
             if owned == first then group = 1
             elseif type(owned) == "boolean" then group = 2

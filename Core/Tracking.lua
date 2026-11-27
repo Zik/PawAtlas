@@ -138,6 +138,7 @@ local function refresh()
 end
 
 function atlas.queueAttemptRefresh(planChanged)
+    if atlas.invalidateCatalogAttemptOrder then atlas.invalidateCatalogAttemptOrder() end
     local pending = pendingAttemptRefresh
     if pending then
         if planChanged then pending.capture = true end
@@ -263,6 +264,7 @@ local function recordIslandCompletion(map)
     MountAtlasDB.completedIslandMap = map
     local count = character.islandExpeditionCompletions
     character.islandExpeditionCompletions = (validNumber(count) and math.floor(count) or 0) + 1
+    if atlas.invalidateCatalogAttemptOrder then atlas.invalidateCatalogAttemptOrder() end
     if atlas.settleIslandExpeditionAcquisitions then atlas.settleIslandExpeditionAcquisitions(map) end
     local settings = MountAtlasAccountDB.settings
     if (not settings or settings.chatMessages ~= false) and DEFAULT_CHAT_FRAME and DEFAULT_CHAT_FRAME.AddMessage then
@@ -313,6 +315,7 @@ function atlas.removeAccountCharacter(guid)
     -- Current-character reads happen during UI refresh; wait for a new login
     -- before allowing them to recreate an explicitly removed record.
     suppressedCharacters[guid] = true
+    if atlas.invalidateCatalogAttemptOrder then atlas.invalidateCatalogAttemptOrder() end
     refresh()
     if atlas.refreshAccountSettings then atlas.refreshAccountSettings() end
     return true
@@ -383,7 +386,9 @@ local function saveStatistic(record, id, count, samples)
     if grew and atlas.notifyKillStatistic then
         atlas.notifyKillStatistic(id)
     end
-    return grew or record.statistics[id] ~= previous
+    local changed = grew or record.statistics[id] ~= previous
+    if changed and atlas.invalidateCatalogAttemptOrder then atlas.invalidateCatalogAttemptOrder() end
+    return changed
 end
 
 function atlas.seedImportedStatistics(guid, statistics)
@@ -615,6 +620,7 @@ function atlas.clearAttemptStatistics()
     local observed = observeStatisticGrowth
     observeStatisticGrowth = false
     if atlas.resetAttemptStageSession then atlas.resetAttemptStageSession() end
+    if atlas.invalidateCatalogAttemptOrder then atlas.invalidateCatalogAttemptOrder() end
     -- Blizzard's lifetime history cannot be erased. Reload the current character
     -- silently; other character snapshots return when those characters log in.
     syncStatistics()
@@ -662,24 +668,29 @@ function atlas.rawKills(mount)
     return total + (not record and not suppressed and localKills(mount) or 0)
 end
 
-function atlas.kills(mount)
+function atlas.kills(mount, savedStatisticsOnly)
     local definitions = atlas.attemptStages and atlas.attemptStages[mount.id]
     local reward = definitions and definitions.reward
     if reward and reward.unverifiedEligibility then
         if reward.rarityEncounterEstimate and atlas.withImportedAttempts then return atlas.withImportedAttempts(mount) end
         return
     end
-    local count = atlas.rawKills(mount)
+    local count
+    if savedStatisticsOnly and atlas.usesKillAPI(mount) then
+        count = atlas.savedStatisticAttempts(mount.id)
+    else
+        count = atlas.rawKills(mount)
+    end
     if atlas.withImportedAttempts then return atlas.withImportedAttempts(mount, count) end
     return count
 end
 
 -- Independent eligible attempts: the historical probability is not the chance
 -- of the next drop. Container/ingredient rates must not use NPC kill counts.
-function atlas.dropProbability(mount, savedAttempts)
+function atlas.dropProbability(mount, savedAttempts, forCatalog)
     if atlas.raidLootRewards and atlas.raidLootRewards[mount.id] then return nil end
     if atlas.rewardChanceEligible and not atlas.rewardChanceEligible(mount) then return nil end
-    local progress = atlas.rewardAttemptProgress and atlas.rewardAttemptProgress(mount)
+    local progress = atlas.rewardAttemptProgress and atlas.rewardAttemptProgress(mount, nil, forCatalog)
     if progress then return progress.perAttempt, progress.cumulative, progress.attempts end
     local definitions = atlas.attemptStages and atlas.attemptStages[mount.id]
     local reward = definitions and definitions.reward
@@ -693,7 +704,7 @@ function atlas.dropProbability(mount, savedAttempts)
     local perAttempt = 1 / rate
     if reward and reward.unverifiedEligibility then return perAttempt end
     local tracked = not mount.journalOnly or atlas.usesKillAPI(mount)
-    local attempts = tracked and (savedAttempts or atlas.kills(mount))
+    local attempts = tracked and (savedAttempts or atlas.kills(mount, forCatalog))
     if not validNumber(attempts) or (not overall and item and item.basis ~= "drop") then return perAttempt end
     attempts = math.floor(attempts)
     local cumulative = attempts == 0 and 0 or (1 - (1 - perAttempt) ^ attempts)

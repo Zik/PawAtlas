@@ -786,6 +786,7 @@ local function commitImport(plan)
 end
 
 local function refreshImportViews()
+    if atlas.invalidateCatalogAttemptOrder then atlas.invalidateCatalogAttemptOrder() end
     if atlas.refreshDetails then atlas.refreshDetails() end
     if atlas.refreshAccountSettings then atlas.refreshAccountSettings() end
 end

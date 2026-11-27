@@ -864,7 +864,13 @@ function atlas.makePlanner(parent, openMount, openExpansion)
             return atlas.itemAttemptProgress(row.item)
         end
         row.sourceButton = ui.button(row, progressX - 4, 1, progressWidth + 8, rowStep - 2, function(_, button)
-            if button == "LeftButton" and IsShiftKeyDown() and atlas.shareItemAttempts(itemAttempts()) then return end
+            if button == "LeftButton" and IsShiftKeyDown() then
+                local progress = itemAttempts()
+                if atlas.canShareItemAttempts(progress) then
+                    atlas.shareItemAttempts(progress)
+                    return
+                end
+            end
             if row.item then menu:Hide(); planMenu:Hide(); sources:open(row.item, selectedGUID) end
         end)
         row.sourceButton:EnableMouseWheel(true)
@@ -895,7 +901,7 @@ function atlas.makePlanner(parent, openMount, openExpansion)
             if self == row.sourceButton then
                 ui.tooltipTitle(L("Посмотреть список"))
                 if atlas.canShareItemAttempts(itemAttempts()) then
-                    ui.tooltipLine(L("Shift + ЛКМ — поделиться в чате"), unpack(ui.muted))
+                    ui.attemptShareHint()
                 end
                 GameTooltip:Show()
                 return

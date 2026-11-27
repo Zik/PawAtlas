@@ -1980,33 +1980,45 @@ do
     env.WIM.EditBoxInFocus.focused = false
     active = editor()
     assert(links.linkMount(400), "Blizzard active draft remains supported")
-    equal(#inserted, 1, "unfocused WIM does not steal active chat link")
+    equal(active.text, env.C_Spell.GetSpellLink(88750), "the focused Blizzard editor receives the mount link")
+    active.focused = false
+    assert(not links.linkMount(400), "an unfocused native editor cannot accept a link")
+    active.focused, active.visible = true, false
+    assert(not links.linkMount(400), "a hidden native editor cannot accept a link")
     active = nil
-    assert(links.linkMount(400), "no active editor opens a draft")
-    equal(#opened, 1, "no active editor opens exactly one draft")
+    assert(not links.linkMount(400), "a closed chat stays closed")
+    itemReady = false
+    local queued = #timers
+    assert(not links.linkItem(123) and #timers == queued, "a closed chat does not queue a future insertion")
     links.L = string.format
     active = editor()
     local message = "|Hspell:88750|h[Mount]|h · Попыток: 42"
     assert(links.shareMountAttempts({ id = 400 }, 42))
-    equal(inserted[#inserted], message, "the active channel receives the displayed attempt count")
+    equal(active.text, message, "the active channel receives the displayed attempt count")
     env.WIM.EditBoxInFocus = whisper
     local draft = whisper.text
     assert(links.shareMountAttempts({ id = 400 }, 42))
     equal(whisper.text, draft .. message, "attempt sharing preserves the current whisper and existing draft")
     assert(not links.shareMountAttempts({ id = 400 }, nil), "unknown attempts cannot be shared as zero")
     env.WIM.EditBoxInFocus, active, env.C_Spell.GetSpellLink = nil, nil, function() end
-    assert(links.shareMountAttempts({ id = 400, journalName = "Mount" }, 0))
-    equal(opened[#opened], "[Mount] · Попыток: 0", "a known zero opens an editable draft with the journal name")
+    assert(not links.shareMountAttempts({ id = 400, journalName = "Mount" }, 0))
     local core = { item = 187282, name = "Невредимый сердечник аквилона", attempts = 8, perAttempt = .01 }
     links.getLocale = function() return "ruRU" end
     env.C_Item.GetItemInfo = function() end
+    assert(not links.shareItemAttempts(core), "sharing item attempts also leaves closed chat alone")
+    active = editor()
+    assert(links.shareMountAttempts({ id = 400, journalName = "Mount" }, 0))
+    equal(active.text, "[Mount] · Попыток: 0", "a known zero is inserted into the open draft")
+    active.text = "Look: "
     assert(links.shareItemAttempts(core))
-    equal(opened[#opened], "|Hitem:187282|h[Невредимый сердечник аквилона]|h · Попыток: 8",
+    equal(active.text, "Look: |Hitem:187282|h[Невредимый сердечник аквилона]|h · Попыток: 8",
         "a cold starter shares its own item and attempts instead of the guaranteed mount")
     assert(not links.shareItemAttempts({ item = 187282, attempts = nil }))
     assert(not links.shareItemAttempts({ item = 94288, required = 9999, attempts = 0 }),
         "collection progress is not a shareable drop attempt")
-    print("PawAtlas chat links passed: WIM priority, native quest links, async context and Blizzard fallback")
+    equal(#opened, 0, "link sharing never opens chat")
+    equal(#inserted, 0, "link sharing never redirects to a non-chat edit box")
+    print("PawAtlas chat links passed: focused chat drafts, WIM, native links and async context")
 end
 
 local function checkLocale(clientLocale)
@@ -2998,6 +3010,10 @@ do
     end
     equal(probe.rawStageAttempts("mount:1212"), 2, "verified Jorundall Salvage consumes two bags")
     equal(probe.islandExpeditionProgress({ id = 1212 }), 4, "expedition completions and bags share a displayed total")
+    local _, islandBar, islandRate = probe.islandExpeditionProgress({ id = 1212 })
+    local sortRate, sortBar = probe.catalogDropChances({ id = 1212 })
+    equal(sortRate, islandRate, "catalog uses the island's common per-attempt rate")
+    equal(sortBar, islandBar, "catalog uses the same expedition and salvage bar")
     equal(#messages, 3, "unknown ownership defers salvage chat")
     ownership[1212] = false
     drainTimers()
@@ -3465,6 +3481,9 @@ do
     advance(.3)
     equal(progress(1776).boxes, previousBoxes + 2, "two Rift boxes can share one bag update")
     equal(#chat, 9, "each Rift box reports its own attempt")
+    local sortRate, sortBar = probe.catalogDropChances({ id = 1776 })
+    equal(sortRate, nil, "a reference rate is not a known drop chance")
+    equal(sortBar, probe.rewardAttemptProgress({ id = 1776 }).referenceCumulative, "catalog sorts by the displayed rift bar")
     chatCount(8, 14)
     chatCount(9, 15)
     print("PawAtlas Time Rifts passed: timeline, faction, reload, proven acquisitions and ordered chat without duplicates")

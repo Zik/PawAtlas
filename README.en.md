@@ -6,9 +6,9 @@
 
 ## 🐾 Your mount-hunting companion
 
-- 🔎 **Catalog** — search by mount, boss, or location. Filter by expansion or any of ten acquisition methods. Sort by name or show collected or uncollected mounts first.
+- 🔎 **Catalog** — search by mount, boss, or location. Filter by expansion or any of ten acquisition methods. Sort by name, collection status, drop chance per attempt, or cumulative chance across recorded attempts.
 - 🗺️ **Mount cards** — switch routes and waypoints, check vendor prices and requirements, and see quest and achievement progress. A clock shows the estimated respawn time for rares with a known interval.
-- 🎲 **Attempts & chances** — see drop chances, count attempts, and track items as you collect them. Import your farming history from Rarity. Shift-click the counter to share a mount or item link and your attempt count in chat.
+- 🎲 **Attempts & chances** — see drop chances, count attempts, and track items as you collect them. Import your farming history from Rarity. Shift-click the counter to insert the link and attempt count into your active chat box. Press Enter to send.
 - 📋 **Warband planner** — create goal lists, check each character’s lockouts, and share plans with friends.
 - 🧭 **Expedition mode** — track your goals in a standalone window and set WoW or TomTom waypoints. The same list opens from the broker bar. Drag the corner to resize either window. Both windows share their size, lock, and background opacity settings.
 - 🤝 **Collection comparison** — open a player's chat link to see which of their mounts you own and which you're missing.

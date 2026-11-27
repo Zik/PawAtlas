@@ -374,12 +374,13 @@ function atlas.stageAttemptDefinition(key)
     if entry and supported(entry.definition) then return entry.definition end
 end
 
-local function progress(definition, fallback, savedStatistics)
+local function progress(definition, fallback, savedStatistics, forCatalog)
     if type(definition) ~= "table" or type(definition.key) ~= "string" then return end
     local collection = definition.method == "COLLECTION"
-    local count = supported(definition) and total(definition.key, savedStatistics) or nil
+    local count = supported(definition) and total(definition.key, savedStatistics or forCatalog) or nil
     local perAttempt, cumulative = probability(not collection and definition.rate or nil, count or 0)
     if count == nil then cumulative = nil end
+    if forCatalog then return { attempts = count, perAttempt = perAttempt, cumulative = cumulative } end
     local collected = (definition.inventoryGoal or (number(definition.required) and definition.required > 1)) and C_Item
         and safe(C_Item.GetItemCount, definition.item, true, false, true, true) or nil
     return { item = definition.item, name = stageName(definition, fallback), englishName = definition.englishName, required = definition.required,
@@ -395,15 +396,16 @@ local function usesExistingCounter(mount, definition)
         and not mount.journalOnly and (mount.npcs ~= nil or mount.encounter ~= nil)
 end
 
-local function prerequisiteProgress(mount, definition, reward, fallback, savedAttempts)
-    local result = progress(definition, fallback, savedAttempts ~= nil)
+local function prerequisiteProgress(mount, definition, reward, fallback, savedAttempts, forCatalog)
+    local result = progress(definition, fallback, savedAttempts ~= nil, forCatalog)
     if not result then return end
     local count
-    if usesExistingCounter(mount, reward) then count = savedAttempts or atlas.kills(mount)
-    elseif supported(reward) then count = total(reward.key, savedAttempts ~= nil) end
+    if usesExistingCounter(mount, reward) then count = savedAttempts or atlas.kills(mount, forCatalog)
+    elseif supported(reward) then count = total(reward.key, savedAttempts ~= nil or forCatalog) end
     result.attempts = number(count) and math.floor(count) or nil
     result.perAttempt, result.cumulative = probability(definition.rate, result.attempts or 0)
     if result.attempts == nil then result.cumulative = nil end
+    if forCatalog then return result end
     local reagent = atlas.guaranteedRewards and atlas.guaranteedRewards[mount.id]
     reagent = reagent and reagent.reagent
     if reagent and reagent.item == result.item and reagent.completionQuest then
@@ -414,14 +416,14 @@ local function prerequisiteProgress(mount, definition, reward, fallback, savedAt
     return result
 end
 
-function atlas.itemAttemptProgress(mount, savedAttempts)
+function atlas.itemAttemptProgress(mount, savedAttempts, forCatalog)
     local definitions = atlas.attemptStages and atlas.attemptStages[mount.id]
     if not definitions then return end
     if definitions.item then
         if definitions.item.attemptsFromReward and definitions.reward then
-            return prerequisiteProgress(mount, definitions.item, definitions.reward, nil, savedAttempts)
+            return prerequisiteProgress(mount, definitions.item, definitions.reward, nil, savedAttempts, forCatalog)
         end
-        return progress(definitions.item, nil, savedAttempts ~= nil)
+        return progress(definitions.item, nil, savedAttempts ~= nil, forCatalog)
     end
 
     -- Some upstream mount entries track a quest starter rather than the final
@@ -433,7 +435,7 @@ function atlas.itemAttemptProgress(mount, savedAttempts)
     if not reagent or not definition or definition.item ~= reagent.item then return end
     local loot = atlas.lootItems and atlas.lootItems[mount.id]
     local result = prerequisiteProgress(mount, definition, definition,
-        loot and loot.item == definition.item and loot.name or nil, savedAttempts)
+        loot and loot.item == definition.item and loot.name or nil, savedAttempts, forCatalog)
     if not result then return end
     result.required = reagent.required
     return result
@@ -492,12 +494,12 @@ function atlas.rewardChanceEligible(mount, vendorRoute)
     return not direct
 end
 
-function atlas.rewardAttemptProgress(mount, stageKey)
+function atlas.rewardAttemptProgress(mount, stageKey, forCatalog)
     local stagesForMount = atlas.attemptStages and atlas.attemptStages[mount.id]
     if stageKey then
         local alternate = stagesForMount and stagesForMount.alternateReward
         if alternate and alternate.key == stageKey and supported(alternate) then
-            return progress(alternate, mount.name)
+            return progress(alternate, mount.name, nil, forCatalog)
         end
         return
     end
@@ -522,7 +524,43 @@ function atlas.rewardAttemptProgress(mount, stageKey)
     end
     if usesExistingCounter(mount, definition) or not supported(definition) then return end
     if definition.method == "COLLECTION" then return end
-    return progress(definition, mount.name)
+    return progress(definition, mount.name, nil, forCatalog)
+end
+
+function atlas.catalogDropChances(mount)
+    local id = mount.id
+    if mount.unavailable or mount.availability or mount.trackingCompatible == false then return end
+    local stages = atlas.attemptStages and atlas.attemptStages[id]
+    local loot = atlas.lootItems and atlas.lootItems[id]
+    if not stages and not mount.odds and not (loot and loot.rate) then return end
+    if islandMount(id) then
+        local _, cumulative, rate = atlas.islandExpeditionProgress(mount)
+        return rate, cumulative
+    end
+    if timeRiftSource(id) then
+        local rift = atlas.rewardAttemptProgress(mount, nil, true)
+        -- The card uses a reference rate for the bar; the drop rate is unknown.
+        return nil, rift and rift.referenceCumulative
+    end
+    local guaranteed = atlas.guaranteedRewards and atlas.guaranteedRewards[id]
+    local rate, cumulative
+    if not guaranteed then rate, cumulative = atlas.dropProbability(mount, nil, true) end
+    if stages and stages.alternateReward then
+        local route = atlas.verifiedRewardDropRoute(mount)
+        local other = route and route.counterKey and atlas.rewardAttemptProgress(mount, route.counterKey, true)
+        if other and other.perAttempt then rate = math.max(rate or 0, other.perAttempt) end
+        if other and other.cumulative then cumulative = math.max(cumulative or 0, other.cumulative) end
+    end
+    -- A random starter can have an attempt bar even when the mount is guaranteed.
+    -- A multi-item collection instead shows inventory progress.
+    local starter = stages and (stages.item or guaranteed and guaranteed.reagent)
+    if cumulative == nil and starter and (not starter.required or starter.required == 1) then
+        local item = atlas.itemAttemptProgress(mount, nil, true)
+        if item and item.perAttempt and item.perAttempt < 1 then
+            cumulative = item.cumulative
+        end
+    end
+    return rate, cumulative
 end
 
 function atlas.captureMountAcquisition(mount)

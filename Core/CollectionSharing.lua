@@ -310,6 +310,7 @@ function atlas.shareCollectionLink()
         recipient = window.isBN and window.bn and window.bn.id or window.theUser
     else
         chat = ChatFrameUtil and ChatFrameUtil.GetActiveWindow and ChatFrameUtil.GetActiveWindow()
+        if not chat or not chat:HasFocus() or not chat:IsVisible() then return false end
         if chat and chat.GetChatType then chatType = chat:GetChatType() end
         if (chatType == "WHISPER" or chatType == "BN_WHISPER") and chat.GetTellTarget then
             recipient = chat:GetTellTarget()

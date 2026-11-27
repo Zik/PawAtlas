@@ -41,6 +41,16 @@ function ui.tooltipLine(text, ...)
     GameTooltip:AddLine(ui.safeText(ui.unavailableText(text)), ...)
 end
 
+function ui.attemptTooltip(count)
+    ui.tooltipTitle(atlas.L("Попыток: %s", count or "—"), unpack(ui.gold))
+    ui.tooltipLine(atlas.L("Всего по персонажам отряда"), 1, 1, 1)
+end
+
+function ui.attemptShareHint()
+    ui.tooltipLine(" ")
+    ui.tooltipLine(atlas.L("Shift + ЛКМ — вставить ссылку в открытый чат"), unpack(ui.muted))
+end
+
 function ui.tooltipOwnerIn(frame)
     local tooltip = GameTooltip
     if not tooltip or (tooltip.IsForbidden and tooltip:IsForbidden()) then return end
