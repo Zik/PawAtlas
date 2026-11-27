@@ -18,6 +18,7 @@ do
     atlas.windowMovementTransparencyMax = 80
     local fadeDuration, moving = .2, nil
     local startAlpha, targetAlpha, elapsed
+    local hoverTicker, hovered
 
     local function transparency(value)
         if type(value) ~= "number" or value ~= value then return 50 end
@@ -36,6 +37,15 @@ do
         if elapsed == 1 then self:SetScript("OnUpdate", nil) end
     end
 
+    local function stopWatchingHover()
+        if hoverTicker then hoverTicker:Cancel() end
+        hoverTicker, hovered = nil, nil
+    end
+
+    local function checkHover()
+        if hovered ~= frame:IsMouseOver() then atlas.refreshWindowMovementAlpha() end
+    end
+
     function atlas.refreshWindowMovementAlpha(instant)
         if not frame:IsShown() then return end
         if moving == nil then
@@ -43,7 +53,15 @@ do
             if not (issecretvalue and issecretvalue(speed)) and type(speed) == "number" then moving = speed > 0 end
         end
         local enabled, percent = atlas.windowMovementSettings()
-        local alpha = enabled and moving and (1 - percent / 100) or 1
+        local alpha = 1
+        if enabled and moving and percent > 0 then
+            -- Check the whole window, including interactive children that receive their own mouse events.
+            hovered = frame:IsMouseOver()
+            if not hovered then alpha = 1 - percent / 100 end
+            if not hoverTicker then hoverTicker = C_Timer.NewTicker(.08, checkHover) end
+        else
+            stopWatchingHover()
+        end
         local current = frame:GetAlpha()
         if instant or current == alpha then
             frame:SetScript("OnUpdate", nil)
@@ -72,6 +90,7 @@ do
     end)
     frame:HookScript("OnShow", function() atlas.refreshWindowMovementAlpha(true) end)
     frame:HookScript("OnHide", function(self)
+        stopWatchingHover()
         self:SetScript("OnUpdate", nil)
         self:SetAlpha(1)
     end)
@@ -403,6 +422,7 @@ collectionStatus:SetJustifyH("CENTER")
 collectionStatus:Hide()
 local card = ui.place(CreateFrame("Frame", nil, page), page, 328, 8, 680, 454)
 local cardTabs = { unpack(sourceCategories) }
+cardTabs[#cardTabs + 1] = { key = "garrison", label = "Гарнизон", icon = "Loot" }
 cardTabs[#cardTabs + 1] = { key = "gift", label = ITEM or "Предмет маунта", icon = "Book" }
 cardTabs[#cardTabs + 1] = { key = "islandExpedition", label = "Экспедиции", icon = "Loot" }
 cardTabs[#cardTabs + 1] = { key = "islandSalvage", label = "Сумки", icon = "Loot" }
@@ -679,7 +699,7 @@ function cardTabs:classify(mount, choices)
     for _, choice in ipairs(choices) do
         local route = atlas.classifyMountSource(mount, choice)
         choice.classification = route
-        choice.tabKey = choice.islandExpedition and "islandExpedition" or choice.islandSalvage and "islandSalvage"
+        choice.tabKey = choice.tabOverride or choice.islandExpedition and "islandExpedition" or choice.islandSalvage and "islandSalvage"
             or choice.covenantVariant and "covenant" or route.key
             or (route.state == "historical" and "history") or "unknown"
     end
@@ -737,29 +757,7 @@ local function buildSourceChoices(mount)
             end
         end
     end
-    -- These alternatives are reviewed acquisition routes, not another copy of
-    -- the journal/vendor text. Their rate and attempts stay in the core stages.
-    local route = hasVendor and not hasDrop and atlas.verifiedRewardDropRoute and atlas.verifiedRewardDropRoute(mount)
-    if route then
-        for _, entry in ipairs(route.routes or { route }) do
-            local boss, place = entry.boss or route.boss, entry.place or route.place
-            if boss and place then
-                local condition = entry.condition or route.condition
-                local faction = entry.faction or route.faction
-                local view = {
-                    id = mount.id, boss = boss, place = place, faction = faction, npc = entry.npc or route.npc,
-                    englishBoss = entry.englishBoss or route.englishBoss,
-                    englishPlace = entry.englishPlace or route.englishPlace,
-                    sourceKind = entry.sourceKind or route.sourceKind or "Добыча",
-                    sourcePlaceKind = entry.placeKind or route.placeKind or "Открытый мир",
-                    sourceMap = entry.map or route.map, conditions = condition,
-                    difficultyLocalOnly = true, trackingCompatible = true, hasSourcePanels = true,
-                    journalSourceRaw = "Источник: " .. boss .. "\nМесто: " .. place .. (condition and "\n" .. condition or ""),
-                }
-                choices[#choices + 1] = { view = view, separated = true, scopedPoints = true, verifiedDrop = true }
-            end
-        end
-    end
+    atlas.addVerifiedDropSource(mount, choices, hasVendor, hasDrop)
     if #choices == 0 then choices = atlas.achievementRouteChoices(mount) or { {} } end
     local saddle = atlas.extraSaddlePurchase(mount)
     if saddle then choices[#choices + 1] = { vendor = saddle, view = mount } end
@@ -1356,7 +1354,7 @@ sourceProgress:SetScript("OnEnter", function(self)
     ui.tooltipLine(L(progress.frequency == "weekly" and "Еженедельно" or "Ежедневно"), unpack(ui.muted))
     ui.tooltipLine(L("Персонаж") .. ": " .. (UnitName("player") or ""), 1, 1, 1)
     ui.tooltipLine(L("Выполнено: %d / %d", progress.completedAttempts, progress.totalAttempts), 1, 1, 1)
-    ui.tooltipLine(L("Можно идти: %d · Нет данных: %d", progress.availableAttempts, progress.unknownAttempts), unpack(ui.muted))
+    ui.tooltipLine(L("Можно идти: %d · Нужно обновить: %d", progress.availableAttempts, progress.unknownAttempts), unpack(ui.muted))
     GameTooltip:Show()
 end)
 sourceProgress:SetScript("OnLeave", function(self) if GameTooltip:IsOwned(self) then GameTooltip:Hide() end end)
@@ -1763,7 +1761,20 @@ summary.showOdds = oddsArea:GetScript("OnEnter")
 local kills = ui.text(card, 144, 409, 57, 28, 20, "")
 kills:SetJustifyH("RIGHT")
 local killsHelp = ui.place(CreateFrame("Frame", nil, card), card, 8, 406, 195, 36)
+local chanceTrack = ui.place(CreateFrame("Frame", nil, card), card, 217, 409, 291, 31)
 killsHelp:EnableMouse(true)
+function killsHelp:shareHint()
+    if self.count ~= nil or chanceTrack.islandCount ~= nil then
+        ui.tooltipLine(L("Shift + ЛКМ — поделиться в чате"), unpack(ui.muted))
+    end
+end
+function killsHelp.shareAttempts(_, button)
+    if button == "LeftButton" and IsShiftKeyDown() then
+        atlas.shareMountAttempts(selected, chanceTrack.islandCount or killsHelp.count)
+    end
+end
+killsHelp:SetScript("OnMouseUp", killsHelp.shareAttempts)
+chanceTrack:SetScript("OnMouseUp", killsHelp.shareAttempts)
 function killsHelp:showRiftTooltip(owner)
     local progress = self.riftProgress
     GameTooltip:SetOwner(owner, "ANCHOR_TOP")
@@ -1774,16 +1785,19 @@ function killsHelp:showRiftTooltip(owner)
         local rate = probabilityText(progress.referencePerAttempt):gsub("^≈ ", "")
         ui.tooltipLine(L("Расчёт по %s за попытку. Фактический шанс может отличаться.", rate), ui.muted[1], ui.muted[2], ui.muted[3], true)
     end
+    self:shareHint()
     GameTooltip:Show()
 end
 killsHelp:SetScript("OnEnter", function(self)
     if not selected then return end
+    if chanceTrack.islandMode then return chanceTrack:GetScript("OnEnter")(self) end
     if self.riftProgress then return self:showRiftTooltip(self) end
     GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
     ui.tooltipTitle(attemptsLabel:GetText(), unpack(ui.gold))
     if self.encounterEstimate then
         ui.tooltipLine("Rarity " .. kills:GetText(), 1, 1, 1)
         ui.tooltipLine(L(self.encounterEstimate), ui.muted[1], ui.muted[2], ui.muted[3], true)
+        self:shareHint()
         GameTooltip:Show()
         return
     end
@@ -1793,26 +1807,28 @@ killsHelp:SetScript("OnEnter", function(self)
         and "История убийств до установки аддона не загружается. Учитываются убийства, записанные аддоном, и импорт из Rarity."
         or "Попытки всех учтённых персонажей аккаунта. Доступная история загружается при входе на каждого персонажа; остальные попытки считаются с момента установки аддона"
     ui.tooltipLine(L(help), ui.muted[1], ui.muted[2], ui.muted[3], true)
+    self:shareHint()
     GameTooltip:Show()
 end)
 local function hideKillsTooltip(self) if GameTooltip:IsOwned(self) then GameTooltip:Hide() end end
 killsHelp:SetScript("OnLeave", hideKillsTooltip)
 killsHelp:SetScript("OnHide", hideKillsTooltip)
 local cardDetails
-local chanceTrack = ui.place(CreateFrame("Frame", nil, card), card, 217, 409, 291, 31)
 chanceTrack:EnableMouse(true)
 chanceTrack:SetScript("OnEnter", function(self)
     if killsHelp.riftProgress then return killsHelp:showRiftTooltip(self) end
-    if self.islandCount ~= nil then
+    if chanceTrack.islandMode then
+        if chanceTrack.islandCount == nil then return end
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        ui.tooltipTitle(L("Попыток: %s", self.islandCount), unpack(ui.gold))
+        ui.tooltipTitle(L("Попыток: %s", chanceTrack.islandCount), unpack(ui.gold))
         ui.tooltipLine(L("Попытка засчитывается за завершение островной экспедиции или открытие одной из перечисленных для этого маунта сумок."),
             1, 1, 1, true)
-        if self.islandRate then
-            local rate = probabilityText(self.islandRate):gsub("^≈ ", "")
+        if chanceTrack.islandRate then
+            local rate = probabilityText(chanceTrack.islandRate):gsub("^≈ ", "")
             ui.tooltipLine(L("Расчёт по %s за попытку. Фактический шанс может отличаться.",
                 rate), ui.muted[1], ui.muted[2], ui.muted[3], true)
         end
+        killsHelp:shareHint()
         GameTooltip:Show()
         return
     end
@@ -2451,7 +2467,14 @@ local function refreshChance(collected, vendor, view, official)
     local perAttempt, cumulative, attempts
     local rollForMount = not (interaction or vendor or chain or directQuestReward or summary.sourceGuarantee
         or choice.blackMarket or choice.islandExpedition or choice.factionGift)
-    if rollForMount then
+    local trackingCompatible = not interaction and view.trackingCompatible ~= false
+    local rewardProgress = trackingCompatible and rollForMount
+        and atlas.rewardAttemptProgress and atlas.rewardAttemptProgress(selected, choice.attemptStage)
+    if choice.attemptStage then
+        if rewardProgress then
+            perAttempt, cumulative, attempts = rewardProgress.perAttempt, rewardProgress.cumulative, rewardProgress.attempts
+        end
+    elseif rollForMount then
         perAttempt, cumulative, attempts = atlas.dropProbability(selected)
     end
     displayedInteraction = conditionalReward ~= nil and conditionalReward ~= false
@@ -2462,13 +2485,10 @@ local function refreshChance(collected, vendor, view, official)
     local guaranteed = raidGuarantee ~= nil or routeGuarantee ~= nil or perAttempt == 1
     displayedProbability = guaranteed and 1 or cumulative
 
-    local trackingCompatible = not interaction and view.trackingCompatible ~= false
     local chanceEligible = not atlas.rewardChanceEligible or atlas.rewardChanceEligible(selected, vendor ~= nil)
     local sharedRaidLoot = atlas.raidLootReward and atlas.raidLootReward(selected)
-    local rewardProgress = trackingCompatible and rollForMount
-        and atlas.rewardAttemptProgress and atlas.rewardAttemptProgress(selected)
     local definitions = atlas.attemptStages and atlas.attemptStages[selected.id]
-    local reward = definitions and definitions.reward
+    local reward = not choice.attemptStage and definitions and definitions.reward
     local estimate = reward and reward.rarityEncounterEstimate and atlas.kills(selected)
     local showChance = (displayedInteraction or trackingCompatible) and not selected.availability and not vendor and not sharedRaidLoot
         and perAttempt ~= nil and (displayedReward ~= nil or chanceEligible)
@@ -2518,15 +2538,16 @@ local function refreshChance(collected, vendor, view, official)
         chanceTrack:setFill(barProbability, showProgress and guaranteed)
     end
     kills:SetShown(showKills)
-    killsHelp:SetShown(showKills)
+    killsHelp:SetShown(showKills or showIslandAttempts)
     attemptsLabel:SetShown(showKills)
     attemptsIcon:SetShown(showKills)
     killsHelp.encounterEstimate = estimate and reward.condition or nil
     killsHelp.localBossCounter = not rewardProgress and not selected.npcs and not atlas.usesKillAPI(selected)
     attemptsLabel:SetText(summary.openingChance and "Попыток с добычей" or estimate and "Rarity" or rewardProgress and "Попытки:" or selected.npcs and "Попыток с добычей"
         or killsHelp.localBossCounter and "Учтено убийств" or "Убийств босса")
-    kills:SetText(showKills and tostring(estimate or attempts or rewardProgress and rewardProgress.attempts
-        or atlas.kills(selected) or "—") or "")
+    killsHelp.count = showKills and (estimate or attempts or rewardProgress and rewardProgress.attempts
+        or atlas.kills(selected)) or nil
+    kills:SetText(showKills and tostring(killsHelp.count or "—") or "")
 end
 
 function cardDetails:refreshReward()

@@ -75,17 +75,24 @@ local oldBoss = { id = 2, countKey = "legacy", encounter = 402, difficulties = {
 local rare = { id = 3, countKey = "rare", npcs = { 601 } }
 local stage = { key = "mount:4", method = "ENCOUNTER", encounters = { 401 } }
 local stageRare = { key = "mount:6", method = "NPC", npcs = { 601 } }
+local stageZone = { key = "mount:7", method = "ZONE", zones = { 1536 } }
 local statisticCatalog = {}
+assert(loadfile("Data/Rares.lua"))("PawAtlas", statisticCatalog)
 assert(loadfile("Data/JournalData.lua"))("PawAtlas", statisticCatalog)
+assert(loadfile("Data/LootSources.lua"))("PawAtlas", statisticCatalog)
+assert(loadfile("Data/Mounts.lua"))("PawAtlas", statisticCatalog)
 local gorespineStage = statisticCatalog.attemptStages[1373].reward
 local gorespine = { id = 1373, countKey = "1373", name = gorespineStage.name, npcs = gorespineStage.npcs }
+local bloodtusk = statisticCatalog.lootByNPC[162819][1]
 local atlas = {
-    mounts = { boss, oldBoss, rare, { id = 4, journalOnly = true }, gorespine },
-    attemptStages = { [4] = { reward = stage }, [6] = { reward = stageRare }, [1373] = { reward = gorespineStage } },
+    mounts = { boss, oldBoss, rare, { id = 4, journalOnly = true }, gorespine, bloodtusk },
+    attemptStages = { [4] = { reward = stage }, [6] = { reward = stageRare }, [7] = { reward = stageZone },
+        [1372] = statisticCatalog.attemptStages[1372], [1373] = { reward = gorespineStage } },
     killStatistics = { [1040] = { 12763 } },
     killStatisticSources = statisticCatalog.killStatisticSources,
-    lootByNPC = { [601] = { rare }, [162690] = { gorespine } },
-    lootFrequencies = { [1373] = "daily" },
+    lootByNPC = { [601] = { rare }, [162690] = { gorespine }, [162819] = statisticCatalog.lootByNPC[162819] },
+    lootFrequencies = { [1373] = "daily", [1372] = statisticCatalog.lootFrequencies[1372] },
+    npcLootQuests = { [1372] = statisticCatalog.npcLootQuests[1372] },
     lootItems = {},
     lootFrequency = function() return "weekly" end,
 }
@@ -223,24 +230,25 @@ do
     local oldJournal, oldFrame, oldAfter, oldDailyReset = C_MountJournal, DEFAULT_CHAT_FRAME, C_Timer.After, C_DateAndTime.GetSecondsUntilDailyReset
     local settings = MountAtlasAccountDB.settings
     local oldChat, oldFormat = settings.chatMessages, settings.chatMessageFormat
+    local ownershipMount = gorespine.id
     local target, mouseover, dead, hostile, playerTarget, hasLoot, canLoot, ownership
     UnitGUID = function(unit)
         if unit == "target" then return target end
         if unit == "mouseover" then return mouseover end
         return oldGUID(unit)
     end
-    UnitIsDead = function(unit) return unit == "target" and dead end
-    UnitCanAttack = function(unit, other) return unit == "player" and other == "target" and hostile end
-    UnitIsPlayer = function(unit) return unit == "target" and playerTarget end
+    UnitIsDead = function(unit) return (unit == "target" or unit == "mouseover") and dead end
+    UnitCanAttack = function(unit, other) return unit == "player" and (other == "target" or other == "mouseover") and hostile end
+    UnitIsPlayer = function(unit) return (unit == "target" or unit == "mouseover") and playerTarget end
     UnitClassification = function() return "rare" end
     IsFishingLoot = function() return false end
     local restrictedLoot = {}
     issecretvalue = function(value) return value == restrictedLoot or (oldSecret and oldSecret(value)) end
     CanLootUnit = function(guid)
-        if guid == target then return hasLoot, canLoot end
+        if guid == target or guid == mouseover then return hasLoot, canLoot end
     end
     C_MountJournal = { GetMountInfoByID = function(id)
-        equal(id, gorespine.id, "only the attempted mount needs an ownership lookup")
+        equal(id, ownershipMount, "only the attempted mount needs an ownership lookup")
         return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, ownership
     end }
     DEFAULT_CHAT_FRAME = { AddMessage = function(_, line) chat[#chat + 1] = line end }
@@ -294,11 +302,11 @@ do
 
     selectCorpse(first)
     massLoot = { {} }
-    fire("LOOT_READY", true)
+    fire("LOOT_READY", false)
     hasLoot, canLoot = false, false
     fire("UNIT_LOOT", first, false)
     fire("LOOT_CLOSED")
-    equal(atlas.rawKills(gorespine), 0, "depletion still needs a confirmed world loot window")
+    equal(atlas.rawKills(gorespine), 0, "manual loot still needs a confirmed world loot window")
 
     selectCorpse(first)
     massLoot = { {}, {} }
@@ -432,6 +440,185 @@ do
     fire("LOOT_CLOSED")
     equal(atlas.rawKills(gorespine), 3, "keyboard interaction can confirm the same selected corpse")
 
+    now = now + 3601
+    local fourth = "Creature-0-1-2-3-162690-000000004"
+    target, mouseover, dead, hostile, playerTarget = nil, fourth, true, true, false
+    hasLoot, canLoot, massLoot = true, true, { {} }
+    fire("LOOT_READY", true)
+    massLoot = {}
+    fire("LOOT_OPENED", true, false)
+    mouseover, hasLoot, canLoot = nil, false, false
+    fire("LOOT_CLOSED")
+    equal(atlas.rawKills(gorespine), 3, "moving away without a GUID-specific depletion event cannot count a mouseover corpse")
+
+    local fifth = "Creature-0-1-2-3-162690-000000005"
+    target, mouseover, dead, hostile, playerTarget = nil, fifth, true, true, false
+    hasLoot, canLoot, massLoot = true, true, { {} }
+    settings.chatMessages = true
+    local beforeMouseoverMessage = #chat
+    local beforeMouseoverRetry = #timers
+    fire("LOOT_READY", true)
+    equal(atlas.rawKills(gorespine), 3, "mouse-over identity alone does not count before loot depletion")
+    massLoot = {}
+    fire("LOOT_OPENED", true, false)
+    fire("UNIT_LOOT", fifth, false)
+    hasLoot, canLoot = false, false
+    fire("LOOT_CLOSED")
+    equal(atlas.rawKills(gorespine), 4, "an empty-target mouseover corpse counts after its exact depletion event")
+    equal(#timers, beforeMouseoverRetry + 1, "the confirmed mouseover kill schedules one ownership-aware notification")
+    timers[#timers]()
+    equal(#chat, beforeMouseoverMessage + 1, "a confirmed mouseover corpse announces exactly one attempt")
+    fire("LOOT_CLOSED")
+    equal(atlas.rawKills(gorespine), 4, "duplicate close cannot recount a confirmed mouseover corpse")
+
+    now = now + 3601
+    local sixth = "Creature-0-1-2-3-162690-000000006"
+    target, mouseover, hasLoot, canLoot = "Player-bystander", sixth, true, true
+    massLoot = { {} }
+    fire("LOOT_READY", true)
+    hasLoot, canLoot = false, false
+    fire("UNIT_LOOT", sixth, false)
+    table.remove(refreshTimers)()
+    equal(atlas.rawKills(gorespine), 5, "ready-only autoloot accepts a different selected target with the exact mouseover GUID")
+    timers[#timers]()
+    equal(#chat, beforeMouseoverMessage + 2, "ready-only autoloot announces one attempt")
+    massLoot = { { sixth, 1 } }
+    fire("LOOT_READY", true)
+    finishAutoloot(false)
+    equal(atlas.rawKills(gorespine), 5, "late loot source and close cannot recount the ready-only attempt")
+
+    now = now + 3601
+    local seventh = "Creature-0-1-2-3-162690-000000007"
+    mouseover, hasLoot, canLoot, massLoot = seventh, true, true, { {} }
+    fire("LOOT_READY", true)
+    hasLoot, canLoot = false, false
+    fire("UNIT_LOOT", seventh, false)
+    fire("LOOT_OPENED", true, true)
+    table.remove(refreshTimers)()
+    fire("LOOT_CLOSED")
+    equal(atlas.rawKills(gorespine), 5, "a later bag window vetoes a pending ready-only corpse")
+
+    local oldInstance, oldTap, oldThreat = IsInInstance, UnitIsTapDenied, UnitThreatSituation
+    local oldInGroup, oldGroupCount = IsInGroup, GetNumGroupMembers
+    local oldMap = C_Map
+    local corpseGUID = UnitGUID
+    local member, pet, petTarget = "Player-group-member", "Pet-test"
+    local inInstance, denied, petThreat = false, false, nil
+    IsInInstance = function() return inInstance end
+    UnitIsTapDenied = function() return denied end
+    UnitThreatSituation = function(unit, other)
+        if unit == "pet" and other == "pettarget" then return petThreat end
+    end
+    IsInGroup = function() return true end
+    GetNumGroupMembers = function() return 2 end
+    C_Map = { GetBestMapForUnit = function() return 1536 end }
+    UnitGUID = function(unit)
+        if unit == "party1" then return member end
+        if unit == "pet" then return pet end
+        if unit == "pettarget" then return petTarget end
+        return corpseGUID(unit)
+    end
+    settings.chatMessages = false
+    local beforeRare, beforeStage = atlas.rawKills(rare), atlas.rawStageAttempts(stageRare.key)
+    selectCorpse("Creature-0-1-2-3-601-000000011")
+    fire("PARTY_KILL", member, target)
+    equal(atlas.rawKills(rare), beforeRare + 1, "a known group kill counts before looting")
+    equal(atlas.rawStageAttempts(stageRare.key), beforeStage + 1, "a known group kill reaches compatible NPC stages")
+    equal(atlas.rawStageAttempts(stageZone.key), 0, "a group kill alone does not advance a loot-only zone stage")
+    fire("PARTY_KILL", member, target)
+    autoloot({ { target, 1 } })
+    equal(atlas.rawKills(rare), beforeRare + 1, "duplicate group kill and exact loot use the same kill count")
+    equal(atlas.rawStageAttempts(stageRare.key), beforeStage + 1, "duplicate group kill and exact loot use one NPC stage count")
+    equal(atlas.rawStageAttempts(stageZone.key), 1, "the same corpse can still provide an independent zone loot attempt")
+
+    selectCorpse("Creature-0-1-2-3-601-000000012")
+    autoloot({ { target, 1 } })
+    fire("PARTY_KILL", player, target)
+    equal(atlas.rawKills(rare), beforeRare + 2, "exact loot arriving first prevents duplicate player kill credit")
+    equal(atlas.rawStageAttempts(stageRare.key), beforeStage + 2, "exact loot arriving first prevents duplicate NPC stage credit")
+
+    selectCorpse("Creature-0-1-2-3-601-000000013")
+    denied = true
+    fire("PARTY_KILL", player, target)
+    selectCorpse("Creature-0-1-2-3-601-000000014")
+    denied = restrictedLoot
+    fire("PARTY_KILL", member, target)
+    selectCorpse("Creature-0-1-2-3-601-000000015")
+    denied, inInstance = false, true
+    fire("PARTY_KILL", member, target)
+    inInstance = false
+    fire("PARTY_KILL", restrictedLoot, target)
+    fire("PARTY_KILL", player, restrictedLoot)
+    fire("UNIT_DIED", target)
+    equal(atlas.rawKills(rare), beforeRare + 2, "foreign taps, secret events, instance kills and unrelated deaths cannot award an outdoor attempt")
+
+    selectCorpse("Creature-0-1-2-3-601-000000016")
+    petTarget, petThreat, hasLoot, canLoot = target, 0, false, false
+    fire("UNIT_TARGET", "pet")
+    petTarget = nil
+    fire("UNIT_DIED", target)
+    fire("UNIT_DIED", target)
+    timers[#timers]()
+    equal(atlas.rawKills(rare), beforeRare + 3, "death of the pet's confirmed recent combat target counts once")
+    equal(atlas.rawStageAttempts(stageRare.key), beforeStage + 3, "the same pet kill reaches the NPC stage once")
+
+    selectCorpse("Creature-0-1-2-3-601-000000017")
+    petTarget, petThreat = target, 0
+    fire("UNIT_DIED", target)
+    fire("PARTY_KILL", "Player-stranger", target)
+    timers[#timers]()
+    equal(atlas.rawKills(rare), beforeRare + 3, "the exact attacker event can rule out an apparent pet kill")
+
+    local oldQuestLog = C_QuestLog
+    local completed = true
+    C_QuestLog = { IsQuestFlaggedCompleted = function(id)
+        equal(id, 58889, "Mal'Korak uses the real personal loot quest")
+        return completed
+    end }
+    ownershipMount, settings.chatMessages = bloodtusk.id, true
+    local beforeBloodtusk = #chat
+    selectCorpse("Creature-0-1-2-3-162819-000000020")
+    dead = false
+    fire("PLAYER_TARGET_CHANGED")
+    dead = true
+    fire("PARTY_KILL", player, target)
+    autoloot({ { target, 1 } })
+    equal(atlas.rawKills(bloodtusk), 0, "Mal'Korak already locked before death earns no attempt, even with generic loot")
+
+    now, completed = now + 3601, false
+    local eligibleBloodtusk = "Creature-0-1-2-3-162819-000000021"
+    selectCorpse(eligibleBloodtusk)
+    dead = false
+    fire("PLAYER_TARGET_CHANGED")
+    dead, completed = true, true
+    fire("PARTY_KILL", player, target)
+    equal(atlas.rawKills(bloodtusk), 1, "Mal'Korak earns an attempt if the loot quest flips before the kill event")
+    autoloot({ { target, 1 } })
+    equal(atlas.rawKills(bloodtusk), 1, "the same Mal'Korak GUID is counted once across kill and loot")
+    equal(chat[beforeBloodtusk + 1], "Обугленный кровобивень #1", "Mal'Korak announces with the catalog closed")
+    equal(#chat, beforeBloodtusk + 1, "kill and loot send just one attempt message")
+
+    selectCorpse("Creature-0-1-2-3-162819-000000022")
+    completed = nil
+    autoloot({ { target, 1 } })
+    equal(atlas.rawKills(bloodtusk), 1, "Mal'Korak's local daily lock works with the quest flag unavailable")
+
+    now, completed = now + 3601, false
+    selectCorpse(eligibleBloodtusk)
+    fire("PARTY_KILL", player, target)
+    equal(atlas.rawKills(bloodtusk), 1, "daily reset does not make the former Mal'Korak GUID new")
+    selectCorpse("Creature-0-1-2-3-162819-000000023")
+    completed = true
+    fire("PARTY_KILL", player, target)
+    equal(atlas.rawKills(bloodtusk), 1, "Mal'Korak's completed flag without a live sample is ambiguous")
+    autoloot({ { target, 1 } })
+    timers[#timers]()
+    equal(atlas.rawKills(bloodtusk), 2, "personal loot can confirm the next day's Mal'Korak attempt")
+    equal(#chat, beforeBloodtusk + 2, "the next day's personal loot sends one attempt message")
+
+    C_QuestLog, C_Map = oldQuestLog, oldMap
+    IsInInstance, UnitIsTapDenied, UnitThreatSituation = oldInstance, oldTap, oldThreat
+    IsInGroup, GetNumGroupMembers = oldInGroup, oldGroupCount
     now, massLoot = previousTime, nil
     UnitGUID, UnitIsDead, UnitCanAttack, UnitIsPlayer = oldGUID, oldDead, oldAttack, oldIsPlayer
     UnitClassification, CanLootUnit, IsFishingLoot = oldClassification, oldCanLoot, oldFishing
@@ -1383,6 +1570,23 @@ do
     closeCorpse(true)
     equal(testAtlas.rawStageAttempts(key), 5, "session reset clears a pending fallback corpse")
     equal(testAtlas.acquisitionAttempts(key), nil, "a receipt from a reset session cannot freeze history")
+
+    sequence = sequence + 1
+    target = ("Creature-0-1-2-3-180032-%09d"):format(sequence)
+    testAtlas.recordStageCreatureKill(target, 180032)
+    equal(testAtlas.rawStageAttempts(key), 6, "eligible starter NPC death counts before the item is looted")
+    testAtlas.recordStageCreatureKill("Creature-0-1-2-3-180032-000001000", 180032)
+    equal(testAtlas.rawStageAttempts(key), 7, "another eligible death has its own attempt number")
+    equal(testAtlas.acquisitionAttempts(key), nil, "death alone cannot register a personal item receipt")
+    testAtlas.resetAttemptStageSession()
+    source = target
+    event("LOOT_READY", true)
+    event("LOOT_OPENED", true, false)
+    starterCount = 1
+    receiveStarter()
+    closeCorpse(true)
+    equal(testAtlas.rawStageAttempts(key), 7, "looting the starter does not credit the same NPC death again")
+    equal(testAtlas.acquisitionAttempts(key).attempts, 6, "personal loot freezes the number of the exact corpse's attempt")
     print("PawAtlas attempt events passed: collection messages, figurines, cache identity, and unique NPC loot")
 end
 
@@ -1780,6 +1984,28 @@ do
     active = nil
     assert(links.linkMount(400), "no active editor opens a draft")
     equal(#opened, 1, "no active editor opens exactly one draft")
+    links.L = string.format
+    active = editor()
+    local message = "|Hspell:88750|h[Mount]|h · Попыток: 42"
+    assert(links.shareMountAttempts({ id = 400 }, 42))
+    equal(inserted[#inserted], message, "the active channel receives the displayed attempt count")
+    env.WIM.EditBoxInFocus = whisper
+    local draft = whisper.text
+    assert(links.shareMountAttempts({ id = 400 }, 42))
+    equal(whisper.text, draft .. message, "attempt sharing preserves the current whisper and existing draft")
+    assert(not links.shareMountAttempts({ id = 400 }, nil), "unknown attempts cannot be shared as zero")
+    env.WIM.EditBoxInFocus, active, env.C_Spell.GetSpellLink = nil, nil, function() end
+    assert(links.shareMountAttempts({ id = 400, journalName = "Mount" }, 0))
+    equal(opened[#opened], "[Mount] · Попыток: 0", "a known zero opens an editable draft with the journal name")
+    local core = { item = 187282, name = "Невредимый сердечник аквилона", attempts = 8, perAttempt = .01 }
+    links.getLocale = function() return "ruRU" end
+    env.C_Item.GetItemInfo = function() end
+    assert(links.shareItemAttempts(core))
+    equal(opened[#opened], "|Hitem:187282|h[Невредимый сердечник аквилона]|h · Попыток: 8",
+        "a cold starter shares its own item and attempts instead of the guaranteed mount")
+    assert(not links.shareItemAttempts({ item = 187282, attempts = nil }))
+    assert(not links.shareItemAttempts({ item = 94288, required = 9999, attempts = 0 }),
+        "collection progress is not a shareable drop attempt")
     print("PawAtlas chat links passed: WIM priority, native quest links, async context and Blizzard fallback")
 end
 
@@ -1972,6 +2198,7 @@ do
     local env = setmetatable({ MountAtlasAccountDB = account }, { __index = _G })
     env._G, env.LOOT_ITEM_SELF = env, "You receive loot: %s."
     env.LOOT_ITEM_SELF_MULTIPLE = "You receive loot: %sx%d."
+    env.LOOT_ITEM_BONUS_ROLL_SELF_MULTIPLE = "You receive bonus loot: %sx%d."
     env.LOOT_ITEM_PUSHED_SELF = "You receive item: %s."
     env.GetTime = function() return time end
     env.LibStub = function(name)
@@ -2065,6 +2292,26 @@ do
     equal(#chat, 0, "login and an already-collected mount do not announce")
 
     loaded[2], mounted[2] = true, false
+    do
+        local link = "|Hitem:1002|h[Mount item]|h"
+        local slots, plansCompleted = env.GetNumLootItems, 0
+        env.GetNumLootItems = function() return 1 end
+        env.GetLootSlotLink = function() return link end
+        notifications.completePlanTarget = function() plansCompleted = plansCompleted + 1 end
+        event("LOOT_READY", true)
+        event("LOOT_OPENED", true, false)
+        event("CHAT_MSG_LOOT", "You have selected Need for: " .. link)
+        event("LOOT_CLOSED")
+        event("CHAT_MSG_LOOT", "Another player receives loot: " .. link .. ".")
+        event("CHAT_MSG_LOOT", "You receive loot: pending roll for " .. link .. ".")
+        advance(.4)
+        equal(plansCompleted, 0, "a group loot preview or another winner cannot complete the player's plan")
+        equal(notifications.acquisitionAttempts("mount:2"), nil, "an unawarded roll cannot freeze a successful attempt")
+        equal((account.mountLootNotifications or {})[2], nil, "losing a roll does not reserve the personal loot toast")
+        equal(#chat, 0, "the player gets no collection message before a personal award")
+        env.GetNumLootItems, env.GetLootSlotLink = slots, nil
+        notifications.completePlanTarget = nil
+    end
     event("CHAT_MSG_LOOT", "You receive loot: |Hitem:1002|h[Mount item]|h.")
     event("ENCOUNTER_END", 100, "First encounter", 16, 20, 1)
     advance(.22)
@@ -2130,6 +2377,10 @@ do
     advance(.2)
     equal(#chat, 2, "single and stacked dinosaur bones leave only the native loot message")
     equal(notifications.itemCollectionCount({ id = 537 }), 13, "distinct bone receipts still advance collection by their quantity")
+    local bonus = "You receive bonus loot: |Hitem:94288|h[Giant Dinosaur Bone]|hx2."
+    receipt(bonus, 1303)
+    receipt(bonus, 1303)
+    equal(notifications.itemCollectionCount({ id = 537 }), 15, "a personal bonus award is counted once")
     settings.chatMessages = false
     settings.mountCollectionMessageFormat = "{название} #{попытки} ({вероятность})"
     character.stageAttempts["item:174230"] = 1
@@ -2625,16 +2876,16 @@ do
     end
     local character = { islandExpeditionCompletions = 2 }
     local settings = { chatMessageFormat = "{mount} #{attempts}" }
-    local map, fishing, bagCount = 1970, true, 2
+    local map, fishing, bagCount, clock, bagReads = 1970, true, 2, 100, 0
     local ownership, messages, timers = {}, {}, {}
-    local callback
+    local callback, containerHook, nameHook, cursorItem
     local env = setmetatable({ MountAtlasAccountDB = { characters = { player = character }, settings = settings } },
         { __index = _G })
     env.CreateFrame = function()
         return { RegisterEvent = function() end, RegisterUnitEvent = function() end,
             SetScript = function(_, _, handler) callback = handler end }
     end
-    env.GetTime = function() return 100 end
+    env.GetTime = function() return clock end
     env.GetServerTime = env.GetTime
     env.GetNumLootItems = function() return 1 end
     env.GetLootSourceInfo = function() end
@@ -2643,7 +2894,26 @@ do
     env.C_MountJournal = {
         GetMountInfoByID = function(id) return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, ownership[id] end,
     }
-    env.C_Item = { GetItemCount = function(item) if item == 173989 then return bagCount end end }
+    local salvageItem, salvageSpell = 173989, 900003
+    env.C_Item = {
+        GetItemCount = function(item)
+            if item == salvageItem then
+                bagReads = bagReads + 1
+                return bagCount
+            end
+        end,
+        GetItemSpell = function(item) if item == salvageItem then return "Open Salvage", salvageSpell end end,
+    }
+    env.GetCursorInfo = function() if cursorItem then return "item", cursorItem end end
+    env.C_Container = {
+        UseContainerItem = function() end,
+        GetContainerItemID = function() return salvageItem end,
+    }
+    env.UseItemByName = function() end
+    env.hooksecurefunc = function(owner, name, hook)
+        if owner == env.C_Container and name == "UseContainerItem" then containerHook = hook
+        elseif owner == "UseItemByName" then nameHook = name end
+    end
     local settleTimers = {}
     env.C_Timer = { After = function(delay, fn)
         local queue = delay == .2 and settleTimers or timers
@@ -2734,7 +3004,127 @@ do
     equal(messages[4], "Island Thunderscale #3", "first delayed bag line freezes its own expedition total")
     equal(messages[5], "Island Thunderscale #4", "second delayed bag line freezes its own expedition total")
     equal(#messages, 5, "late ownership does not duplicate any attempt line")
-    print("PawAtlas fishing and salvage chat passed: cold ownership, exact totals, deduplication, retries and cancellation")
+
+    local function resetSalvage()
+        bagCount, messages = 2, {}
+        character.stageAttempts["mount:1212"], character.islandExpeditionCompletions = nil, 0
+        probe.resetAttemptStageSession()
+    end
+    local function castSalvage(guid)
+        event("UNIT_SPELLCAST_SUCCEEDED", "player", guid, salvageSpell)
+    end
+    local function confirmSalvage(remaining)
+        bagCount = remaining
+        event("BAG_UPDATE_DELAYED")
+        event("BAG_UPDATE_DELAYED")
+        event("LOOT_CLOSED")
+        event("LOOT_CLOSED")
+        drainTimers()
+    end
+    local function checkSalvage(count, scenario)
+        equal(probe.rawStageAttempts("mount:1212"), count, scenario)
+        equal(#messages, count, scenario .. " chat lines")
+        for attempt = 1, count do
+            equal(messages[attempt], "Island Thunderscale #" .. attempt, scenario .. " attempt order")
+        end
+    end
+
+    settings.chatMessages = true
+    resetSalvage()
+    containerHook(0, 1)
+    containerHook(0, 1)
+    bagCount = 0
+    event("BAG_UPDATE_DELAYED")
+    drainTimers()
+    checkSalvage(2, "two opens can share one bag update without a loot window")
+    local readsAfterConfirm = bagReads
+    event("LOOT_CLOSED")
+    event("LOOT_CLOSED")
+    equal(bagReads, readsAfterConfirm, "confirmed uses do not force another bag read on duplicate close")
+    drainTimers()
+    checkSalvage(2, "late close cannot add a line after auto-loot already announced both opens")
+
+    resetSalvage()
+    containerHook(0, 1)
+    nameHook(salvageItem)
+    castSalvage("Cast-salvage-one")
+    containerHook(0, 1)
+    nameHook(salvageItem)
+    castSalvage("Cast-salvage-two")
+    confirmSalvage(1)
+    checkSalvage(1, "the first bag update spends only one of two observed uses")
+    castSalvage("Cast-salvage-one")
+    castSalvage("Cast-salvage-two")
+    confirmSalvage(0)
+    checkSalvage(2, "the second bag update spends the other use once despite duplicate signals")
+
+    resetSalvage()
+    containerHook(0, 1)
+    nameHook(salvageItem)
+    castSalvage("Cast-single-salvage")
+    castSalvage("Cast-single-salvage")
+    confirmSalvage(0)
+    checkSalvage(1, "one use reported by multiple hooks and a repeated cast cannot prove two openings")
+
+    resetSalvage()
+    bagCount = 1
+    event("BAG_UPDATE_DELAYED")
+    containerHook(0, 1)
+    containerHook(0, 1)
+    confirmSalvage(0)
+    checkSalvage(1, "a repeated hook with one available box cannot prove two uses")
+
+    resetSalvage()
+    event("LOOT_OPENED", false, true)
+    bagCount = 1
+    event("BAG_UPDATE_DELAYED")
+    event("LOOT_OPENED", false, true)
+    confirmSalvage(0)
+    checkSalvage(1, "repeating the same item window cannot spend another passive opening")
+
+    resetSalvage()
+    containerHook(0, 1)
+    event("UNIT_SPELLCAST_SENT", "player", "", "Cast-cancelled-salvage", salvageSpell)
+    event("UNIT_SPELLCAST_INTERRUPTED", "player", "Cast-cancelled-salvage", salvageSpell)
+    confirmSalvage(1)
+    checkSalvage(0, "cancelled use cannot count a subsequent inventory decrease")
+
+    resetSalvage()
+    containerHook(0, 1)
+    cursorItem = salvageItem
+    confirmSalvage(1)
+    cursorItem = nil
+    confirmSalvage(2)
+    checkSalvage(0, "moving a box with the cursor cannot confirm a use")
+
+    resetSalvage()
+    containerHook(0, 1)
+    event("PLAYER_INTERACTION_MANAGER_FRAME_SHOW", 123)
+    containerHook(0, 1)
+    confirmSalvage(1)
+    event("PLAYER_INTERACTION_MANAGER_FRAME_HIDE", 123)
+    confirmSalvage(0)
+    checkSalvage(0, "selling or moving a box during an interaction cannot confirm a use")
+
+    resetSalvage()
+    containerHook(0, 1)
+    clock = clock + 9
+    confirmSalvage(1)
+    checkSalvage(0, "an expired use cannot count an unrelated inventory decrease")
+
+    resetSalvage()
+    setfenv(assert(loadfile("Core/RarityImport.lua")), env)("PawAtlas", probe)
+    env.MountAtlasAccountDB.rarityImport = { entries = { ["mount:1212"] = { total = 25, source = 25 } } }
+    probe.initializeIslandImports()
+    nameHook(salvageItem)
+    nameHook(salvageItem)
+    confirmSalvage(0)
+    equal(probe.rawStageAttempts("mount:1212"), 2, "imported expedition history leaves local openings separate")
+    equal(probe.islandExpeditionProgress({ id = 1212 }), 27, "both openings advance the imported expedition total")
+    equal(#messages, 2, "two box lines keep the imported attempt history")
+    equal(messages[1], "Island Thunderscale #26", "first box line starts at the imported count")
+    equal(messages[2], "Island Thunderscale #27", "second box line advances the imported count")
+    print("PawAtlas fishing and salvage chat passed: cold ownership, rapid openings, exact totals, deduplication and cancellation")
 end
 
 do
@@ -3061,5 +3451,118 @@ do
     equal(#chat, 7, "each confirmed route contributes one new total when its events overlap")
     chatCount(6, 12)
     chatCount(7, 13)
+
+    enter(0, false)
+    local previousBoxes = progress(1776).boxes
+    bags = 2
+    event("BAG_UPDATE_DELAYED")
+    useItem(207583)
+    useItem(207583)
+    bags = 0
+    event("BAG_UPDATE_DELAYED")
+    event("BAG_UPDATE_DELAYED")
+    event("LOOT_CLOSED")
+    advance(.3)
+    equal(progress(1776).boxes, previousBoxes + 2, "two Rift boxes can share one bag update")
+    equal(#chat, 9, "each Rift box reports its own attempt")
+    chatCount(8, 14)
+    chatCount(9, 15)
     print("PawAtlas Time Rifts passed: timeline, faction, reload, proven acquisitions and ordered chat without duplicates")
+end
+
+do
+    local turtle = { id = 312, spell = 64731, journalOnly = true }
+    local fishingKey, garrisonKey, ridingKey = "mount:312", "mount:312:garrison", "mount:125"
+    local character = { stageAttempts = { [fishingKey] = 7 } }
+    local previousAward = { item = 46109, attempts = 7 }
+    local account = { characters = { player = character }, settings = { chatMessages = false },
+        acquisitionAttempts = { [fishingKey] = previousAward } }
+    local env = setmetatable({ MountAtlasAccountDB = account, MountAtlasDB = {} }, { __index = _G })
+    local callback, lootSource, itemLink, pool, nativeFishing
+    local lineID = 40
+    local function link(item) return "|Hitem:" .. item .. ":0|h[Item]|h" end
+    env._G = env
+    env.LOOT_ITEM_SELF = "You receive loot: %s."
+    env.CreateFrame = function()
+        return { RegisterEvent = function() end, RegisterUnitEvent = function() end,
+            SetScript = function(_, _, handler) callback = handler end }
+    end
+    env.UnitGUID = function(unit) if unit == "player" then return "player" end end
+    env.GetLootSourceInfo = function() if lootSource then return lootSource, 1 end end
+    env.GetNumLootItems = function() return 1 end
+    env.GetLootSlotLink = function() return itemLink end
+    env.IsFishingLoot = function() return nativeFishing == true end
+    env.C_Map = { GetBestMapForUnit = function() return 116 end }
+    env.C_Timer = { After = function(_, run) run() end }
+    env.GameTooltipTextLeft1 = { GetText = function() return pool and "Floating Debris Pool" or "Water" end }
+    local probe = { mounts = { turtle }, killStatistics = {},
+        attemptStages = { [125] = statisticCatalog.attemptStages[125], [312] = statisticCatalog.attemptStages[312] },
+        fishingPoolNames = statisticCatalog.fishingPoolNames, addTranslations = function() end,
+        currentAttemptCharacter = function() return character end,
+        usesKillAPI = function() return false end }
+    setfenv(assert(loadfile("Core/AttemptStages.lua")), env)("PawAtlas", probe)
+    probe.initializeAttemptStages()
+    local function event(name, ...) callback(nil, name, ...) end
+    local function receipt(template)
+        lineID = lineID + 1
+        event("CHAT_MSG_LOOT", template:format(link(46109)), nil, nil, nil, nil, nil, nil, nil, nil, nil, lineID)
+    end
+    local function count(key) return probe.rawStageAttempts(key) end
+    equal(probe.captureMountAcquisition(turtle), nil, "legacy acquisition without source is not evidence of fishing")
+    equal(account.acquisitionAttempts[fishingKey], previousAward, "preserve the legacy acquisition record")
+
+    for index, npc in ipairs({ 81171, 85715 }) do
+        lootSource = "Creature-0-1-2-3-" .. npc .. "-00000000" .. index
+        itemLink = link(123)
+        probe.recordStageCreatureKill(lootSource, npc)
+        equal(count(garrisonKey), index - 1, "a cavedweller kill alone gives Sea Turtle no attempt")
+        equal(count(ridingKey), index - 1, "a cavedweller kill alone gives Riding Turtle no attempt")
+        event("LOOT_READY")
+        event("LOOT_OPENED", true, false)
+        event("LOOT_CLOSED")
+        event("LOOT_OPENED", false, false)
+        event("LOOT_CLOSED")
+        equal(count(garrisonKey), index, "each faction's cavedweller adds one garrison attempt")
+        equal(count(ridingKey), index, "Riding Turtle gets its independent attempt on the same corpse")
+        equal(count(fishingKey), 7, "looting cavedwellers never adds casts or alters fishing history")
+    end
+    local route = probe.rewardAttemptProgress(turtle, garrisonKey)
+    equal(route.attempts, 2, "the garrison route exposes its own counter")
+    equal(route.perAttempt, nil, "the garrison route does not inherit the fishing chance")
+    equal(route.cumulative, nil, "unknown garrison drop rate has no cumulative chance")
+    equal(probe.rewardAttemptProgress(turtle).perAttempt, 0.0001, "the fishing rate is preserved")
+
+    -- The personal receipt arrives after the first read, with the matching
+    -- item slot and corpse unchanged when the game publishes the source.
+    lootSource = "Creature-0-1-2-3-81171-000000003"
+    itemLink = nil
+    event("LOOT_OPENED", true, false)
+    receipt(env.LOOT_ITEM_SELF)
+    itemLink = link(46109)
+    event("LOOT_READY")
+    event("LOOT_CLOSED")
+    local award = assert(probe.acquisitionAttempts(fishingKey))
+    equal(award.attempts, 3, "the confirmed garrison drop freezes the garrison count")
+    equal(award.routeKey, garrisonKey, "the award retains the garrison source")
+
+    lootSource, nativeFishing, pool = nil, true, false
+    account.acquisitionAttempts[fishingKey] = nil
+    event("UNIT_SPELLCAST_CHANNEL_START", "player", "Cast-open-water", 131474)
+    event("LOOT_OPENED", true, false)
+    receipt(env.LOOT_ITEM_SELF)
+    event("LOOT_CLOSED")
+    equal(count(fishingKey), 7, "open water adds no pool attempt")
+    equal(probe.captureMountAcquisition(turtle), nil, "an unmatched receipt cannot be assigned to either route")
+    pool = true
+    event("UNIT_SPELLCAST_CHANNEL_START", "player", "Cast-northrend-pool", 131474)
+    event("LOOT_READY")
+    event("LOOT_OPENED", true, false)
+    event("LOOT_CLOSED")
+    receipt(env.LOOT_ITEM_SELF)
+    equal(count(fishingKey), 8, "one pool catch counts despite two loot events")
+    equal(count(garrisonKey), 3, "fishing does not increment garrison attempts")
+    award = assert(probe.acquisitionAttempts(fishingKey))
+    equal(award.attempts, 8, "a late fishing receipt uses only the fishing counter")
+    equal(award.routeKey, fishingKey, "the fishing success retains the pool source")
+    print("PawAtlas Sea Turtle passed: distinct sources, both cavedwellers, corpse deduplication and confirmed route receipts")
 end

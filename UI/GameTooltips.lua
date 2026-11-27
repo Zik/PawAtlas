@@ -84,9 +84,23 @@ local function rewardLabel(id, fallback)
     return ui.safeText(atlas.displayName(fallback))
 end
 
-local function attemptText(id)
+local function attemptText(id, npc)
     local mount = atlas.mountByID(id)
     if not mount or not atlas.dropProbability then return "" end
+    local definitions = atlas.attemptStages and atlas.attemptStages[id]
+    local alternate = definitions and definitions.alternateReward
+    if alternate then
+        for _, source in ipairs(alternate.npcs or {}) do
+            if npc == source then
+                local progress = atlas.rewardAttemptProgress(mount, alternate.key)
+                if progress and type(progress.attempts) == "number" then
+                    return " (" .. ui.safeText(L("Попыток: %s", tostring(progress.attempts))) .. ")"
+                end
+                break
+            end
+        end
+        return ""
+    end
     local chance, _, attempts = atlas.dropProbability(mount)
     if not readable(chance) or type(chance) ~= "number" or chance <= 0 or chance > 1
         or not readable(attempts) or type(attempts) ~= "number" or attempts < 0 or attempts >= math.huge then return "" end
@@ -122,7 +136,7 @@ local function canAppend(tooltip, data)
     return readable(owner)
 end
 
-local function appendMounts(tooltip, data, ids, directID, separate)
+local function appendMounts(tooltip, data, ids, directID, npc)
     local getMount = C_MountJournal and C_MountJournal.GetMountInfoByID
     if not (ids or directID) or not getMount or not canAppend(tooltip, data) then return end
     local count = 0
@@ -139,8 +153,8 @@ local function appendMounts(tooltip, data, ids, directID, separate)
         elseif atlas.isPlanned({ id = id }, atlas.activePlanID()) then status = L("В плане") end
         local label = rewardLabel(id, name)
         local prefix = count == 1 and ("|cffe0b86b" .. addonName .. ":|r ") or ""
-        if separate and count == 1 then tooltip:AddLine(" ") end
-        tooltip:AddLine(prefix .. label .. (collected == true and "" or attemptText(id)), 1, 1, 1, true)
+        if npc and count == 1 then tooltip:AddLine(" ") end
+        tooltip:AddLine(prefix .. label .. (collected == true and "" or attemptText(id, npc)), 1, 1, 1, true)
         if status then
             tooltip:AddLine(ui.safeText(status), 1, collected == true and .2 or .82, collected == true and .2 or .44, true)
         end
@@ -169,7 +183,8 @@ local function onUnit(tooltip, data)
     if not readable(guid) or type(guid) ~= "string" then return end
     local unitType, npc = guid:match("^(%a+)%-%d+%-%d+%-%d+%-%d+%-(%d+)%-")
     if unitType ~= "Creature" and unitType ~= "Vehicle" then return end
-    appendMounts(tooltip, data, byNPC[tonumber(npc)], nil, true)
+    npc = tonumber(npc)
+    appendMounts(tooltip, data, byNPC[npc], nil, npc)
 end
 
 local function reset(tooltip)

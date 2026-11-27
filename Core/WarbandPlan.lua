@@ -324,8 +324,11 @@ local planEvents = CreateFrame("Frame")
 local retryEvent = "MOUNT_JOURNAL_SEARCH_UPDATED"
 local retryQueued
 planEvents:RegisterEvent("PLAYER_ENTERING_WORLD")
+planEvents:RegisterEvent("COVENANT_CHOSEN")
 planEvents:SetScript("OnEvent", function(self, event, isInitialLogin)
-    if event == "PLAYER_ENTERING_WORLD" then
+    if event == "COVENANT_CHOSEN" then
+        if atlas.queueAttemptRefresh then atlas.queueAttemptRefresh(true) end
+    elseif event == "PLAYER_ENTERING_WORLD" then
         self:UnregisterEvent(event)
         local db = database()
         if isInitialLogin then
@@ -558,9 +561,10 @@ local function opportunityGroups(mount, guid)
     if frequency ~= "daily" and frequency ~= "weekly" then return end
     if mount.encounter then return end
     local definition, npcs = opportunitySource(mount)
+    local requiredCovenant = definition and (definition.requiredCovenantID or definition.requiresCovenant)
     if definition and definition.method == "SPECIAL" and definition.key then
         return { { key = "stage:" .. definition.key .. ":" .. frequency,
-            lootQuestID = definition.lootQuestID, npcs = mount.npcs or {} } }, frequency
+            lootQuestID = definition.lootQuestID, npcs = mount.npcs or {} } }, frequency, nil, requiredCovenant
     end
     if type(npcs) ~= "table" then return end
     local groups, byKey, seenNPC = {}, {}, {}
@@ -583,7 +587,7 @@ local function opportunityGroups(mount, guid)
             group.npcs[#group.npcs + 1] = npc
         end
     end
-    if #groups > 0 then return groups, frequency end
+    if #groups > 0 then return groups, frequency, nil, requiredCovenant end
 end
 
 function atlas.planStageOpportunityKey(mount, definition, npc)
@@ -612,13 +616,34 @@ function atlas.lootOpportunityExpires(mount, npc, frequency)
     return number(expires) and expires or nil
 end
 
-local function currentOpportunities(mount, now, questCache)
-    local groups, frequency = opportunityGroups(mount)
+local function savedOpportunity(status, group, frequency, single)
+    if type(status) ~= "table" then return end
+    if status.frequency == frequency and type(status.opportunities) == "table" then
+        local opportunity = status.opportunities[group.key]
+        -- The stage key can survive a change to its personal loot quest.
+        if type(opportunity) == "table" and (not group.lootQuestID or opportunity.lootQuestID == group.lootQuestID) then
+            return opportunity
+        end
+        return
+    end
+    -- A legacy attempt without an NPC key is conclusive only for one NPC group.
+    if single and (not status.frequency or status.frequency == frequency) and not status.opportunities
+        and status.state == "attempt" and not group.key:match("^stage:") then
+        return status
+    end
+end
+
+local function currentOpportunities(mount, now, questCache, previous)
+    local groups, frequency, _, requiredCovenant = opportunityGroups(mount)
     if not groups then return end
     local expires = resetTime(frequency, now)
     local attempts = type(MountAtlasDB) == "table" and MountAtlasDB.lastAttempts
+    local covenant = requiredCovenant and C_Covenants and C_Covenants.GetActiveCovenantID
+        and C_Covenants.GetActiveCovenantID()
+    local covenantID = number(covenant) and covenant > 0 and covenant or nil
+    local eligible = not requiredCovenant or covenantID == requiredCovenant
     local result = { state = "unknown", updated = now, expires = expires,
-        frequency = frequency, opportunities = {} }
+        frequency = frequency, covenantID = covenantID, opportunities = {} }
     local completed, available = 0, 0
     local quests = atlas.npcLootQuests and atlas.npcLootQuests[mount.id]
     local questReady = IsLoggedIn and IsLoggedIn() == true and C_QuestLog and C_QuestLog.IsQuestFlaggedCompleted
@@ -632,7 +657,13 @@ local function currentOpportunities(mount, now, questCache)
                 if number(previous) and (not number(value) or previous > value) then value = previous end
             end
         end
-        local used = expires and number(value) and value > now
+        -- A covenant change can hide a previously observed loot flag.
+        local saved = requiredCovenant and savedOpportunity(previous, group, frequency, #groups == 1)
+        if type(saved) == "table" and saved.state == "attempt" and number(saved.expires)
+            and (not number(value) or saved.expires > value) then
+            value = saved.expires
+        end
+        local used = number(value) and value > now
         local unlocked = false
         if not used and expires and questReady and (group.lootQuestID or type(quests) == "table") then
             local checks = group.lootQuestID and 1 or #group.npcs
@@ -652,10 +683,10 @@ local function currentOpportunities(mount, now, questCache)
                     elseif sample.complete then used = true end
                 end
             end
-            unlocked = allKnown and not used
+            unlocked = allKnown and not used and eligible
         end
         result.opportunities[group.key] = { state = used and "attempt" or unlocked and "available" or "unknown",
-            expires = used and number(value) and value > now and value or expires }
+            expires = used and number(value) and value > now and value or expires, lootQuestID = group.lootQuestID }
         if used then completed = completed + 1 end
         if unlocked then available = available + 1 end
     end
@@ -666,12 +697,12 @@ end
 
 -- This is a snapshot of loot locks, not a promise that a character satisfies
 -- every level, faction, quest, difficulty or summoning requirement.
-local function snapshot(mount, now, questCache, planned)
+local function snapshot(mount, now, questCache, planned, previous)
     if atlas.bossLockout then
         local state, expires, difficultyStates = atlas.bossLockout(mount)
         if state then return { state = state, expires = expires, updated = now, difficultyStates = difficultyStates } end
     end
-    local opportunities = currentOpportunities(mount, now, questCache)
+    local opportunities = currentOpportunities(mount, now, questCache, previous)
     if opportunities then return opportunities end
     if planned then return { state = "unknown", updated = now } end
 end
@@ -709,7 +740,8 @@ function atlas.capturePlanSnapshot(ready)
     end
     local function capture(key, mount)
         if mount and not accountLootSources[mount.id] then
-            local nextStatus, previous = snapshot(mount, now, questCache, planned[key]), record.planStatus[key]
+            local previous = record.planStatus[key]
+            local nextStatus = snapshot(mount, now, questCache, planned[key], previous)
             if nextStatus and (nextStatus.opportunities or nextStatus.state ~= "unknown" or type(previous) ~= "table"
                 or not number(previous.expires) or previous.expires <= now) then
                 record.planStatus[key] = nextStatus
@@ -723,7 +755,7 @@ function atlas.capturePlanSnapshot(ready)
 end
 
 function atlas.planOpportunityProgress(mount, guid)
-    local groups, frequency, unknownFaction = opportunityGroups(mount, guid)
+    local groups, frequency, unknownFaction, requiredCovenant = opportunityGroups(mount, guid)
     if not groups then return nil, unknownFaction end
     local db, current, now = database(), playerGUID(), GetServerTime()
     guid = guid or current
@@ -732,22 +764,16 @@ function atlas.planOpportunityProgress(mount, guid)
     -- The current character can be inspected in the catalog without adding a
     -- target to the plan. Offline characters only have their saved snapshots.
     if guid and guid == current and not (atlas.isCharacterSuppressed and atlas.isCharacterSuppressed(guid)) then
-        status = currentOpportunities(mount, now)
+        status = currentOpportunities(mount, now, nil, status)
     end
+    local eligible = not requiredCovenant or type(status) == "table" and status.covenantID == requiredCovenant
     local result = { frequency = frequency, entries = {}, completedAttempts = 0,
         totalAttempts = #groups, unknownAttempts = 0, availableAttempts = 0,
         stale = false, updated = type(status) == "table" and status.updated or nil }
     for _, group in ipairs(groups) do
-        local value = type(status) == "table" and status.frequency == frequency
-            and type(status.opportunities) == "table" and status.opportunities[group.key]
-        -- A legacy multi-NPC "attempt" did not identify which NPC was used.
-        -- It is safe to retain only an unambiguous single-opportunity snapshot.
-        if not value and #groups == 1 and not group.key:match("^stage:") and type(status) == "table"
-            and not status.opportunities and status.state == "attempt" then
-            value = status
-        end
+        local value = savedOpportunity(status, group, frequency, #groups == 1)
         local state, expires = "unknown", type(value) == "table" and value.expires
-        if type(value) == "table" and (value.state == "attempt" or value.state == "available") then
+        if type(value) == "table" and (value.state == "attempt" or eligible and value.state == "available") then
             if not number(expires) or expires <= now then
                 state, result.stale = "stale", true
             else

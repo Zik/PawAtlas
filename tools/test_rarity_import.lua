@@ -121,6 +121,8 @@ for _, id in ipairs({ 488, 624, 765 }) do
     atlas.mounts[#atlas.mounts + 1] = { id = id, journalOnly = true }
     atlas.attemptStages[id] = catalog.attemptStages[id]
 end
+atlas.mounts[#atlas.mounts + 1] = { id = 312, journalOnly = true, journalName = "Sea Turtle", spell = 64731 }
+atlas.attemptStages[312] = catalog.attemptStages[312]
 atlas.islandSalvageMounts = catalog.islandSalvageMounts
 for id in pairs(atlas.islandSalvageMounts) do
     atlas.mounts[#atlas.mounts + 1] = { id = id, journalOnly = true }
@@ -943,6 +945,27 @@ do
     end
     assert(atlas.clearAttemptStatistics())
     equal(character.factionRewardAttempts, nil, "an explicit full statistics reset clears native source attribution")
+end
+
+do
+    local turtle = { id = 312, journalOnly = true }
+    local fishingKey, garrisonKey = "mount:312", "mount:312:garrison"
+    local character = assert(atlas.currentAttemptCharacter())
+    character.stageAttempts[fishingKey], character.stageAttempts[garrisonKey] = 5, 2
+    local fishing = { type = "MOUNT", method = "FISHING", spellId = 64731, itemId = 46109,
+        attempts = 24, found = true, realAttempts = 23 }
+    local npc = { type = "MOUNT", method = "NPC", spellId = 64731, itemId = 46109, attempts = 100,
+        npcs = { 81171, 85715 } }
+    Rarity.db.profile = { groups = { mounts = { fishing, npc } } }
+    local imported = run()
+    equal(imported.updated, 1, "Rarity imports only the turtle's original fishing stage")
+    equal(imported.skipReasons.unit_mismatch, 1, "Rarity NPC history cannot become a fishing attempt")
+    equal(atlas.rewardAttemptProgress(turtle).attempts, 24, "Rarity keeps the fishing floor in its stage")
+    equal(atlas.rewardAttemptProgress(turtle, garrisonKey).attempts, 2, "local garrison attempts stay independent")
+    local award = assert(atlas.acquisitionAttempts(fishingKey))
+    equal(award.attempts, 23, "the upstream fishing success keeps its original count")
+    equal(award.routeKey, fishingKey, "the imported success belongs only to the matching fishing route")
+    equal(run().updated, 0, "the turtle's fishing floor is idempotent")
 end
 
 print("PawAtlas Rarity import passed: account history, faction history, time rifts, idempotence, profile changes, skips, reset, cages, eggs, collections, events and chest attempts")

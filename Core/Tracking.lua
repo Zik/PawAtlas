@@ -14,6 +14,8 @@ local encounterTargets, visitTargets = {}, {}
 local lastLootPrune
 local pendingAttemptRefresh
 local bonusRollPrompts, activeBonusRoll = {}, nil
+local worldCreatureEvidence, nextWorldCreaturePrune = {}, 0
+local npcLootQuestIndex = {}
 -- BfA expedition Map.db2 IDs tracked by Rarity: Collector's Edition.
 local islandMaps = {
     [1813] = true, [1814] = true, [1879] = true, [1882] = true, [1883] = true, [1892] = true,
@@ -698,7 +700,7 @@ function atlas.dropProbability(mount, savedAttempts)
     return perAttempt, math.max(0, math.min(1, cumulative)), attempts
 end
 
-local function incrementLocal(mount, credited, lootNPC)
+local function incrementLocal(mount, credited, lootNPC, fromLoot)
     local record = characterCounts()
     local key = mount.countKey or tostring(mount.id)
     local count = record and record.kills[key]
@@ -709,13 +711,14 @@ local function incrementLocal(mount, credited, lootNPC)
         credited[mount.id] = true
         if atlas.recordImportedAttempt then atlas.recordImportedAttempt(mount, UnitGUID("player"), lootNPC) end
     end
-    if record and atlas.notifyMountAttempt then atlas.notifyMountAttempt(mount, lootNPC ~= nil) end
+    if record and atlas.notifyMountAttempt then atlas.notifyMountAttempt(mount, fromLoot == true) end
 end
 
 local function resetAt(frequency)
-    local seconds
-    if frequency == "weekly" then seconds = C_DateAndTime.GetSecondsUntilWeeklyReset()
-    elseif frequency == "daily" then seconds = C_DateAndTime.GetSecondsUntilDailyReset() end
+    local method = frequency == "weekly" and "GetSecondsUntilWeeklyReset"
+        or frequency == "daily" and "GetSecondsUntilDailyReset"
+    local getter = method and C_DateAndTime and C_DateAndTime[method]
+    local seconds = getter and getter()
     if validNumber(seconds) then return GetServerTime() + seconds end
 end
 
@@ -780,8 +783,24 @@ local function countEncounter(encounter, difficulty)
     if changed or retryStatistics then atlas.queueAttemptRefresh(true) end
 end
 
-local function recordLoot(fallbackGUID)
-    if atlas.shouldCountCreatureLoot and not atlas.shouldCountCreatureLoot() then return end
+local function lootQuestComplete(quest)
+    return modeBoolean(C_QuestLog and C_QuestLog.IsQuestFlaggedCompleted, quest)
+end
+
+local function creatureOpportunityAvailable(mount, npc, guid, fromKill)
+    local quests = atlas.npcLootQuests and atlas.npcLootQuests[mount.id]
+    local quest = quests and quests[npc]
+    if not quest or not (npcLootQuestIndex[npc] and npcLootQuestIndex[npc][quest]) then return true end
+    local evidence = worldCreatureEvidence[guid]
+    local before = evidence and evidence.expires > GetTime() and evidence.quests and evidence.quests[quest]
+    if before and active(before.reset) then return not before.complete end
+    -- At death, a completed flag without a pre-kill sample can belong to this
+    -- kill or to an earlier lockout. Let exact personal loot resolve that case.
+    return not fromKill or lootQuestComplete(quest) == false
+end
+
+local function recordLoot(fallbackGUID, fromKill)
+    if not fromKill and atlas.shouldCountCreatureLoot and not atlas.shouldCountCreatureLoot() then return end
     if not readable(fallbackGUID) then return end
     local slots
     if not fallbackGUID then
@@ -800,12 +819,19 @@ local function recordLoot(fallbackGUID)
         -- Vehicles can award the same creature loot (for example Felsiege).
         local npc = creatureID(guid)
         if not npc or active(MountAtlasDB.lastLoot[guid], now) then return end
-        local confirmed = confirmCreatureStatistics(npcStatistics[npc])
+        local statisticKey = "stat:" .. guid
+        local alreadyConfirmed = active(MountAtlasDB.lastLoot[statisticKey], now)
+        local confirmed = alreadyConfirmed or confirmCreatureStatistics(npcStatistics[npc])
         local targets = atlas.lootByNPC[npc]
-        if confirmed or targets then MountAtlasDB.lastLoot[guid] = now + 86400 end
+        if fromKill then
+            if confirmed then MountAtlasDB.lastLoot[statisticKey] = now + 86400 end
+        elseif confirmed or targets then
+            MountAtlasDB.lastLoot[guid] = now + 86400
+        end
         if targets then
             local limits = {}
             for _, mount in ipairs(targets) do
+                local killKey = "kill:" .. mount.id .. ":" .. guid
                 local frequency = atlas.lootFrequencies[mount.id]
                 local expires = resetAt(frequency)
                 local group = atlas.sharedLootLockouts and atlas.sharedLootLockouts[mount.id]
@@ -814,10 +840,13 @@ local function recordLoot(fallbackGUID)
                 local previous = atlas.lootOpportunityExpires and atlas.lootOpportunityExpires(mount, npc, frequency or "unknown")
                     or MountAtlasDB.lastAttempts[key]
                 if atlas.usesKillAPI(mount) then
-                    retryStatistics = true
-                elseif (not atlas.isMountAttemptEligible or atlas.isMountAttemptEligible(mount, npc))
+                    retryStatistics = retryStatistics or not alreadyConfirmed
+                elseif not active(MountAtlasDB.lastLoot[killKey], now)
+                    and creatureOpportunityAvailable(mount, npc, guid, fromKill)
+                    and (not atlas.isMountAttemptEligible or atlas.isMountAttemptEligible(mount, npc))
                     and (not expires or not active(previous, now)) then
-                    incrementLocal(mount, credited, npc)
+                    incrementLocal(mount, credited, npc, not fromKill)
+                    if fromKill then MountAtlasDB.lastLoot[killKey] = now + 86400 end
                     if expires then limits[key] = expires end
                     changed = true
                 end
@@ -838,7 +867,162 @@ local function recordLoot(fallbackGUID)
     if changed then atlas.queueAttemptRefresh(true) end
 end
 
-atlas.recordCreatureLoot = recordLoot
+function atlas.recordCreatureLoot(guid)
+    recordLoot(guid)
+end
+
+local function inOpenWorld()
+    if IsInInstance then return modeBoolean(IsInInstance) == false end
+    local _, kind = GetInstanceInfo()
+    return readable(kind) and kind == "none"
+end
+
+local function unitGUID(unit)
+    local guid = UnitGUID and UnitGUID(unit)
+    if readable(guid) and type(guid) == "string" and guid ~= "" then return guid end
+end
+
+local function tracksCreatureKill(npc)
+    return npc and (atlas.lootByNPC[npc] or npcStatistics[npc]
+        or (atlas.hasCreatureKillStage and atlas.hasCreatureKillStage(npc)))
+end
+
+local function creatureEvidence(guid)
+    local time = GetTime()
+    if time >= nextWorldCreaturePrune then
+        for key, evidence in pairs(worldCreatureEvidence) do
+            if evidence.expires <= time then worldCreatureEvidence[key] = nil end
+        end
+        nextWorldCreaturePrune = time + 60
+    end
+    local evidence = worldCreatureEvidence[guid]
+    if not evidence or evidence.expires <= time then
+        evidence = {}
+        worldCreatureEvidence[guid] = evidence
+    end
+    evidence.expires = time + 300
+    return evidence
+end
+
+local function readCreatureEvidence(unit, evidence)
+    evidence.tapDenied = modeBoolean(UnitIsTapDenied, unit)
+    local classification = UnitClassification and UnitClassification(unit)
+    if readable(classification) and type(classification) == "string" then evidence.minor = classification == "minus" end
+end
+
+local function observeCreature(unit)
+    if not readable(unit) or type(unit) ~= "string" then return end
+    local guid = unitGUID(unit)
+    local npc = creatureID(guid)
+    if not tracksCreatureKill(npc) then return end
+    local evidence = creatureEvidence(guid)
+    readCreatureEvidence(unit, evidence)
+    local quests = npcLootQuestIndex[npc]
+    if quests and modeBoolean(UnitIsDead, unit) == false then
+        local samples = evidence.quests or {}
+        evidence.quests = samples
+        for quest, frequency in pairs(quests) do
+            if not samples[quest] or not active(samples[quest].reset) then
+                local complete, expires = lootQuestComplete(quest), resetAt(frequency)
+                if complete ~= nil and expires then samples[quest] = { complete = complete, reset = expires } end
+            end
+        end
+    end
+    return guid, evidence
+end
+
+local function liveCreatureUnit(guid)
+    local unit = UnitTokenFromGUID and UnitTokenFromGUID(guid)
+    if readable(unit) and type(unit) == "string" and unitGUID(unit) == guid then return unit end
+    if unitGUID("target") == guid then return "target" end
+    if unitGUID("pettarget") == guid then return "pettarget" end
+    if unitGUID("mouseover") == guid then return "mouseover" end
+end
+
+local function isOurKiller(guid)
+    if not readable(guid) or type(guid) ~= "string" then return false end
+    if guid == unitGUID("player") or guid == unitGUID("pet") then return true end
+    local raid = modeBoolean(IsInRaid) == true
+    if not raid and modeBoolean(IsInGroup) ~= true then return false end
+    local count = GetNumGroupMembers and GetNumGroupMembers()
+    if not validNumber(count) then return false end
+    local prefix = raid and "raid" or "party"
+    for index = 1, math.min(raid and 40 or 4, raid and count or count - 1) do
+        if unitGUID(prefix .. index) == guid then return true end
+    end
+    return false
+end
+
+local function recordWorldCreature(guid, npc, evidence)
+    if evidence.recorded or evidence.rejected then return end
+    evidence.recorded = true
+    if atlas.sourceAvailableToCharacter(npc) ~= true then return end
+    recordLoot(guid, true)
+    if atlas.recordStageCreatureKill then
+        atlas.recordStageCreatureKill(guid, npc, function(mount)
+            return creatureOpportunityAvailable(mount, npc, guid, true)
+        end)
+    end
+end
+
+local function onPartyKill(attacker, guid)
+    local npc = creatureID(guid)
+    if not npc then return end
+    if not inOpenWorld() then
+        confirmCreatureStatistics(npcStatistics[npc])
+        return
+    end
+    if not tracksCreatureKill(npc) then return end
+    local evidence = creatureEvidence(guid)
+    local unit = liveCreatureUnit(guid)
+    if unit then readCreatureEvidence(unit, evidence) end
+    if not isOurKiller(attacker) or evidence.tapDenied == true or evidence.minor then
+        evidence.rejected = true
+        return
+    end
+    if evidence.tapDenied ~= false then
+        -- A native lifetime statistic can still prove a victory while the
+        -- corpse is out of view. Local counters need known loot eligibility.
+        if not unit and npcStatistics[npc] then
+            local time, key = GetServerTime(), "stat:" .. guid
+            if not active(MountAtlasDB.lastLoot[guid], time) and not active(MountAtlasDB.lastLoot[key], time)
+                and confirmCreatureStatistics(npcStatistics[npc]) then
+                MountAtlasDB.lastLoot[key] = time + 86400
+            end
+        end
+        return
+    end
+    recordWorldCreature(guid, npc, evidence)
+end
+
+local function observePetTarget()
+    local guid, evidence = observeCreature("pettarget")
+    if not guid or evidence.tapDenied ~= false then return end
+    local threat = UnitThreatSituation and UnitThreatSituation("pet", "pettarget")
+    if validNumber(threat) then evidence.petEngaged = GetTime() end
+end
+
+local function onCreatureDeath(guid)
+    local npc = creatureID(guid)
+    if not tracksCreatureKill(npc) then return end
+    local evidence = creatureEvidence(guid)
+    if evidence.recorded or evidence.rejected or evidence.petPending then return end
+    local petTarget = unitGUID("pettarget") == guid
+    if petTarget then observePetTarget() end
+    local unit = liveCreatureUnit(guid)
+    if unit then readCreatureEvidence(unit, evidence) end
+    if evidence.tapDenied ~= false or evidence.minor then return end
+    local engaged = evidence.petEngaged and GetTime() - evidence.petEngaged <= 5
+    local hasLoot, canLoot
+    if petTarget and CanLootUnit then hasLoot, canLoot = CanLootUnit(guid) end
+    if not engaged and not (readable(hasLoot) and hasLoot == true and readable(canLoot) and canLoot == true) then return end
+    evidence.petPending = true
+    -- UNIT_DIED reports nearby deaths. Leave the more specific PARTY_KILL a
+    -- chance to identify the attacker before crediting the pet's target.
+    C_Timer.After(.5, function()
+        if worldCreatureEvidence[guid] == evidence and inOpenWorld() then recordWorldCreature(guid, npc, evidence) end
+    end)
+end
 
 local function rememberBonusRollPrompt(spell, promptType, _, duration, currency, cost)
     if not atlas.bonusRollSources then return end
@@ -921,8 +1105,16 @@ local function onEvent(event, ...)
         countEncounter((...), select(3, GetInstanceInfo()))
         requestLockoutsAfterKill()
     elseif event == "PARTY_KILL" then
-        local _, guid = ...
-        confirmCreatureStatistics(npcStatistics[creatureID(guid)])
+        onPartyKill(...)
+    elseif event == "UNIT_DIED" then
+        if inOpenWorld() then onCreatureDeath(...) end
+    elseif event == "UNIT_TARGET" or event == "UNIT_THREAT_SITUATION_UPDATE" then
+        local unit = ...
+        if readable(unit) and unit == "pet" and inOpenWorld() then observePetTarget() end
+    elseif event == "NAME_PLATE_UNIT_ADDED" or event == "NAME_PLATE_UNIT_REMOVED" then
+        if inOpenWorld() then observeCreature(...) end
+    elseif event == "PLAYER_TARGET_CHANGED" then
+        if inOpenWorld() then observeCreature("target") end
     elseif event == "SPELL_CONFIRMATION_PROMPT" then
         rememberBonusRollPrompt(...)
     elseif event == "SPELL_CONFIRMATION_TIMEOUT" then
@@ -957,6 +1149,8 @@ local function onEvent(event, ...)
     elseif event == "PLAYER_REGEN_ENABLED" then
         queueStatisticRetries()
     elseif event == "PLAYER_ENTERING_WORLD" then
+        worldCreatureEvidence, nextWorldCreaturePrune = {}, 0
+        if inOpenWorld() then observeCreature("target") end
         if atlas.bonusRollSources then restoreBonusRollPrompts(...) end
         atlas.refreshAccountStatistics()
         -- Reloading during a fight has no PLAYER_REGEN_DISABLED event. The
@@ -1051,14 +1245,29 @@ function atlas.initializeTracking()
             indexStatisticSource(encounterStatistics, source.encounter, stat, source)
         end
     end
+    for id, quests in pairs(atlas.npcLootQuests or {}) do
+        local frequency = atlas.lootFrequencies[id]
+        if frequency == "daily" or frequency == "weekly" then
+            for npc, quest in pairs(quests) do
+                if validNumber(npc) and validNumber(quest) and quest > 0 then
+                    local index = npcLootQuestIndex[npc] or {}
+                    npcLootQuestIndex[npc] = index
+                    if not index[quest] or frequency == "daily" then index[quest] = frequency end
+                end
+            end
+        end
+    end
     if atlas.planTargets then atlas.planTargets() end
     for _, name in ipairs({ "ENCOUNTER_END", "BOSS_KILL", "LOOT_READY", "LOOT_OPENED", "PLAYER_ENTERING_WORLD",
         "PLAYER_LOGOUT", "UPDATE_INSTANCE_INFO", "CRITERIA_UPDATE", "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED",
         "QUEST_LOG_UPDATE", "QUEST_TURNED_IN", "ISLAND_COMPLETED" }) do
         atlas:RegisterEvent(name, onEvent)
     end
-    if not C_EventUtils or not C_EventUtils.IsEventValid or C_EventUtils.IsEventValid("PARTY_KILL") then
-        atlas:RegisterEvent("PARTY_KILL", onEvent)
+    for _, name in ipairs({ "PARTY_KILL", "UNIT_DIED", "UNIT_TARGET", "UNIT_THREAT_SITUATION_UPDATE",
+        "NAME_PLATE_UNIT_ADDED", "NAME_PLATE_UNIT_REMOVED", "PLAYER_TARGET_CHANGED" }) do
+        if not C_EventUtils or not C_EventUtils.IsEventValid or C_EventUtils.IsEventValid(name) then
+            atlas:RegisterEvent(name, onEvent)
+        end
     end
     if atlas.bonusRollSources then
         for _, name in ipairs({ "SPELL_CONFIRMATION_PROMPT", "SPELL_CONFIRMATION_TIMEOUT", "BONUS_ROLL_STARTED",

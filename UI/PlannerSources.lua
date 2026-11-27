@@ -1,8 +1,11 @@
 local _, atlas = ...
 local ui, L = atlas.ui, atlas.L
-local labels = { attempt = "Попытка использована", boss = "Босс убит", available = "Можно идти",
-    unknown = "Нет данных", stale = "Нужно обновить" }
+local labels = { attempt = "Попытка использована", boss = "Босс убит", available = "Можно идти" }
 local pointFactions = { ["Альянс"] = "Alliance", ["Орда"] = "Horde" }
+
+function ui.planStatusLabel(state)
+    return labels[state] or "Нужно обновить"
+end
 
 local function complete(state) return state == "attempt" or state == "boss" end
 local located = atlas.hasSourceCoordinates
@@ -136,7 +139,7 @@ function atlas.makePlannerSources(parent)
     local function feedback(item)
         local state = currentState(item)
         if complete(state) then
-            return selectedGUID and "" or (UnitName("player") or "") .. " · " .. L(labels[state])
+            return selectedGUID and "" or (UnitName("player") or "") .. " · " .. L(ui.planStatusLabel(state))
         elseif not compatible(item, current) or atlas.sourceAvailableToCharacter(item.point and item.point.npc, current) == nil then
             return L("Нет данных")
         else
@@ -162,8 +165,9 @@ function atlas.makePlannerSources(parent)
         row.name.atlasGameText = true
         row.name:SetMaxLines(1)
         row.name:SetWordWrap(false)
-        row.state = ui.text(row, 36, 21, 205, 18, 12, "", ui.muted)
+        row.state = ui.text(row, 36, 21, 196, 18, 12, "", ui.muted)
         row.state:SetMaxLines(1)
+        row.check = ui.icon(row, 237, 23, 14, "ObjectiveComplete")
         row:ClearHighlightTexture()
     end
     local function showCharacterTooltip(row)
@@ -177,7 +181,7 @@ function atlas.makePlannerSources(parent)
                 local state = stateFor(item, character)
                 local color = complete(state) and ui.mint or state == "available" and ui.paper or ui.muted
                 GameTooltip:AddDoubleLine(ui.safeText(atlas.displayName(item.name or mount.boss)),
-                    ui.safeText(L(labels[state] or labels.unknown)), ui.paper[1], ui.paper[2], ui.paper[3], unpack(color))
+                    ui.safeText(L(ui.planStatusLabel(state))), ui.paper[1], ui.paper[2], ui.paper[3], unpack(color))
                 shared = shared or item.shared
             end
         end
@@ -203,8 +207,9 @@ function atlas.makePlannerSources(parent)
         row.name:SetTextColor(unpack(used and ui.muted or ui.characterClassColor(character)))
         ui.setCharacterClassIcon(row.icon, character)
         row.icon:SetDesaturated(used)
-        row.state:SetText(labels[state] or labels.unknown)
-        row.state:SetTextColor(unpack(state == "boss" and ui.mint or state == "available" and ui.paper or ui.muted))
+        row.state:SetText(ui.planStatusLabel(state))
+        row.state:SetTextColor(unpack(used and ui.mint or state == "available" and ui.paper or ui.muted))
+        row.check:SetShown(used)
         if GameTooltip:IsShown() and GameTooltip:IsOwned(row) then showCharacterTooltip(row) end
     end
     for _, row in ipairs(list.rows) do
@@ -237,14 +242,14 @@ function atlas.makePlannerSources(parent)
         end
         local state = selectedGUID and stateFor(item, { guid = selectedGUID }) or currentState(item)
         local used = selectedGUID and complete(state) or not selectedGUID and total > 0 and done == total
-        ui.setIcon(row.mark, used and (item.shared and "Lock" or "ObjectiveComplete") or "Rare")
+        ui.setIcon(row.mark, used and "ObjectiveComplete" or "Rare")
         row.mark:SetVertexColor(1, 1, 1)
         row.name:SetText(atlas.displayName(item.name or mount.boss))
         local place = atlas.displayName(item.place or mount.place)
         row.place:SetText(place)
         row.placeLink:setLocation(atlas.sourceMapID(place, item.point, mount), place)
         row.name:SetTextColor(unpack(used and ui.muted or ui.paper))
-        row.status:SetText(selectedGUID and L(labels[state] or labels.unknown)
+        row.status:SetText(selectedGUID and L(ui.planStatusLabel(state))
             or L("Выполнено: %d / %d", done, total))
         row.status:SetTextColor(unpack(used and ui.mint or ui.muted))
     end
@@ -291,8 +296,8 @@ function atlas.makePlannerSources(parent)
             ui.place(row.status, row, single and 668 or 382, 4, 144, 32)
         end
         title:SetText(atlas.displayName(mount.name))
-        summary:SetText(selectedLabel .. "   /   " .. (unknown and L("Нет данных") or total > 0 and L("Выполнено: %d / %d", count, total)
-            or L(currentStates.fallback and "Можно идти" or "Нет данных")))
+        summary:SetText(selectedLabel .. "   /   " .. (unknown and L("Нужно обновить") or total > 0 and L("Выполнено: %d / %d", count, total)
+            or L(ui.planStatusLabel(currentStates.fallback))))
         local previous = focused and focused.identity
         list.items = sources(mount, groups, points)
         local sharedKey = #list.items > 1 and list.items[1].shared and list.items[1].key

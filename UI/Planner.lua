@@ -758,7 +758,6 @@ function atlas.makePlanner(parent, openMount, openExpansion)
         end)
     end
 
-    local labels = { boss = "Босс убит", attempt = "Попытка использована", available = "Можно идти", unknown = "Нет данных", stale = "Нужно обновить" }
     local progressX, progressWidth = 530, 356
     for _, row in ipairs(list.rows) do
         row:ClearHighlightTexture()
@@ -818,7 +817,12 @@ function atlas.makePlanner(parent, openMount, openExpansion)
         row.progress = ui.fill(row, progressX, 25, progressWidth, 3, ui.gold)
         row.track:SetDrawLayer("ARTWORK", 0)
         row.progress:SetDrawLayer("ARTWORK", 1)
-        row.sourceButton = ui.button(row, progressX - 4, 1, progressWidth + 8, rowStep - 2, function()
+        local function itemAttempts()
+            if not row.item or row.collected then return end
+            return atlas.itemAttemptProgress(row.item)
+        end
+        row.sourceButton = ui.button(row, progressX - 4, 1, progressWidth + 8, rowStep - 2, function(_, button)
+            if button == "LeftButton" and IsShiftKeyDown() and atlas.shareItemAttempts(itemAttempts()) then return end
             if row.item then menu:Hide(); planMenu:Hide(); sources:open(row.item, selectedGUID) end
         end)
         row.sourceButton:EnableMouseWheel(true)
@@ -848,6 +852,9 @@ function atlas.makePlanner(parent, openMount, openExpansion)
             if not GameTooltip:IsShown() or not GameTooltip:IsOwned(self) then GameTooltip:SetOwner(self, "ANCHOR_TOP") end
             if self == row.sourceButton then
                 ui.tooltipTitle(L("Посмотреть список"))
+                if atlas.canShareItemAttempts(itemAttempts()) then
+                    ui.tooltipLine(L("Shift + ЛКМ — поделиться в чате"), unpack(ui.muted))
+                end
                 GameTooltip:Show()
                 return
             end
@@ -859,7 +866,7 @@ function atlas.makePlanner(parent, openMount, openExpansion)
                 ui.tooltipLine(L("На аккаунт"), unpack(ui.muted))
                 if not (issecretvalue and issecretvalue(owned)) and not owned then
                     local color = accountState == "attempt" and ui.mint or ui.muted
-                    ui.tooltipLine(L(labels[accountState]), color[1], color[2], color[3], true)
+                    ui.tooltipLine(L(ui.planStatusLabel(accountState)), color[1], color[2], color[3], true)
                 end
                 GameTooltip:Show()
                 return
@@ -897,10 +904,10 @@ function atlas.makePlanner(parent, openMount, openExpansion)
                         break
                     end
                     local state, _, _, progress = atlas.planCharacterStatus(row.item, character.guid)
-                    local status = L(labels[state] or labels.unknown)
+                    local status = L(ui.planStatusLabel(state))
                     if progress and progress.totalAttempts > 1 then
                         status = L("Выполнено: %d / %d", progress.completedAttempts, progress.totalAttempts)
-                        if progress.stale then status = L(labels.stale) .. " · " .. status end
+                        if progress.stale then status = L("Нужно обновить") .. " · " .. status end
                     end
                     local complete = state == "boss" or state == "attempt"
                     local uncertain = state == "unknown" or state == "stale"
@@ -974,7 +981,8 @@ function atlas.makePlanner(parent, openMount, openExpansion)
         local complete, fraction, state = false, 0, "unknown"
         local owned = select(11, C_MountJournal.GetMountInfoByID(mount.id))
         local accountState = atlas.accountLootLockout(mount)
-        if not (issecretvalue and issecretvalue(owned)) and owned then
+        row.collected = not (issecretvalue and issecretvalue(owned)) and owned == true
+        if row.collected then
             complete = true
             fraction, state = 1, "collected"
             row.status:SetText("В коллекции")
@@ -982,20 +990,20 @@ function atlas.makePlanner(parent, openMount, openExpansion)
         elseif accountState then
             state, complete = accountState, accountState == "attempt"
             fraction = complete and 1 or 0
-            row.status:SetText(L(labels[state]))
+            row.status:SetText(ui.planStatusLabel(state))
             row.detail:SetText(L("На аккаунт"))
         elseif selectedGUID then
             local updated, _, progress
             state, updated, _, progress = atlas.planCharacterStatus(mount, selectedGUID)
             complete = state == "boss" or state == "attempt"
             fraction = complete and 1 or 0
-            row.status:SetText(labels[state] or labels.unknown)
+            row.status:SetText(ui.planStatusLabel(state))
             row.detail:SetText(updated and date("%d.%m.%Y %H:%M", updated) or "")
             if progress and progress.totalAttempts > 1 then
                 fraction = progress.completedAttempts / progress.totalAttempts
                 row.status:SetText(L("Выполнено: %d / %d", progress.completedAttempts, progress.totalAttempts))
                 row.detail:SetText(progress.stale and "Нужно обновить"
-                    or L("Можно идти: %d · Нет данных: %d", progress.availableAttempts, progress.unknownAttempts))
+                    or L("Можно идти: %d · Нужно обновить: %d", progress.availableAttempts, progress.unknownAttempts))
             end
         else
             local counts = atlas.planSummary(mount)
@@ -1007,19 +1015,19 @@ function atlas.makePlanner(parent, openMount, openExpansion)
             if counts.total == 1 then
                 local characters = atlas.accountCharacters()
                 state = atlas.planCharacterStatus(mount, characters[1].guid)
-                row.status:SetText(labels[state] or labels.unknown)
+                row.status:SetText(ui.planStatusLabel(state))
             elseif state == "unknown" then
-                row.status:SetText("Нет данных")
+                row.status:SetText(ui.planStatusLabel(state))
             elseif state == "available" and counts.available == counts.total then
                 row.status:SetText("Можно идти")
             end
-            row.detail:SetText(L("Можно идти: %d · Нет данных: %d", counts.available, counts.unknown))
+            row.detail:SetText(L("Можно идти: %d · Нужно обновить: %d", counts.available, counts.unknown))
             if counts.totalAttempts and counts.totalAttempts > counts.total then
                 fraction = counts.completedAttempts / counts.totalAttempts
                 state = fraction == 1 and "complete" or fraction > 0 and "progress"
                     or counts.availableAttempts > 0 and "available" or "unknown"
                 row.status:SetText(L("Выполнено: %d / %d", counts.completedAttempts, counts.totalAttempts))
-                row.detail:SetText(L("Можно идти: %d · Нет данных: %d", counts.availableAttempts, counts.unknownAttempts))
+                row.detail:SetText(L("Можно идти: %d · Нужно обновить: %d", counts.availableAttempts, counts.unknownAttempts))
             end
         end
         local uncertain = state == "unknown" or state == "stale"

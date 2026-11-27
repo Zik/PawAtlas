@@ -189,8 +189,10 @@ end
 function atlas.verifiedRewardDropRoute(mount)
     local route = atlas.rewardDropRoutes and atlas.rewardDropRoutes[mount.id]
     local stages = atlas.attemptStages and atlas.attemptStages[mount.id]
-    local reward = stages and stages.reward
-    if not route or not reward or route.method ~= reward.method or route.item ~= reward.item
+    if not route or not stages then return end
+    local reward = stages[route.counterKey and "alternateReward" or "reward"]
+    if not reward or route.method ~= reward.method or route.item ~= reward.item
+        or route.counterKey and route.counterKey ~= reward.key
         or not routeVersionCurrent(route) then return end
     return route
 end

@@ -511,6 +511,9 @@ atlas.lootFrequencies = {
     -- https://www.wowhead.com/item=116794/garn-nighthowl#comments
     [657] = "repeatable", -- Garn Nighthowl
 
+    -- https://www.wowhead.com/achievement=11066/underbelly-tycoon
+    [804] = "repeatable", -- Ratstallion: cumulative Sightless Eyes
+
     -- Tanaan rares: each rare has its own daily chance at a Rattling Iron Cage.
     -- https://www.wowhead.com/guide/rare-mounts-in-wow
     [611] = "daily", -- Tundra Icehoof
@@ -587,11 +590,13 @@ atlas.lootFrequencies = {
     [1426] = "daily", -- Ascended Skymane: Cache of the Ascended
 
     -- Korthia, Fallen Charger, and the two Zereth Mortis mount sources.
+    -- https://www.wowhead.com/guide/korthia-comprehensive-guide
     -- https://www.wowhead.com/item=186645/crimson-shardhide#comments
     -- https://www.wowhead.com/news/fallen-charger-hotfix-update-now-has-daily-lockout-but-3-times-drop-rate-323417
     -- https://trueendgame.com/deepstar-aurelid/
     -- https://trueendgame.com/colossal-plaguespew-mawrat/
     [1434] = "daily", -- Deepstar Aurelid, including the summoner's guaranteed drop
+    [1493] = "daily", -- Forsworn Aquilon: Intact Aquilon Core from Wild Worldcracker
     [1502] = "daily", -- Fallen Charger
     [1506] = "daily", -- Crimson Shardhide
     [1509] = "daily", -- Garnet Razorwing
@@ -1933,6 +1938,7 @@ atlas.factionMountGifts = {
 -- Historical event drops must not count as active acquisition routes.
 atlas.rewardDropRoutes = {
     [125] = { method = "NPC", item = 23720, sourceKind = "Добыча", routes = { { boss = "Обитатель пещер Зашедшей Луны", englishBoss = "Lunarfall Cavedweller", place = "Зашедшая Луна", englishPlace = "Lunarfall", map = 582, npc = 85715, sourceKind = "Добыча", placeKind = "Гарнизон", faction = "Alliance" }, { boss = "Обитатель ледяных пещер", englishBoss = "Frostdeep Cavedweller", place = "Ледяные скалы", englishPlace = "Frostwall", map = 590, npc = 81171, sourceKind = "Добыча", placeKind = "Гарнизон", faction = "Horde" } }, condition = "Рыбацкая хижина третьего уровня. Поймай рыбу-приманку и призови обитателя пещер.", references = { "https://www.wowhead.com/guide/garrisons/buildings/guide-to-the-garrison-fishing-shack", "https://github.com/aSnejbjerg/Rarity-Collectors-edition/blob/97bbcd1111332364fbb6c47bf57d052c1abc7aa0/DB/Mounts/WarlordsOfDraenor.lua" }, reviewed = "2026-11-07" },
+    [312] = { method = "NPC", item = 46109, sourceKind = "Добыча", routes = { { boss = "Обитатель пещер Зашедшей Луны", englishBoss = "Lunarfall Cavedweller", place = "Зашедшая Луна", englishPlace = "Lunarfall", map = 582, npc = 85715, sourceKind = "Добыча", placeKind = "Гарнизон", faction = "Alliance" }, { boss = "Обитатель ледяных пещер", englishBoss = "Frostdeep Cavedweller", place = "Ледяные скалы", englishPlace = "Frostwall", map = 590, npc = 81171, sourceKind = "Добыча", placeKind = "Гарнизон", faction = "Horde" } }, condition = "Рыбацкая хижина третьего уровня. Поймай рыбу-приманку и призови обитателя пещер.", references = { "https://www.wowhead.com/guide/garrisons/buildings/guide-to-the-garrison-fishing-shack", "https://github.com/aSnejbjerg/Rarity-Collectors-edition/issues/149" }, counterKey = "mount:312:garrison", reviewed = "2026-11-27" },
     [1808] = { method = "SPECIAL", item = 209947, boss = "Сундук семени Сна", englishBoss = "Dreamseed Cache", place = "Изумрудный Сон", englishPlace = "Emerald Dream", map = 2200, sourceKind = "Добыча", placeKind = "Открытый мир", condition = "Награда за участие в выращивании гигантского семени Сна.", references = { "https://worldofwarcraft.blizzard.com/en-us/news/24017020", "https://www.wowhead.com/object=406139/dreamseed-cache", "https://github.com/aSnejbjerg/Rarity-Collectors-edition/blob/97bbcd1111332364fbb6c47bf57d052c1abc7aa0/DB/Mounts/Dragonflight.lua" }, reviewed = "2026-11-07" },
     [1810] = { method = "SPECIAL", item = 209950, boss = "Сундук семени Сна", englishBoss = "Dreamseed Cache", place = "Изумрудный Сон", englishPlace = "Emerald Dream", map = 2200, sourceKind = "Добыча", placeKind = "Открытый мир", condition = "Награда за участие в выращивании гигантского семени Сна.", references = { "https://worldofwarcraft.blizzard.com/en-us/news/24017020", "https://www.wowhead.com/object=406139/dreamseed-cache", "https://github.com/aSnejbjerg/Rarity-Collectors-edition/blob/97bbcd1111332364fbb6c47bf57d052c1abc7aa0/DB/Mounts/Dragonflight.lua" }, reviewed = "2026-11-07" },
     [1816] = { method = "SPECIAL", item = 210058, boss = "Сундук семени Сна", englishBoss = "Dreamseed Cache", place = "Изумрудный Сон", englishPlace = "Emerald Dream", map = 2200, sourceKind = "Добыча", placeKind = "Открытый мир", condition = "Награда за участие в выращивании гигантского семени Сна.", references = { "https://worldofwarcraft.blizzard.com/en-us/news/24017020", "https://www.wowhead.com/object=406139/dreamseed-cache", "https://github.com/aSnejbjerg/Rarity-Collectors-edition/blob/97bbcd1111332364fbb6c47bf57d052c1abc7aa0/DB/Mounts/Dragonflight.lua" }, reviewed = "2026-11-07" },

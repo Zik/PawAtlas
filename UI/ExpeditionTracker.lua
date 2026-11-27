@@ -232,6 +232,8 @@ end
 function atlas.planTargetSummary(mount)
     if not mount.kind or (mount.journalOnly and not mount.indexed) then return end
     if mount.unavailable or mount.availability or mount.trackingCompatible == false then return end
+    local stages = atlas.attemptStages and atlas.attemptStages[mount.id]
+    if stages and stages.alternateReward then return end
     local vendor = mount.kind == "Торговец" and not atlas.verifiedRewardDropRoute(mount)
     if vendor then return end
     local perAttempt, cumulative, attempts = atlas.dropProbability(mount)

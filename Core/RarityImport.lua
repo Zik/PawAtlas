@@ -118,8 +118,11 @@ end
 
 local function incompatibleCounter(key)
     local id = type(key) == "number" and key
-        or type(key) == "string" and tonumber(key:match("^mount:(%d+)$") or key:match("^rift:(%d+)$"))
+        or type(key) == "string" and tonumber(key:match("^mount:(%d+)$")
+            or key:match("^mount:(%d+):") or key:match("^rift:(%d+)$"))
     local definitions = id and atlas.attemptStages and atlas.attemptStages[id]
+    local alternate = definitions and definitions.alternateReward
+    if alternate and alternate.key == key then return true, id, alternate end
     local reward = definitions and definitions.reward
     return isIslandMount(id) or isTimeRiftMount(id) or reward and (reward.rarityIncompatible or reward.unverifiedEligibility), id, reward
 end
@@ -499,6 +502,10 @@ local function collectCandidates(sources, known, bySpell, byItem, stagesByItem, 
                 elseif not incoming then reason = "unverified" end
             elseif collection then
                 if not incoming or not itemSet or itemSet ~= idList(source.collectedItemId) then reason = "unit_mismatch" end
+            elseif definitions and definitions.alternateReward then
+                -- Match the upstream method to the existing stage key. The
+                -- mount-wide import must not be shared by distinct routes.
+                reason = matchesRewardCounter(source, reward) and "untracked" or "unit_mismatch"
             elseif mount.journalOnly and not atlas.usesKillAPI(mount) then reason = "untracked"
             elseif source.type ~= "MOUNT" or not methods[source.method] then reason = "unsupported"
             elseif loot and loot.basis ~= "drop" and not matchesRewardCounter(source, reward) then reason = "unit_mismatch"
@@ -534,7 +541,8 @@ local function collectCandidates(sources, known, bySpell, byItem, stagesByItem, 
                             if incoming then stageCandidates[key] = math.max(stageCandidates[key] or 0, incoming) end
                             if success and not entry.multiple then
                                 foundAttempts[key] = { attempts = success, item = itemID,
-                                    counterKey = key, owners = stageOwners[key] }
+                                    counterKey = key, owners = stageOwners[key],
+                                    routeKey = entry.definition.requiresLootSource and key or nil }
                             end
                             accepted = accepted or incoming ~= nil or (success ~= nil and not entry.multiple)
                             if not accepted then reason = "multiple_items" end
@@ -730,7 +738,10 @@ local function commitImport(plan)
     end
     for key, found in pairs(plan.awards) do
         local previous = atlas.acquisitionAttempts and atlas.acquisitionAttempts(key)
-        if not previous and atlas.rememberAcquisition then atlas.rememberAcquisition(key, found.attempts, found.item) end
+        if not previous and atlas.rememberAcquisition then
+            local recorded = atlas.rememberAcquisition(key, found.attempts, found.item, nil, nil, nil, nil, nil, found.routeKey)
+            if found.routeKey and recorded and recorded.routeKey == found.routeKey then recorded.source = "rarity" end
+        end
         local saved = atlas.acquisitionAttempts and atlas.acquisitionAttempts(key)
         if saved and not previous then saved.source = "rarity" end
         local ids = sortedIDs(found.owners)

@@ -376,18 +376,28 @@ function atlas.cardDetails(card, pagerArrow)
     local itemAttempts = ui.text(itemBox, width - 318, 5, 302, 21, 14, "", ui.muted)
     itemAttempts:SetJustifyH("RIGHT")
     itemAttempts:SetMaxLines(1)
-    local itemChanceHelp = ui.place(CreateFrame("Frame", nil, itemBox), itemBox, width - 318, 5, 302, 21)
+    local itemChanceHelp = CreateFrame("Frame", nil, itemBox)
+    itemChanceHelp:SetPoint("TOPRIGHT", itemBox, "TOPRIGHT", -12, -5)
+    itemChanceHelp:SetHeight(21)
     itemChanceHelp:EnableMouse(true)
     local function showItemChance(self)
         local progress = panel.itemProgress
-        if not progress or progress.collection or progress.acquired or not progress.perAttempt or progress.perAttempt == 1 then return end
-        local chance = progress.cumulative
-        if chance == nil then return end
-        local step = math.max(1, math.min(#ui.chanceFlavors, math.ceil(chance * 10)))
+        if not progress then return end
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        ui.tooltipTitle(L(ui.chanceFlavors[step]), itemAttempts:GetTextColor())
+        if self.showChance then
+            local step = math.max(1, math.min(#ui.chanceFlavors, math.ceil(progress.cumulative * 10)))
+            ui.tooltipTitle(L(ui.chanceFlavors[step]), itemAttempts:GetTextColor())
+        else
+            ui.tooltipTitle(L("Попыток: %s", progress.attempts), itemAttempts:GetTextColor())
+        end
+        if self.hasAttempts then ui.tooltipLine(L("Shift + ЛКМ — поделиться в чате"), unpack(ui.muted)) end
         GameTooltip:Show()
     end
+    itemChanceHelp:SetScript("OnMouseUp", function(self, button)
+        if self.hasAttempts and button == "LeftButton" and IsShiftKeyDown() then
+            atlas.shareItemAttempts(panel.itemProgress)
+        end
+    end)
     itemChanceHelp:SetScript("OnEnter", showItemChance)
     itemChanceHelp:SetScript("OnLeave", hideTooltip)
     itemChanceHelp:SetScript("OnHide", hideTooltip)
@@ -953,8 +963,9 @@ function atlas.cardDetails(card, pagerArrow)
         itemCheck:ClearAllPoints()
         ui.place(itemCheck, itemBox, width - 40, (itemHeight - 20) / 2, 20, 20)
         itemAttempts:SetShown(showProgress and (not collectionOnly and progress.attempts ~= nil or probability ~= nil or collection))
-        itemChanceHelp:SetShown(showProgress and not collection and progress.cumulative ~= nil
-            and progress.perAttempt ~= nil and progress.perAttempt < 1)
+        itemChanceHelp.hasAttempts = showProgress and atlas.canShareItemAttempts(progress)
+        itemChanceHelp.showChance = showProgress and not collection and progress.cumulative ~= nil
+            and progress.perAttempt ~= nil and progress.perAttempt < 1
         itemTrack:SetShown(showBar)
         itemFill:SetShown(showBar and (collection and progress.collected > 0 or probability ~= nil and probability > 0))
         if showProgress then
@@ -965,6 +976,7 @@ function atlas.cardDetails(card, pagerArrow)
                 "|cffa1d1ba" .. progress.collected, progress.required .. "|r")
                 or probability ~= nil and ui.probabilityText(probability, guaranteed) or ""
             itemAttempts:SetText(count .. (value ~= "" and ((count ~= "" and " · " or "") .. value) or ""))
+            itemChanceHelp:SetWidth(math.min(302, math.ceil(itemAttempts:GetUnboundedStringWidth()) + 8))
             itemAttempts:SetTextColor(unpack(ui.muted))
             if showBar then
                 local fill = collection and math.min(1, progress.collected / progress.required) or probability
@@ -981,7 +993,10 @@ function atlas.cardDetails(card, pagerArrow)
                     math.max(.01, itemTextWidth * math.max(0, math.min((collection or guaranteed) and 1 or .9999, fill))), 3)
             end
         end
-        if itemChanceHelp:IsShown() and GameTooltip:IsShown() and GameTooltip:IsOwned(itemChanceHelp) then showItemChance(itemChanceHelp) end
+        itemChanceHelp:SetShown(itemChanceHelp.hasAttempts or itemChanceHelp.showChance)
+        if itemChanceHelp:IsShown() and GameTooltip:IsShown() and GameTooltip:IsOwned(itemChanceHelp) then
+            if itemChanceHelp:IsMouseOver() then showItemChance(itemChanceHelp) else hideTooltip(itemChanceHelp) end
+        end
         -- Publish visibility only after the source, geometry and item state are
         -- complete. Native lookup errors remain visible to the error handler.
         journal:SetShown(showJournal)

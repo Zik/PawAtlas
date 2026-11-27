@@ -104,12 +104,43 @@ loader:SetScript("OnEvent", function(_, event, id, success)
     insertLink(link)
 end)
 
+local function mountSpellLink(mount)
+    local id = positiveID(type(mount) == "table" and mount.id or mount)
+    if not id or not C_MountJournal or not C_Spell or not C_Spell.GetSpellLink then return end
+    local _, spellID = C_MountJournal.GetMountInfoByID(id)
+    if spellID then return C_Spell.GetSpellLink(spellID) end
+end
+
 function atlas.linkMount(mount)
     atlas.cancelPendingLink()
-    local id = positiveID(type(mount) == "table" and mount.id or mount)
-    if not id or not C_MountJournal or not C_Spell or not C_Spell.GetSpellLink then return false end
-    local _, spellID = C_MountJournal.GetMountInfoByID(id)
-    return spellID and insertLink(C_Spell.GetSpellLink(spellID)) or false
+    return insertLink(mountSpellLink(mount))
+end
+
+local function insertAttempts(reference, count)
+    if not reference or type(count) ~= "number" or count < 0 or count ~= math.floor(count) then return false end
+    atlas.cancelPendingLink()
+    return insertLink(reference .. " · " .. atlas.L("Попыток: %s", count))
+end
+
+function atlas.shareMountAttempts(mount, count)
+    if not mount then return false end
+    local name = mountSpellLink(mount)
+    if not name then
+        name = atlas.displayMountName(mount)
+        if not name or name == "" then return false end
+        name = "[" .. name .. "]"
+    end
+    return insertAttempts(name, count)
+end
+
+function atlas.canShareItemAttempts(progress)
+    return progress and progress.item and type(progress.attempts) == "number" and not progress.acquired
+        and not (type(progress.required) == "number" and progress.required > 1 and not progress.perAttempt)
+end
+
+function atlas.shareItemAttempts(progress)
+    if not atlas.canShareItemAttempts(progress) then return false end
+    return insertAttempts(atlas.sourceItemReference(progress.item, progress.name), progress.attempts)
 end
 
 function atlas.previewMount(mount)

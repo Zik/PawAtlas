@@ -692,6 +692,97 @@ do
 end
 
 do
+    local deathroc, aquilon, ratstallion = { id = 1410 }, { id = 1493 }, { id = 804 }
+    local ascended = { id = 1426 }
+    local now, reset, covenant, reads = 1000, 1500, 1, 0
+    local completed = { [64529] = true, [60933] = true }
+    local characters = { Current = {}, Kyrian = {}, Venthyr = {}, Legacy = {} }
+    local testAtlas = { mounts = { deathroc, aquilon, ratstallion, ascended }, addTranslations = function() end,
+        refreshBossLockouts = function() end }
+    local environment = setmetatable({
+        UnitGUID = function() return "Current" end,
+        GetServerTime = function() return now end,
+        IsLoggedIn = function() return true end,
+        C_Covenants = { GetActiveCovenantID = function() return covenant end },
+        C_DateAndTime = { GetSecondsUntilDailyReset = function() return reset - now end },
+        C_QuestLog = { IsQuestFlaggedCompleted = function(id)
+            assert(id == 61720 or id == 64338 or id == 60977, "planner must read the personal loot flag")
+            reads = reads + 1
+            return completed[id] == true
+        end },
+        MountAtlasDB = { planMigrated = true, lastAttempts = {} },
+        MountAtlasAccountDB = { characters = characters },
+    }, { __index = _G })
+    for _, path in ipairs({ "Data/JournalData.lua", "Data/LootSources.lua", "Core/Tracking.lua", "Core/WarbandPlan.lua" }) do
+        setfenv(assert(loadfile(path)), environment)("PawAtlas", testAtlas)
+    end
+    local function state(mount, guid) return testAtlas.planCharacterStatus(mount, guid or "Current") end
+    local cacheKey = "stage:mount:1426:daily"
+    local oldCache = { frequency = "daily", opportunities = { [cacheKey] = { state = "attempt", expires = reset } } }
+    characters.Current.planStatus = { ["1426"] = oldCache }
+    characters.Legacy.planStatus = { ["1426"] = oldCache }
+    local before = reads
+    assert(state(ascended, "Legacy") == "unknown" and reads == before,
+        "an offline snapshot without the personal loot flag ID needs an update")
+    assert(state(ascended) == "available", "the old council flag must not confirm current cache loot")
+    assert(state(deathroc) == "available" and state(aquilon) == "available")
+    testAtlas.capturePlanSnapshot(true)
+    assert(characters.Current.planStatus["1426"].state == "available", "capture replaces the old council snapshot")
+    completed[60977] = true
+    assert(state(ascended) == "attempt", "the personal loot flag confirms current cache loot")
+    testAtlas.capturePlanSnapshot(true)
+    characters.Kyrian.planStatus = characters.Current.planStatus
+    characters.Current.planStatus = {}
+    completed[60977] = nil
+    before = reads
+    assert(characters.Kyrian.planStatus["1426"].opportunities[cacheKey].lootQuestID == 60977)
+    assert(state(ascended, "Kyrian") == "attempt" and reads == before, "an offline snapshot retains precise loot evidence")
+    local key = "npc:180032:daily"
+    local old = { state = "available", frequency = "daily", expires = reset,
+        opportunities = { [key] = { state = "available", expires = reset } } }
+    characters.Legacy.planStatus["1493"] = old
+
+    covenant = 2
+    local frame = frames[#frames]
+    assert(frame.events.COVENANT_CHOSEN)
+    frame.onEvent(frame, "COVENANT_CHOSEN")
+    runTimer()
+    assert(state(deathroc) == "available" and state(aquilon) == "unknown", "only Aquilon requires Kyrian")
+    characters.Venthyr.planStatus = characters.Current.planStatus
+    characters.Current.planStatus = {}
+    before = reads
+    assert(state(aquilon, "Kyrian") == "available" and state(aquilon, "Venthyr") == "unknown")
+    assert(state(aquilon, "Legacy") == "unknown" and old.opportunities[key].state == "available")
+    old.opportunities[key].state = "attempt"
+    assert(state(aquilon, "Legacy") == "attempt" and reads == before,
+        "offline results use saved proof and retain legacy completed rolls")
+
+    covenant = nil
+    assert(state(aquilon) == "unknown", "an unreadable covenant cannot prove a free roll")
+    completed[61720], completed[64338] = true, true
+    local deathrocState, _, deathrocReset = state(deathroc)
+    local aquilonState, _, aquilonReset = state(aquilon)
+    assert(deathrocState == "attempt" and deathrocReset == reset and aquilonState == "attempt" and aquilonReset == reset)
+    testAtlas.capturePlanSnapshot(true)
+    completed[64338] = nil
+    assert(state(aquilon) == "attempt", "a confirmed roll survives a transient flag change")
+
+    now, reset, covenant = reset, 2000, 1
+    completed[61720] = nil
+    assert(state(deathroc) == "available" and state(aquilon) == "available", "daily reset opens both current character rolls")
+    assert(state(aquilon, "Kyrian") == "stale" and state(aquilon, "Legacy") == "stale")
+    assert(state(ascended, "Kyrian") == "stale" and oldCache.opportunities[cacheKey].state == "attempt")
+    before = reads
+    assert(testAtlas.achievementSources[804].candidates[1].id == 11066 and testAtlas.lootFrequency(ratstallion) == "repeatable")
+    local ratstallionState, _, ratstallionReset = state(ratstallion)
+    assert(ratstallionState == "available" and ratstallionReset == nil and testAtlas.planOpportunityProgress(ratstallion) == nil)
+    local summary = testAtlas.planSummary(ratstallion)
+    assert(summary.total == 4 and summary.available == 4 and summary.totalAttempts == 0 and reads == before,
+        "Ratstallion farming stays available with no daily or weekly attempts")
+    print("PawAtlas daily availability passed: Deathroc, Aquilon, covenant changes, offline expiry and repeatable Ratstallion")
+end
+
+do
     local now, shared, calls = 1000, false, 0
     local mount = { id=77, kind="Рейд", encounter=999, map=100, difficulties={ [14]=true,[15]=true } }
     local characters = { Current={kills={legacy=5}}, Old={planStatus={ ["77"]={state="boss",expires=1500,updated=900} }} }

@@ -227,9 +227,12 @@ function atlas.itemCollectionCount(mount)
 end
 
 local function acquisitionReward(key)
-    local id = type(key) == "string" and tonumber(key:match("^mount:(%d+)$"))
+    if type(key) ~= "string" then return end
+    local id = tonumber(key:match("^mount:(%d+)$") or key:match("^mount:(%d+):"))
     local definitions = id and atlas.attemptStages and atlas.attemptStages[id]
-    return definitions and definitions.reward, id
+    if id and key == "mount:" .. id then return definitions and definitions.reward, id end
+    local reward = definitions and definitions.alternateReward
+    if reward and reward.key == key then return reward, id end
 end
 
 local function timeRiftSource(id)
@@ -246,7 +249,7 @@ local function islandMount(id)
 end
 
 -- Freeze success counts; later farming and imports must not rewrite an award.
-function atlas.rememberAcquisition(key, attempts, item, acquiredAt, confirmedLoot, islandProgress, riftSource, riftTotal)
+function atlas.rememberAcquisition(key, attempts, item, acquiredAt, confirmedLoot, islandProgress, riftSource, riftTotal, routeKey)
     if not number(attempts) or attempts < 1 then return end
     local reward, id = acquisitionReward(key)
     if reward and reward.unverifiedEligibility then return end
@@ -261,12 +264,15 @@ function atlas.rememberAcquisition(key, attempts, item, acquiredAt, confirmedLoo
     if type(MountAtlasAccountDB) ~= "table" then MountAtlasAccountDB = {} end
     local records = MountAtlasAccountDB.acquisitionAttempts
     if type(records) ~= "table" then records = {}; MountAtlasAccountDB.acquisitionAttempts = records end
-    if not records[key] or (confirmedLoot and factionImportAcquisition(id, records[key])) then
+    local previous = records[key]
+    if not previous or (confirmedLoot and factionImportAcquisition(id, previous))
+        or (routeKey and (type(previous) ~= "table" or not previous.routeKey or confirmedLoot and previous.source == "rarity")) then
         records[key] = { attempts = math.floor(attempts), item = item,
         time = number(acquiredAt) and acquiredAt or serverTime(),
         confirmedLoot = confirmedLoot == true or nil,
         islandProgress = islandProgress,
         totalAttempts = totalAttempts,
+        routeKey = routeKey,
         source = source or (reward and reward.rarityIncompatible and "local" or nil) }
     end
     return records[key]
@@ -281,6 +287,11 @@ function atlas.acquisitionAttempts(key)
     if type(record) ~= "table" or not number(record.attempts) or record.attempts <= 0 then return end
     if rift and (record.confirmedLoot ~= true or (record.source ~= "riftFinal" and record.source ~= "riftBox")) then return end
     if reward and reward.unverifiedEligibility then return end
+    if reward and reward.requiresLootSource then
+        local route, routeID = acquisitionReward(record.routeKey)
+        if not (route and routeID == id and route.item == record.item and record.confirmedLoot == true)
+            and record.source ~= "rarity" then return end
+    end
     if factionImportAcquisition(id, record) then return end
     -- Older island receipts contain only the container count.
     if islandMount(id) and type(record.islandProgress) ~= "table" then return end
@@ -481,8 +492,15 @@ function atlas.rewardChanceEligible(mount, vendorRoute)
     return not direct
 end
 
-function atlas.rewardAttemptProgress(mount)
+function atlas.rewardAttemptProgress(mount, stageKey)
     local stagesForMount = atlas.attemptStages and atlas.attemptStages[mount.id]
+    if stageKey then
+        local alternate = stagesForMount and stagesForMount.alternateReward
+        if alternate and alternate.key == stageKey and supported(alternate) then
+            return progress(alternate, mount.name)
+        end
+        return
+    end
     local definition = stagesForMount and stagesForMount.reward
     if not definition or not atlas.rewardChanceEligible(mount) then return end
     local rift = atlas.timeRiftAttemptProgress(mount)
@@ -513,7 +531,7 @@ function atlas.captureMountAcquisition(mount)
     if saved or islandMount(mount.id) or timeRiftSource(mount.id) then return saved end
     local definitions = atlas.attemptStages[mount.id]
     local reward = definitions and definitions.reward
-    if reward and reward.unverifiedEligibility then return end
+    if reward and (reward.unverifiedEligibility or reward.requiresLootSource) then return end
     local guaranteed = atlas.guaranteedRewards and atlas.guaranteedRewards[mount.id]
     local reagent = guaranteed and guaranteed.reagent
     -- A quest starter or egg has a different roll from learning the mount.
@@ -553,7 +571,20 @@ local function rememberReceivedAcquisition(key, attempts, pending)
 end
 
 local function settleNPCItemReceipt(key, loot)
+    if loot.confirmedSource then
+        for otherKey, other in pairs(npcItemLoot.items) do
+            if otherKey ~= key and other.confirmedSource == loot.confirmedSource then return end
+        end
+        local receipts = npcItemLoot.routeReceipts
+        loot.receipt = receipts and receipts[loot.confirmedSource]
+    end
     if loot.receipt and loot.attempts and not loot.ambiguous then
+        local reward, id = acquisitionReward(key)
+        if reward and reward.requiresLootSource then
+            local receipt = loot.receipt
+            atlas.rememberAcquisition("mount:" .. id, loot.attempts, receipt.item, receipt.time, true, nil, nil, nil, key)
+            return
+        end
         rememberReceivedAcquisition(key, loot.attempts, loot.receipt)
     end
 end
@@ -593,6 +624,19 @@ local function itemCount(id)
     return number(count) and math.floor(count) or nil
 end
 
+local function pendingUseReady(use, time)
+    return use.expires > time and not use.consumed and not use.failed and (use.slot or use.named or use.succeeded)
+end
+
+local function hasPendingUse(item, time)
+    local uses = pendingUses[item]
+    if not uses then return false end
+    for _, use in ipairs(uses) do
+        if pendingUseReady(use, time) then return true end
+    end
+    return false
+end
+
 local function waitingForContainer(key, awaitBagUpdate)
     -- Loot chat may precede the bag update that counts the opened container.
     -- Freeze the successful total only after that pending use is recorded.
@@ -603,8 +647,7 @@ local function waitingForContainer(key, awaitBagUpdate)
     for _, variant in ipairs(entry.variants) do
         if (variant.method or entry.definition.method) == "USE" then
             for _, item in ipairs(variant.items or {}) do
-                local pending = pendingUses[item]
-                if pending and pending > time then return true end
+                if hasPendingUse(item, time) then return true end
                 if checkInventory and number(bags[item]) and bags[item] > 0 then
                     if awaitBagUpdate then return true end
                     local held = itemCount(item)
@@ -618,6 +661,10 @@ end
 
 function atlas.mountLootAttemptsPending(id)
     if timeRiftSource(id) and timeRifts.receiptPending(id) then return true end
+    local reward = atlas.attemptStages[id] and atlas.attemptStages[id].reward
+    local receipts = npcItemLoot.routeReceipts
+    local receipt = reward and reward.requiresLootSource and receipts and receipts[reward.item]
+    if lootChatOpen and receipt and receipt.expires > now() then return true end
     local pending = pendingAcquisitions["mount:" .. id]
     return pending ~= nil and pending.expires > now()
 end
@@ -634,19 +681,19 @@ local function ownLootPattern(template)
     return table.concat(parts)
 end
 
-local ownLootSingle, ownLootMultiple = ownLootPattern(LOOT_ITEM_SELF), ownLootPattern(LOOT_ITEM_SELF_MULTIPLE)
-local otherReceipts, lootPrefixes = {}, {}
+local personalReceipts, lootPrefixes = {}, {}
 local matchWithoutPrefix = false
-for _, key in ipairs({ "LOOT_ITEM_SELF", "LOOT_ITEM_SELF_MULTIPLE", "LOOT_ITEM_CREATED_SELF",
+for _, key in ipairs({ "LOOT_ITEM_SELF", "LOOT_ITEM_SELF_MULTIPLE",
+    "LOOT_ITEM_BONUS_ROLL_SELF", "LOOT_ITEM_BONUS_ROLL_SELF_MULTIPLE", "LOOT_ITEM_CREATED_SELF",
     "LOOT_ITEM_CREATED_SELF_MULTIPLE", "LOOT_ITEM_PUSHED_SELF", "LOOT_ITEM_PUSHED_SELF_MULTIPLE" }) do
     local template = _G[key]
     if type(template) == "string" then
         local prefix = template:match("^(.-)%%")
         if not prefix or prefix == "" then matchWithoutPrefix = true
         else lootPrefixes[prefix] = #prefix end
-        if key ~= "LOOT_ITEM_SELF" and key ~= "LOOT_ITEM_SELF_MULTIPLE" then
-            otherReceipts[#otherReceipts + 1] = { pattern = ownLootPattern(template), pushed = key:find("PUSHED", 1, true) ~= nil }
-        end
+        local pushed = key:find("PUSHED", 1, true) ~= nil
+        personalReceipts[#personalReceipts + 1] = { pattern = ownLootPattern(template), pushed = pushed,
+            drop = not pushed and not key:find("CREATED", 1, true), multiple = key:find("MULTIPLE", 1, true) ~= nil }
     end
 end
 
@@ -656,11 +703,14 @@ local function ownLootReceipt(message)
     local normalized, links = message:gsub("|c%x%x%x%x%x%x%x%x|Hitem:.-|h.-|h|r", "\001", 1)
     if links == 0 then normalized, links = message:gsub("|cn[%w_]+:|Hitem:.-|h.-|h|r", "\001", 1) end
     if links == 0 then normalized = message:gsub("|Hitem:.-|h.-|h", "\001", 1) end
-    local quantity = ownLootMultiple and tonumber(normalized:match(ownLootMultiple))
-    if not quantity and ownLootSingle and normalized:match(ownLootSingle) then quantity = 1 end
-    if number(quantity) and quantity >= 1 then return quantity, true end
-    for _, receipt in ipairs(otherReceipts) do
-        if normalized:match(receipt.pattern) then return nil, true, receipt.pushed end
+    for _, receipt in ipairs(personalReceipts) do
+        local match = normalized:match(receipt.pattern)
+        if match then
+            if not receipt.drop then return nil, true, receipt.pushed end
+            if not receipt.multiple then return 1, true end
+            local quantity = tonumber(match)
+            if quantity and quantity >= 1 then return quantity, true end
+        end
     end
 end
 
@@ -703,11 +753,12 @@ local function onItemReceived(message, lineID)
     local owners = acquisitionItems[item]
     local prerequisites = prerequisiteOwners[item]
     local collection = collectionReceipts[item]
-    local quantity, selfLoot, pushed
-    if not selfPrefix or owners or prerequisites or collection then quantity, selfLoot, pushed = ownLootReceipt(message) end
-    if not selfLoot and not selfPrefix then return end
+    -- Only a complete personal receipt can award an item. Links in group-roll
+    -- messages or the loot window do not identify the eventual recipient.
+    local quantity, selfLoot, pushed = ownLootReceipt(message)
+    if not selfLoot then return end
     local recipients
-    local firstReceipt = selfLoot and (collection or prerequisites) and firstLootReceipt(lineID)
+    local firstReceipt = (collection or prerequisites or owners) and firstLootReceipt(lineID)
     if firstReceipt then
         if quantity and collection then recordCollectionReceipt(item, quantity) end
         for id, announceLoot in pairs(prerequisites or {}) do
@@ -729,6 +780,14 @@ local function onItemReceived(message, lineID)
         local waiting = waitingForContainer(key, island)
         if timeRiftSource(id) then
             if quantity or pushed then timeRifts.receive(item, quantity ~= nil) end
+        elseif owner.requiresLootSource then
+            if firstReceipt and quantity and not itemLootOpen and (lootChatOpen or npcItemLoot.expires and npcItemLoot.expires > now()) then
+                local receipts = npcItemLoot.routeReceipts or {}
+                npcItemLoot.routeReceipts = receipts
+                receipts[item] = { item = item, time = serverTime(), expires = now() + npcLootReceiptWindow }
+                local loot = npcItemLoot.items[key]
+                if loot and not lootChatOpen then settleNPCItemReceipt(key, loot) end
+            end
         elseif owner.npcUnique then
             npcReceipts = npcReceipts or {}
             local loot = npcItemLoot.items[key]
@@ -866,7 +925,7 @@ function atlas.notifyMountCollected(id, name)
         end
     end
     if not confirmed then return end
-    local definition = acquisitionReward(key)
+    local definition = acquisitionReward(recorded.routeKey or key)
     local attempts, perAttempt, cumulative = recorded.attempts
     if type(recorded.islandProgress) == "table" then
         perAttempt, cumulative = recorded.islandProgress.perAttempt, recorded.islandProgress.cumulative
@@ -985,7 +1044,7 @@ local function notifyStage(entry, count, cumulative, perAttempt)
     return not unknownOwnership
 end
 
-local function queueStageAttemptMessage(entry, count, rate, fromContainer, fromLoot, riftContext)
+local function queueStageAttemptMessage(entry, count, rate, fromContainer, fromLoot, riftContext, riftAttempt)
     if not attemptChatEnabled() then return end
     local definition = entry.definition
     local perAttempt, cumulative = probability(rate, count)
@@ -994,7 +1053,6 @@ local function queueStageAttemptMessage(entry, count, rate, fromContainer, fromL
     if number(definition.required) and definition.required > 1 and not perAttempt then return end
     local reward, id = acquisitionReward(definition.key)
     local containerReward = fromContainer and reward and reward.item
-    local riftAttempt = riftContext and riftContext.counts[id]
     if islandMount(id) then
         count, cumulative, perAttempt = atlas.islandExpeditionProgress({ id = id })
     end
@@ -1134,12 +1192,22 @@ local function increment(entry, variant, amount, credited, character, fromLoot, 
         if not claimFirstDaily(definition.key) then return false end
         amount = 1
     end
-    local previous = character.stageAttempts[definition.key]
-    character.stageAttempts[definition.key] = (number(previous) and math.floor(previous) or 0) + (amount or 1)
+    amount = amount or 1
     local _, id = acquisitionReward(definition.key)
     local rift = timeRiftSource(id)
-    if atlas.recordImportedStatistic and not rift then
-        atlas.recordImportedStatistic(definition.key, safe(UnitGUID, "player"), amount or 1)
+    local method = variant.method or definition.method
+    local split = method == "USE" and not rift and amount > 1 and attemptChatEnabled()
+    local step = split and 1 or amount
+    local guid = atlas.recordImportedStatistic and not rift and safe(UnitGUID, "player")
+    local previous = character.stageAttempts[definition.key]
+    previous = number(previous) and math.floor(previous) or 0
+    for offset = step, amount, step do
+        character.stageAttempts[definition.key] = previous + offset
+        if atlas.recordImportedStatistic and not rift then atlas.recordImportedStatistic(definition.key, guid, step) end
+        -- Freeze each total before the next opening changes account or import progress.
+        if split then
+            queueStageAttemptMessage(entry, total(definition.key), variant.rate or definition.rate, true, fromLoot)
+        end
     end
     if definition.cooldownSeconds then character.stageCooldowns[definition.key] = serverTime() + definition.cooldownSeconds end
     if credited then
@@ -1152,10 +1220,9 @@ local function increment(entry, variant, amount, credited, character, fromLoot, 
         loot.attempts = count
         if not lootChatOpen then settleNPCItemReceipt(definition.key, loot) end
     end
-    local method = variant.method or definition.method
     if rift and method == "USE" then
-        timeRifts.countBox(id, count)
-    else
+        timeRifts.countBox(id, count, amount)
+    elseif not split then
         queueStageAttemptMessage(entry, count, variant.rate or definition.rate, method == "USE", fromLoot)
     end
     return true
@@ -1190,7 +1257,7 @@ local function saveOpportunityLocks(locks)
     for key, expires in pairs(locks) do MountAtlasDB.lastAttempts[key] = expires end
 end
 
-local function apply(method, match, amount, id, character, fromLoot, lootGUID)
+local function apply(method, match, amount, id, character, fromLoot, lootGUID, applied)
     local candidates = stagesByMethod[method]
     if method == "NPC" then candidates = npcStages[id]
     elseif method == "ENCOUNTER" then candidates = encounterStages[id]
@@ -1214,6 +1281,7 @@ local function apply(method, match, amount, id, character, fromLoot, lootGUID)
                 end
                 if available and increment(entry, variant, amount, credited, character, fromLoot, loot) then
                     changed = true
+                    if applied then applied[entry.definition.key] = true end
                     if watch and atlas.planStageOpportunityKey and not next(locks) then watch.pendingLock = true end
                     for key, expires in pairs(locks) do pendingLocks[key] = expires end
                     break
@@ -1317,7 +1385,7 @@ local function buildStages()
             end
         end
         for _, item in ipairs(collectionItems(definitions.item) or {}) do collectionReceipts[item] = true end
-        for _, role in ipairs({ "item", "reward" }) do
+        for _, role in ipairs({ "item", "reward", "alternateReward" }) do
             local definition = definitions[role]
             if definition and definition.unverifiedEligibility then definition = nil end
             if definition and not definition.historical then
@@ -1337,13 +1405,14 @@ local function buildStages()
                     acquisitionItems[definition.item] = owners
                     owners[definition.key] = { mount = counterMount,
                         npcUnique = role == "item" and definition.method == "NPC" and definition.unique,
+                        requiresLootSource = definition.requiresLootSource,
                         required = role == "item" and definition.required and definition.required > 1 and definition.required or nil }
                 end
             end
             if definition and definition.key and not existing then
                 local entry = stages[definition.key] or { definition = definition,
                     variants = definition.variants or { definition },
-                    name = role == "reward" and mount and mount.name or nil, mountIDs = {} }
+                    name = role ~= "item" and mount and mount.name or nil, mountIDs = {} }
                 -- Stage-only mounts can already be tracked before the catalog is opened.
                 entry.mountIDs[id] = mount or { id = id, journalOnly = true }
                 stages[definition.key] = entry
@@ -1432,14 +1501,17 @@ local function settleRiftReceipt(context, id)
     end
 end
 
-local function countRiftAttempt(context, id, source, count)
+local function countRiftAttempt(context, id, source, count, earlier)
     local key = "mount:" .. id
     local otherKey = source == "riftFinal" and key or "rift:" .. id
     local total = count + atlas.rawStageAttempts(otherKey)
-    context.counts[id] = { source = source, count = count, total = total }
-    settleRiftReceipt(context, id)
+    local attempt = { source = source, count = count, total = total }
+    if not earlier then
+        context.counts[id] = attempt
+        settleRiftReceipt(context, id)
+    end
     local stage = stages[key]
-    if stage then queueStageAttemptMessage(stage, total, nil, false, true, context) end
+    if stage then queueStageAttemptMessage(stage, total, nil, false, true, context, attempt) end
 end
 
 function timeRifts.complete(criterion, scenarioEvent)
@@ -1487,8 +1559,14 @@ local function startRiftBox()
     return box
 end
 
-function timeRifts.countBox(id, count)
+function timeRifts.countBox(id, count, amount)
     local box = currentRiftBox() or startRiftBox()
+    if attemptChatEnabled() then
+        -- Only the current window owns receipts. Earlier openings retain their own chat totals.
+        for earlier = math.max(1, count - amount + 1), count - 1 do
+            countRiftAttempt(box, id, "riftBox", earlier, true)
+        end
+    end
     countRiftAttempt(box, id, "riftBox", count)
 end
 
@@ -1515,10 +1593,9 @@ function timeRifts.receive(item, confirmed)
     if not id or blocked() or atlas.acquisitionAttempts("mount:" .. id) then return end
     local source = timeRiftSource(id)
     if not riftEligible(source) then return end
-    local pending = pendingUses[timeRifts.container]
     local box = currentRiftBox()
     -- A receipt inside an item window can only settle against a counted box use.
-    if pending and pending > now() then
+    if hasPendingUse(timeRifts.container, now()) then
         box = box or startRiftBox()
     elseif itemLootOpen then
         if not box and not (number(bags[timeRifts.container]) and bags[timeRifts.container] > 0) then return end
@@ -1555,29 +1632,83 @@ end
 
 local function scanBags(items, onlyDecreases)
     local time, allowed = now(), not blocked()
-    local itemLoot = itemLootUntil > time and not itemLootSettled
     for item in pairs(items) do
-        local previous, pending = bags[item], pendingUses[item]
+        local previous, uses = bags[item], pendingUses[item]
+        local explicit = hasPendingUse(item, time)
+        local itemLoot = itemLootUntil > time and not itemLootSettled
         local current
-        if not onlyDecreases or (number(previous) and previous > 0) then current = itemCount(item) end
+        if not onlyDecreases or ((explicit or itemLoot) and number(previous) and previous > 0) then current = itemCount(item) end
         if current ~= nil then
-            if allowed and number(previous) and current < previous and ((pending and pending > time) or itemLoot) then
-                apply("USE", function(v) return contains(v.items, item) end, previous - current, item)
-                pendingUses[item] = nil
-                if itemLoot then itemLootSettled = true end
-            end
             bags[item] = current
+            if allowed and number(previous) and current < previous and (explicit or itemLoot) then
+                local cursor, heldItem = safe(GetCursorInfo)
+                if cursor == "item" and number(heldItem) and heldItem == item then
+                    pendingUses[item] = nil
+                    if itemLoot then itemLootSettled = true end
+                else
+                    local decrease = previous - current
+                    local count = 0
+                    if explicit then
+                        for _, use in ipairs(uses) do
+                            if pendingUseReady(use, time) then
+                                use.consumed = true
+                                count = count + 1
+                                if count == decrease then break end
+                            end
+                        end
+                    else
+                        count = 1
+                    end
+                    if itemLoot then itemLootSettled = true end
+                    apply("USE", function(v) return contains(v.items, item) end, count, item)
+                end
+            end
             if current > 0 and (not number(previous) or previous == 0) then resolveItemSpell(item) end
         end
-        if pending and pending <= time then pendingUses[item] = nil end
+        if uses and uses[#uses].expires <= time then pendingUses[item] = nil end
     end
 end
 
-local function markUse(item)
-    if not ready or blocked() or not number(item) then return end
-    if useStages[item] then pendingUses[item] = now() + 8 end
-    local box = currentRiftBox()
-    if item == timeRifts.container and (not box or box.closed) then startRiftBox() end
+local function markUse(item, source, guid, phase)
+    if not ready or blocked() or not number(item) or not useStages[item] then return end
+    local time, uses = now(), pendingUses[item]
+    local matched, available, retained = nil, 0, 0
+    if uses then
+        for _, use in ipairs(uses) do
+            if use.expires > time then
+                retained = retained + 1
+                uses[retained] = use
+                if not use.consumed and not use.failed then available = available + 1 end
+                if guid and use.guid == guid then
+                    matched = use
+                -- A click and its spell can describe the same opening. Keep spent
+                -- observations briefly so the confirming cast does not reopen them.
+                elseif not matched and not use[source] and not use.failed
+                    and (use.time == time or (source == "cast" and not use.consumed)) then
+                    matched = use
+                end
+            end
+        end
+        for index = retained + 1, #uses do uses[index] = nil end
+        if retained == 0 then uses, pendingUses[item] = nil, nil end
+    end
+    if not matched then
+        if phase == "failed" or not number(bags[item]) or available >= bags[item] then return end
+        uses = uses or {}
+        matched = { time = time, expires = time + 8 }
+        uses[#uses + 1], pendingUses[item] = matched, uses
+    end
+    if source == "cast" then
+        matched.cast, matched.guid = true, guid
+        if phase == "finished" then matched.succeeded = true
+        elseif phase == "failed" and not matched.succeeded then matched.failed = true end
+    else
+        matched[source] = true
+    end
+    if item == timeRifts.container and pendingUseReady(matched, time) then
+        local box = currentRiftBox()
+        if not box or box.closed then startRiftBox() end
+    end
 end
 
 local function isPool(name)
@@ -1662,11 +1793,12 @@ end
 
 local function lootSources(slots)
     local creatures, objects, knownObject, hasSource = {}, {}, false, false
+    local routedItems
     local riftLoot = timeRifts.visit and slots > 0 and { items = {}, expires = now() + timeRifts.receiptWindow }
     for slot = 1, slots do
         local sources = GetLootSourceInfo and { GetLootSourceInfo(slot) } or {}
         local link = riftLoot and safe(GetLootSlotLink, slot)
-        local item = type(link) == "string" and tonumber(link:match("item:(%d+)"))
+        local item = readable(link) and type(link) == "string" and tonumber(link:match("item:(%d+)"))
         local route = item and timeRiftSource(timeRifts.byItem[item])
         for i = 1, #sources, 2 do
             local guid = sources[i]
@@ -1679,6 +1811,17 @@ local function lootSources(slots)
                 if kind == "Creature" or kind == "Vehicle" then
                     creatures[guid] = id
                     if route and id and route.npc == id then riftLoot.items[item] = true end
+                    for _, entry in pairs(#sources == 2 and npcStages[id] or {}) do
+                        if entry.definition.requiresLootSource then
+                            if not link then link = safe(GetLootSlotLink, slot) end
+                            item = type(link) == "string" and tonumber(link:match("item:(%d+)"))
+                            if item == entry.definition.item then
+                                routedItems = routedItems or {}
+                                routedItems[guid] = routedItems[guid] or {}
+                                routedItems[guid][item] = true
+                            end
+                        end
+                    end
                 elseif kind == "GameObject" then
                     objects["node:" .. guid] = id
                     if objectNodes[id] then knownObject = true end
@@ -1687,16 +1830,16 @@ local function lootSources(slots)
         end
     end
     if riftLoot then timeRifts.worldLoot = riftLoot end
-    return creatures, objects, knownObject, hasSource
+    return creatures, objects, knownObject, hasSource, routedItems
 end
 
-local function trackNPCItemLoot(guid, npc, snapshot)
+local function trackNPCItemLoot(guid, npc, snapshot, confirmedItems)
     local entries = npcStages[npc]
     if not entries then return end
     for key, entry in pairs(entries) do
         local item = entry.definition.item
         local owner = acquisitionItems[item] and acquisitionItems[item][key]
-        if owner and owner.npcUnique then
+        if owner and (owner.npcUnique or owner.requiresLootSource) then
             local previous = npcItemLoot.items[key]
             if not previous then
                 npcItemLoot.items[key] = { guid = guid, heldBeforeLoot = snapshot and (itemCount(item) or false) }
@@ -1704,6 +1847,10 @@ local function trackNPCItemLoot(guid, npc, snapshot)
                 npcItemLoot.expires = now() + npcLootReceiptWindow
             elseif previous.guid ~= guid then
                 previous.ambiguous = true
+            end
+            if owner.requiresLootSource and confirmedItems and confirmedItems[item] then
+                npcItemLoot.items[key].confirmedSource = item
+                if not lootChatOpen then settleNPCItemReceipt(key, npcItemLoot.items[key]) end
             end
         end
     end
@@ -1715,52 +1862,118 @@ local function prepareNPCItemLoot()
     end
 end
 
-local function observeCreatureLoot(slots, hasSource, worldLootOpened, nativeFishing)
+local function observeCreatureLoot(slots, hasSource, worldLootOpened, nativeFishing, autoloot)
     -- A late source can identify the loot even if the first event could not.
     if creatureLoot == false then return end
-    if hasSource or nativeFishing ~= false or (cast and cast.expires > now()) then
-        creatureLoot = false
-        return
-    end
-    if not creatureLoot then creatureLoot = {} end
+    local time = now()
+    if creatureLoot and not creatureLoot.worldLootOpened and creatureLoot.expires <= time then creatureLoot = nil end
+    if not creatureLoot then creatureLoot = { expires = time + npcLootReceiptWindow } end
     creatureLoot.worldLootOpened = creatureLoot.worldLootOpened or worldLootOpened
-    if slots == 0 and not creatureLoot.guid then return end
-    local guid = safe(UnitGUID, "target")
-    local mouseover = safe(UnitGUID, "mouseover")
-    local _, _, cursorObject = worldCursorObjectName()
-    if cursorObject or (mouseover and mouseover ~= guid) or (creatureLoot.guid and creatureLoot.guid ~= guid) then
-        creatureLoot = false
+    if creatureLoot.rejected then return end
+    if hasSource or nativeFishing ~= false or (cast and cast.expires > now()) then
+        creatureLoot.rejected = true
         return
     end
-    if creatureLoot.guid then return end
+    creatureLoot.autoloot = creatureLoot.autoloot or autoloot
+    local _, _, cursorObject = worldCursorObjectName()
+    if cursorObject then
+        creatureLoot.rejected = true
+        return
+    end
+    if creatureLoot.guid or slots == 0 then return end
+    local target, mouseover = safe(UnitGUID, "target"), safe(UnitGUID, "mouseover")
+    local unit = mouseover and mouseover ~= target and "mouseover" or "target"
+    local guid = unit == "mouseover" and mouseover or target
     local npc = type(guid) == "string" and (guid:match("^Creature%-%d+%-%d+%-%d+%-%d+%-(%d+)%-")
         or guid:match("^Vehicle%-%d+%-%d+%-%d+%-%d+%-(%d+)%-"))
-    local classification = npc and safe(UnitClassification, "target")
+    local classification = npc and safe(UnitClassification, unit)
     if not npc or type(classification) ~= "string" or classification == "minus"
-        or safe(UnitIsDead, "target") ~= true or safe(UnitCanAttack, "player", "target") ~= true
-        or safe(UnitIsPlayer, "target") ~= false then
-        creatureLoot = false
+        or safe(UnitIsDead, unit) ~= true or safe(UnitCanAttack, "player", unit) ~= true
+        or safe(UnitIsPlayer, unit) ~= false then
+        creatureLoot.rejected = true
         return
     end
     local hasLoot, canLoot = safe(CanLootUnit, guid)
     if hasLoot ~= true or not readable(canLoot) or canLoot ~= true then
-        creatureLoot = false
+        creatureLoot.rejected = true
         return
     end
-    creatureLoot.guid, creatureLoot.npc = guid, tonumber(npc)
+    creatureLoot.guid, creatureLoot.npc, creatureLoot.unit = guid, tonumber(npc), unit
+    creatureLoot.expires = time + npcLootReceiptWindow
     -- Autoloot can give a unique quest starter before the corpse is confirmed.
     trackNPCItemLoot(guid, creatureLoot.npc, true)
 end
 
+function atlas.hasCreatureKillStage(npc)
+    return npcStages[npc] ~= nil
+end
+
+local function pruneStageLoot(character, time)
+    if time - lastLootPrune < 60 then return end
+    lastLootPrune = time
+    for guid, expires in pairs(character.stageLootGUIDs) do
+        if not number(expires) or expires <= time then character.stageLootGUIDs[guid] = nil end
+    end
+    local kills = character.stageCreatureKills
+    if type(kills) ~= "table" then return end
+    for guid, kill in pairs(kills) do
+        if type(kill) ~= "table" or not number(kill.expires) or kill.expires <= time then kills[guid] = nil end
+    end
+end
+
+function atlas.recordStageCreatureKill(guid, npc, allowMount)
+    if not npcStages[npc] then return end
+    local character = record()
+    if not character then return end
+    local time, expires = serverTime(), character.stageLootGUIDs[guid]
+    if number(expires) and expires > time then return end
+    pruneStageLoot(character, time)
+    local kills = character.stageCreatureKills
+    local kill = type(kills) == "table" and kills[guid]
+    if type(kill) == "table" and number(kill.expires) and kill.expires > time then return end
+    local applied = {}
+    local changed = apply("NPC", function(variant, definition)
+        if variant.requiresCreatureLoot or definition.requiresCreatureLoot or not contains(variant.npcs, npc) then return false end
+        if not allowMount then return true end
+        for _, mount in pairs(npcStages[npc][definition.key].mountIDs) do
+            if allowMount(mount) then return true end
+        end
+        return false
+    end, nil, npc, character, false, nil, applied)
+    if not changed then return end
+    if type(kills) ~= "table" then kills = {}; character.stageCreatureKills = kills end
+    for key in pairs(applied) do
+        local item = npcStages[npc][key].definition.item
+        if acquisitionItems[item] and acquisitionItems[item][key] then applied[key] = total(key) end
+    end
+    kills[guid] = { expires = time + 86400, entries = applied, generation = MountAtlasAccountDB.statisticsGeneration }
+end
+
 local function recordStageCreatureLoot(creatures, character, time)
     local target = next(creatures) and safe(UnitGUID, "target")
+    local mouseover = next(creatures) and safe(UnitGUID, "mouseover")
     for guid, npc in pairs(creatures) do trackNPCItemLoot(guid, npc) end
     for guid, npc in pairs(creatures) do
         local expires = character.stageLootGUIDs[guid]
         if not number(expires) or expires <= time then
-            local minor = target == guid and safe(UnitClassification, "target") == "minus"
-            if not minor then
-                local changed = apply("NPC", function(v) return contains(v.npcs, npc) end, nil, npc, character, true, guid)
+            local unit = target == guid and "target" or mouseover == guid and "mouseover"
+            if not unit or (safe(UnitClassification, unit) ~= "minus" and safe(UnitIsDead, unit) ~= false) then
+                local kills = character.stageCreatureKills
+                local kill = type(kills) == "table" and kills[guid]
+                local entries = type(kill) == "table" and number(kill.expires) and kill.expires > time
+                    and type(kill.entries) == "table" and kill.entries
+                if entries and kill.generation == MountAtlasAccountDB.statisticsGeneration then
+                    for key, attempts in pairs(entries) do
+                        local loot = npcItemLoot.items[key]
+                        if number(attempts) and loot and loot.guid == guid and not loot.ambiguous then
+                            loot.attempts = attempts
+                            if not lootChatOpen then settleNPCItemReceipt(key, loot) end
+                        end
+                    end
+                end
+                local changed = apply("NPC", function(v, definition)
+                    return (not entries or not entries[definition.key]) and contains(v.npcs, npc)
+                end, nil, npc, character, true, guid)
                 local zoneChanged = apply("ZONE", function() return true end, nil, nil, character, true)
                 if changed or zoneChanged then character.stageLootGUIDs[guid] = time + 86400 end
             end
@@ -1771,10 +1984,14 @@ end
 local function finishCreatureLoot()
     local loot = creatureLoot
     creatureLoot = nil
-    if not loot or not loot.worldLootOpened or not loot.guid or not atlas.shouldCountCreatureLoot()
-        or safe(UnitGUID, "target") ~= loot.guid then return end
-    -- Hovering over a corpse does not identify the source of a loot window.
-    -- Require the loot available on that corpse to run out during this window.
+    if not loot or loot.rejected or not loot.guid or not atlas.shouldCountCreatureLoot() then return end
+    -- A hovered corpse can differ from the selected unit. Without a confirmed
+    -- world window, or a stable selected corpse, only its exact depletion event
+    -- ties the interaction to this GUID.
+    if not loot.worldLootOpened and (not loot.autoloot or loot.expires <= now()) then return end
+    local target, mouseover = safe(UnitGUID, "target"), safe(UnitGUID, "mouseover")
+    if (not loot.worldLootOpened or loot.unit == "mouseover" or target ~= loot.guid or (mouseover and mouseover ~= loot.guid))
+        and not loot.depleted then return end
     local hasLoot = safe(CanLootUnit, loot.guid)
     if hasLoot ~= false and not (hasLoot == nil and loot.depleted) then return end
     if atlas.recordCreatureLoot then atlas.recordCreatureLoot(loot.guid) end
@@ -1827,38 +2044,58 @@ local function onNodeLoot(character, objects, knownObject, fromCreature, time, w
     return gathering -- Skinning/mining/opening is not another NPC or zone kill.
 end
 
-local function onLoot(worldLootOpened)
+local function onLoot(worldLootOpened, autoloot)
     if not ready or blocked() or itemLootOpen then return end
     local slots = safe(GetNumLootItems)
     if not number(slots) then
         creatureLoot = false
         return
     end
-    local creatures, objects, knownObject, hasSource = lootSources(slots)
+    local creatures, objects, knownObject, hasSource, routedItems = lootSources(slots)
     local nativeFishing = safe(IsFishingLoot)
-    observeCreatureLoot(slots, hasSource, worldLootOpened, nativeFishing)
+    observeCreatureLoot(slots, hasSource, worldLootOpened, nativeFishing, autoloot)
     -- Never use a stale fishing cast to reinterpret a known loot source.
     local fallbackFishing = nativeFishing == nil and cast and cast.kind == "Fishing" and cast.expires > now()
         and not next(creatures) and not knownObject
     if nativeFishing or fallbackFishing then
+        if not next(creatures) then
+            for key, entry in pairs(stagesByMethod.FISHING or {}) do
+                local definition = entry.definition
+                if definition.requiresLootSource then
+                    local loot = npcItemLoot.items[key]
+                    if not loot and not lootCounted then
+                        loot = { guid = true }
+                        npcItemLoot.items[key] = loot
+                        npcItemLoot.expires = now() + npcLootReceiptWindow
+                    end
+                    for slot = 1, loot and slots or 0 do
+                        local link = safe(GetLootSlotLink, slot)
+                        local item = readable(link) and type(link) == "string" and tonumber(link:match("item:(%d+)"))
+                        if item == definition.item then
+                            loot.confirmedSource = item
+                            if not lootChatOpen then settleNPCItemReceipt(key, loot) end
+                            break
+                        end
+                    end
+                end
+            end
+        end
         if not lootCounted then
             lootCounted = true
             local pool = cast and cast.pool
-            apply("FISHING", function(v) return not v.requiresPool or pool == true end, nil, nil, nil, true)
+            apply("FISHING", function(v) return not v.requiresPool or pool == true end, nil, nil, nil, true, true)
             cast = nil
         end
         return
     end
 
+    if routedItems then
+        for guid, items in pairs(routedItems) do trackNPCItemLoot(guid, creatures[guid], nil, items) end
+    end
     local character = record()
     if not character then return end
     local time = serverTime()
-    if time - lastLootPrune >= 60 then
-        for guid, expires in pairs(character.stageLootGUIDs) do
-            if not number(expires) or expires <= time then character.stageLootGUIDs[guid] = nil end
-        end
-        lastLootPrune = time
-    end
+    pruneStageLoot(character, time)
     if onNodeLoot(character, objects, knownObject, next(creatures) ~= nil, time, worldLootOpened, slots > 0) then return end
     recordStageCreatureLoot(creatures, character, time)
 end
@@ -1951,7 +2188,9 @@ end
 local function onCast(unit, guid, spell, phase, target, castBarID)
     if not readable(unit) or unit ~= "player" or not number(spell) then return end
     local finished, sent = phase == "finished", phase == "sent"
-    if finished and itemSpells[spell] then markUse(itemSpells[spell]) end
+    if (finished or sent) and itemSpells[spell] then
+        markUse(itemSpells[spell], "cast", readableCastGUID(guid) and guid or nil, phase)
+    end
     local kind = atlas.attemptSpells and atlas.attemptSpells[spell]
     if not kind and (spell == 131474 or spell == 7620 or spell == 158743) then kind = "Fishing" end
     local opening = isOpening(kind)
@@ -2042,13 +2281,13 @@ function atlas.initializeAttemptStages()
     if hooksecurefunc then
         if C_Container and C_Container.UseContainerItem then
             hooksecurefunc(C_Container, "UseContainerItem", function(bag, slot)
-                markUse(safe(C_Container.GetContainerItemID, bag, slot))
+                markUse(safe(C_Container.GetContainerItemID, bag, slot), "slot")
             end)
         end
         if UseItemByName then
             hooksecurefunc("UseItemByName", function(item)
                 local id = tonumber(item) or (C_Item and safe(C_Item.GetItemInfoInstant, item))
-                markUse(id)
+                markUse(id, "named")
             end)
         end
     end
@@ -2086,7 +2325,8 @@ events:SetScript("OnEvent", function(_, event, ...)
         enteredWorld = true
     elseif event == "LOOT_READY" then
         prepareNPCItemLoot()
-        onLoot()
+        local autoloot = ...
+        onLoot(nil, readable(autoloot) and autoloot == true)
         observeLootQuests(not enteredWorld)
     elseif event == "LOOT_OPENED" then
         local _, fromItem = ...
@@ -2097,8 +2337,7 @@ events:SetScript("OnEvent", function(_, event, ...)
         itemLootOpen = readable(fromItem) and fromItem == true and not blocked()
         if not readable(fromItem) or fromItem ~= false then creatureLoot, npcItemLoot = false, { items = {} } end
         if itemLootOpen then
-            local pending = pendingUses[timeRifts.container]
-            if not wasItemLootOpen and (not pending or pending <= now())
+            if not wasItemLootOpen and not hasPendingUse(timeRifts.container, now())
                 and (not box or box.closed or not next(box.counts)) then
                 box, timeRifts.box = nil, nil
             end
@@ -2115,7 +2354,8 @@ events:SetScript("OnEvent", function(_, event, ...)
             end
             timeRifts.worldLoot = nil
             openingHover = nil
-            itemLootUntil, itemLootSettled = now() + 3, false
+            itemLootUntil = now() + 3
+            if not wasItemLootOpen then itemLootSettled = false end
             if cast and isOpening(cast.kind) then cast = nil end
         else
             timeRifts.box = nil
@@ -2142,11 +2382,23 @@ events:SetScript("OnEvent", function(_, event, ...)
         settleLootChat()
         lootCounted, cast, lastNode, openingHover = false, nil, nil, nil
     elseif event == "PLAYER_TARGET_CHANGED" then
-        if creatureLoot and creatureLoot.guid and safe(UnitGUID, "target") ~= creatureLoot.guid then creatureLoot = false end
+        local target = safe(UnitGUID, "target")
+        if creatureLoot and creatureLoot.unit == "target" and target and target ~= creatureLoot.guid then creatureLoot.rejected = true end
     elseif event == "UNIT_LOOT" then
         local guid, hasLoot = ...
-        if creatureLoot and creatureLoot.guid and readable(guid) and guid == creatureLoot.guid
-            and readable(hasLoot) and type(hasLoot) == "boolean" then creatureLoot.depleted = not hasLoot end
+        local loot = creatureLoot
+        if loot and not loot.rejected and loot.guid and readable(guid) and guid == loot.guid
+            and readable(hasLoot) and type(hasLoot) == "boolean" then
+            loot.depleted = not hasLoot
+            if loot.autoloot and loot.depleted and not loot.worldLootOpened and not loot.settling then
+                loot.settling = true
+                C_Timer.After(0, function()
+                    if creatureLoot ~= loot then return end
+                    loot.settling = nil
+                    if loot.depleted and not loot.worldLootOpened then finishCreatureLoot() end
+                end)
+            end
+        end
     elseif event == "BAG_UPDATE_DELAYED" then
         scanBags(useStages)
         finalizePendingAcquisitions(true)
@@ -2181,10 +2433,13 @@ events:SetScript("OnEvent", function(_, event, ...)
         local unit, guid, spell, castBarID = ...
         onCast(unit, guid, spell, "finished", nil, castBarID)
     elseif event == "UNIT_SPELLCAST_FAILED" or event == "UNIT_SPELLCAST_FAILED_QUIET" or event == "UNIT_SPELLCAST_INTERRUPTED" then
-        local unit, guid = ...
+        local unit, guid, spell = ...
         local castBarID = select(event == "UNIT_SPELLCAST_INTERRUPTED" and 5 or 4, ...)
-        if readable(unit) and unit == "player" and sameCast(guid, castBarID) then
-            cast, lastNode, openingHover = nil, nil, nil
+        if readable(unit) and unit == "player" then
+            if number(spell) and itemSpells[spell] then
+                markUse(itemSpells[spell], "cast", readableCastGUID(guid) and guid or nil, "failed")
+            end
+            if sameCast(guid, castBarID) then cast, lastNode, openingHover = nil, nil, nil end
         end
     elseif event == "TRADE_SKILL_SHOW" then
         beginBlockedInteraction("tradeSkill")

@@ -1835,6 +1835,36 @@ do
     equal(guaranteed(drake, {}), nil, "a changed achievement must confirm its own reward")
     C_AchievementInfo, C_MountJournal.GetMountFromItem = achievementApi, mountFromItem
 end
+
+do
+    local turtle = { id = 312, spell = 64731, kind = "Профессия", journalSourceRaw = "Profession: Fishing" }
+    local primary = atlas.attemptStages[turtle.id].reward
+    local alternate = atlas.attemptStages[turtle.id].alternateReward
+    local route = assert(atlas.verifiedRewardDropRoute(turtle))
+    equal(route.item, primary.item, "both Sea Turtle routes teach the same mount")
+    equal(route.counterKey, alternate.key, "the verified garrison route selects the NPC counter")
+    equal(atlas.classifyMountSource(turtle).key, "fishing", "the primary source remains in the Fishing filter")
+    local savedFaction = atlas.characterFaction
+    atlas.characterFaction = function() return "Horde" end
+    local choices = {}
+    atlas.addVerifiedDropSource(turtle, choices, false, false)
+    atlas.characterFaction = savedFaction
+    equal(#choices, 3, "the garrison supplements the fishing and both faction options")
+    equal(atlas.classifyMountSource(turtle, choices[1]).key, "fishing", "keep the fishing tab as the primary route")
+    equal(atlas.classifyMountSource(turtle, choices[2]).key, "loot", "the garrison also appears in the Loot filter")
+    equal(choices[2].tabOverride, "garrison", "both cavedwellers share the Garrison tab")
+    equal(choices[3].tabOverride, "garrison", "the extra faction option stays in the Garrison tab")
+    equal(choices[2].view.npc, 81171, "the player's garrison appears first")
+    equal(choices[3].view.npc, 85715, "the other faction remains accessible")
+    equal(choices[2].view.sourceMap, 590, "Frostdeep Cavedweller is in Frostwall")
+    equal(choices[3].view.sourceMap, 582, "Lunarfall Cavedweller is in Lunarfall")
+    equal(choices[3].attemptStage, choices[2].attemptStage, "both factions contribute to the same garrison history")
+    local riding = assert(atlas.verifiedRewardDropRoute({ id = 125 }))
+    equal(riding.item, 23720, "Riding Turtle keeps its own physical reward")
+    equal(riding.routes[1].npc, choices[3].view.npc, "both turtles share the Alliance NPC")
+    equal(riding.routes[2].npc, choices[2].view.npc, "both turtles share the Horde NPC")
+end
+
 do
     local timers, notifications = {}, 0
     C_Timer = { After = function(delay, callback) timers[#timers + 1] = { delay, callback } end }

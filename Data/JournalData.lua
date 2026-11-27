@@ -5780,7 +5780,7 @@ atlas.attemptStages = {
     [16] = { reward = { key = "mount:16", method = "SPECIAL", item = 260916, name = "Дракон-скиталец Пустоты", englishName = "Nether-Swept Drake" }, item = { method = "FISHING", rate = 2500, zones = { 2393, 2395, 2437, 2413, 2405, 2444, 2512 }, requiresPool = false, key = "item:268730", item = 268730, name = "Яйцо падшего дракона Пустоты", englishName = "Nether-Warped Egg" } },
     [69] = { reward = { method = "NPC", rate = 100, key = "mount:69", item = 13335, name = "Поводья коня смерти", englishName = "Deathcharger's Reins" } },
     [118] = { reward = { method = "NPC", rate = 100, npcs = { 15311, 15250, 15247, 15246, 15264, 15262, 15277, 15312, 15252, 15249 }, key = "mount:118", item = 21321, name = "Красный киражский резонирующий кристалл", englishName = "Red Qiraji Resonating Crystal" } },
-    [125] = { reward = { method = "NPC", rate = 200, npcs = { 81171, 85715 }, key = "mount:125", item = 23720, name = "Верховая черепаха", englishName = "Riding Turtle" } },
+    [125] = { reward = { method = "NPC", rate = 200, npcs = { 81171, 85715 }, key = "mount:125", item = 23720, requiresCreatureLoot = true, name = "Верховая черепаха", englishName = "Riding Turtle" } },
     [168] = { reward = { method = "ENCOUNTER", rate = 100, npcs = { 16152 }, encounters = { 652 }, key = "mount:168", item = 30480, name = "Поводья огненного боевого коня", englishName = "Fiery Warhorse's Reins" } },
     [183] = { reward = { method = "BOSS", rate = 100, key = "mount:183", item = 32458, name = "Пепел Ал'ара", englishName = "Ashes of Al'ar" } },
     [185] = { reward = { method = "ENCOUNTER", difficulties = { [2] = true }, rate = 67, key = "mount:185", npcs = { 23035 }, encounters = { 1904 }, englishName = "Reins of the Raven Lord", name = "Поводья повелителя воронов", item = 32768 } },
@@ -5797,7 +5797,7 @@ atlas.attemptStages = {
     [286] = { reward = { method = "BOSS", rate = 100, requiresAlliance = true, key = "mount:286", item = 43959, name = "Поводья большого черного боевого мамонта", englishName = "Reins of the Grand Black War Mammoth" } },
     [287] = { reward = { method = "BOSS", rate = 100, requiresHorde = true, key = "mount:287", item = 44083, name = "Поводья большого черного боевого мамонта", englishName = "Reins of the Grand Black War Mammoth" } },
     [304] = { reward = { method = "ENCOUNTER", rate = 100, wasGuaranteed = true, key = "mount:304", npcs = { 33288 }, encounters = { 1143 }, englishName = "Mimiron's Head", name = "Голова Мимирона", item = 45693, unverifiedEligibility = true, rarityEncounterEstimate = true, condition = "Йогг-Сарон без помощи хранителей" } },
-    [312] = { reward = { method = "FISHING", rate = 10000, zones = { 116, 127, 115, 117, 114, 119, 245, 241, 249, 207, 198, 418, 371, 376, 379, 390, 422, 388, 407, 554, 507, 504, 433 }, requiresPool = true, key = "mount:312", item = 46109, name = "Морская черепаха", englishName = "Sea Turtle" } },
+    [312] = { reward = { method = "FISHING", rate = 10000, zones = { 116, 127, 115, 117, 114, 119, 245, 241, 249, 207, 198, 418, 371, 376, 379, 390, 422, 388, 407, 554, 507, 504, 433 }, requiresPool = true, key = "mount:312", item = 46109, requiresLootSource = true, name = "Морская черепаха", englishName = "Sea Turtle" }, alternateReward = { method = "NPC", key = "mount:312:garrison", item = 46109, npcs = { 81171, 85715 }, requiresCreatureLoot = true, requiresLootSource = true, name = "Морская черепаха", englishName = "Sea Turtle" } },
     [349] = { reward = { method = "BOSS", rate = 100, key = "mount:349", item = 49636, name = "Поводья дракона Ониксии", englishName = "Reins of the Onyxian Drake" } },
     [352] = { reward = { method = "USE", rate = 3333, items = { 54537 }, groupSize = 5, equalOdds = true, key = "mount:352", item = 50250, name = "\"Сердцеед\" X-45", englishName = "X-45 Heartbreaker", searchNames = { "Heart-Shaped Box", "Коробочка в виде сердца" } } },
     [363] = { reward = { method = "BOSS", rate = 100, wasGuaranteed = true, difficulties = { [6] = true }, key = "mount:363", item = 50818, name = "Поводья Непобедимого", englishName = "Invincible's Reins" } },
@@ -6845,7 +6845,7 @@ atlas.blackMarketMounts = {
 -- BEGIN NPC loot quest metadata
 -- Exact NPC tracking quests for reviewed daily loot sources; no eligibility guarantee.
 -- WoWthing CC0: https://github.com/ThingEngineering/wowthing-data/tree/befe8b4a548a8ba94b9100609b1c155154b1d2db
--- Shared encounters: Rarity CE v0.3.1, source pin in tools/import_rares.py.
+-- Additional NPC associations: Rarity CE and ATT, source pins in tools/import_rares.py.
 -- The Ascended Council flag 60933 reveals the cache; flag 60977 records its loot.
 -- Unmapped NPCs stay unknown. Collection/prerequisite quests are not completion proof.
 atlas.npcLootQuests = {
@@ -6880,10 +6880,12 @@ atlas.npcLootQuests = {
     [1379] = { [166521] = 59869 },
     [1391] = { [160821] = 58259 },
     [1393] = { [168647] = 61632 },
+    [1410] = { [157309] = 61720 },
     [1411] = { [162741] = 58872 },
     [1426] = { [170832] = 60977, [170833] = 60977, [170834] = 60977, [170835] = 60977, [170836] = 60977 },
     [1434] = { [180978] = 65548 },
     [1437] = { [162853] = 62786, [162872] = 62786, [162873] = 62786, [162874] = 62786, [162875] = 62786, [162880] = 62786 },
+    [1493] = { [180032] = 64338 },
     [1502] = { [179460] = 64164 },
     [1506] = { [179684] = 64233 },
     [1509] = { [180160] = 64455 },

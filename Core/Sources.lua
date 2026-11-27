@@ -1044,6 +1044,36 @@ function atlas.extraTradingPostSource(mount)
 end
 
 local islandBagOrder = {}
+function atlas.addVerifiedDropSource(mount, choices, hasVendor, hasDrop)
+    local route = atlas.verifiedRewardDropRoute(mount)
+    if not route or hasDrop or not (route.counterKey or hasVendor) then return end
+    if route.counterKey and #choices == 0 then choices[1] = {} end
+    local first = #choices + 1
+    local playerFaction = route.counterKey and atlas.characterFaction and atlas.characterFaction()
+    for _, entry in ipairs(route.routes or { route }) do
+        local boss, place = entry.boss or route.boss, entry.place or route.place
+        if boss and place then
+            local condition = entry.condition or route.condition
+            local faction = entry.faction or route.faction
+            local placeKind = entry.placeKind or route.placeKind or "Открытый мир"
+            local view = {
+                id = mount.id, boss = boss, place = place, faction = faction, npc = entry.npc or route.npc,
+                englishBoss = entry.englishBoss or route.englishBoss,
+                englishPlace = entry.englishPlace or route.englishPlace,
+                sourceKind = entry.sourceKind or route.sourceKind or "Добыча",
+                sourcePlaceKind = placeKind,
+                sourceMap = entry.map or route.map, conditions = condition,
+                difficultyLocalOnly = true, trackingCompatible = true, hasSourcePanels = true,
+                journalSourceRaw = "Источник: " .. boss .. "\nМесто: " .. place .. (condition and "\n" .. condition or ""),
+            }
+            local choice = { view = view, separated = true, scopedPoints = true, verifiedDrop = true,
+                attemptStage = route.counterKey, tabOverride = route.counterKey and placeKind == "Гарнизон" and "garrison" or nil }
+            if playerFaction and faction == playerFaction then table.insert(choices, first, choice)
+            else choices[#choices + 1] = choice end
+        end
+    end
+end
+
 function atlas.addIslandSalvageSource(mount, choices)
     local salvage = atlas.islandSalvage
     local bags = salvage and salvage.mounts and salvage.mounts[mount.id]
